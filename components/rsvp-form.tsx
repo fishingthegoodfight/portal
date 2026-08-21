@@ -16,15 +16,17 @@ import {
 } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { formatEventDateRange } from "@/lib/format-date";
 
 type EventSummary = {
   id: number;
   name: string;
   chapter: string | null;
   event_type: string | null;
-  starts_at: string;
-  ends_at: string | null;
+  // Formatted server-side (see the rsvp page loader) rather than formatted
+  // here with Intl — this is a client component, so formatting it at render
+  // time would run again during client hydration and mismatch the SSR output
+  // whenever the server and browser sit in different timezones.
+  dateRange: string;
   location: string | null;
   description: string | null;
   capacity: number | null;
@@ -36,6 +38,8 @@ type ProfileSummary = {
   last_name: string;
   email: string;
   phone: string;
+  emergency_contact: string;
+  emergency_phone: string;
 };
 
 type InitialRsvp = {
@@ -83,6 +87,11 @@ export function RsvpForm({
   const isFull = spotsLeft != null && spotsLeft <= 0 && !hasActiveRsvp;
   const profileIncomplete =
     !profile.first_name || !profile.last_name || !profile.email;
+  const emergencyContactMissing =
+    !profile.emergency_contact || !profile.emergency_phone;
+  const editProfileHref = `/protected/profile?return_to=${encodeURIComponent(
+    `/protected/events/${event.id}/rsvp`,
+  )}`;
 
   // After the RPC runs, re-read the row rather than assume what it did —
   // rsvp_to_event may confirm or waitlist, and cancel_rsvp may soft-cancel
@@ -98,9 +107,16 @@ export function RsvpForm({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsSubmitting(true);
     setError(null);
     setMessage(null);
+    if (emergencyContactMissing) {
+      // Belt-and-suspenders: the submit button is disabled for this case
+      // too, but guard here in case the form is ever submitted some other
+      // way (e.g. pressing Enter before React re-renders the disabled state).
+      setError("Add an emergency contact and phone number before RSVPing.");
+      return;
+    }
+    setIsSubmitting(true);
     const supabase = createClient();
 
     try {
@@ -155,7 +171,7 @@ export function RsvpForm({
             <div>
               <CardTitle>{event.name}</CardTitle>
               <CardDescription>
-                {formatEventDateRange(event.starts_at, event.ends_at)}
+                {event.dateRange}
                 {event.location ? ` · ${event.location}` : ""}
               </CardDescription>
             </div>
@@ -186,7 +202,7 @@ export function RsvpForm({
             {profile.email ? ` · ${profile.email}` : ""}
             {profile.phone ? ` · ${profile.phone}` : ""}.{" "}
             <Link
-              href="/protected/profile"
+              href={editProfileHref}
               className="underline underline-offset-4"
             >
               Edit profile
@@ -201,6 +217,28 @@ export function RsvpForm({
                 RSVP, but consider completing it first.
               </p>
             )}
+            <div className="grid gap-1 rounded-md border p-3">
+              <span className="text-sm font-medium">Emergency contact</span>
+              {profile.emergency_contact || profile.emergency_phone ? (
+                <span className="text-sm text-muted-foreground">
+                  {profile.emergency_contact || "?"}
+                  {profile.emergency_phone
+                    ? ` · ${profile.emergency_phone}`
+                    : ""}
+                </span>
+              ) : (
+                <span className="text-sm text-amber-600">
+                  Required to RSVP — none on file yet.{" "}
+                  <Link
+                    href={editProfileHref}
+                    className="underline underline-offset-4"
+                  >
+                    Add one in your profile
+                  </Link>
+                  .
+                </span>
+              )}
+            </div>
             {status && (
               <p className="text-sm">
                 Current status: <span className="font-medium">{status}</span>
@@ -225,7 +263,10 @@ export function RsvpForm({
             {message && <p className="text-sm text-green-600">{message}</p>}
           </CardContent>
           <CardFooter className="flex gap-2">
-            <Button type="submit" disabled={isSubmitting}>
+            <Button
+              type="submit"
+              disabled={isSubmitting || emergencyContactMissing}
+            >
               {isSubmitting
                 ? "Submitting..."
                 : hasActiveRsvp

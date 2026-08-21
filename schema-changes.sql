@@ -78,3 +78,26 @@ begin
 
   return v_status;
 end $function$;
+
+-- =============================================================================
+-- 2026-08-21 — Add per-event timezone
+-- =============================================================================
+-- starts_at/ends_at are timestamptz, so they already store a correct
+-- absolute instant no matter who reads or writes them. But nothing recorded
+-- which IANA zone that instant's wall-clock time belongs to for a given
+-- event's venue, so the portal's date formatting had no choice but to fall
+-- back to whatever timezone happened to be rendering it — wrong for an
+-- in-person event, which should read the same venue-local time to every
+-- viewer regardless of where they are, and it also caused an SSR/hydration
+-- mismatch on the RSVP page whenever the server and browser disagreed.
+--
+-- Default of 'America/Denver' covers the org's Colorado chapters; the
+-- update below corrects the Georgia chapters. Adjust the default and/or the
+-- backfill if the actual chapter mix in the table differs from
+-- lib/chapters.ts at the time this is run.
+alter table public.events
+  add column if not exists timezone text not null default 'America/Denver';
+
+update public.events
+   set timezone = 'America/New_York'
+ where chapter in ('Atlanta', 'Rome');

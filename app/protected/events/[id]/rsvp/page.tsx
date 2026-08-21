@@ -3,6 +3,8 @@ import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
 import { RsvpForm } from "@/components/rsvp-form";
+import { formatEventDateRange } from "@/lib/format-date";
+import { formatPhoneNumber } from "@/lib/phone";
 
 async function RsvpLoader({
   params,
@@ -27,7 +29,7 @@ async function RsvpLoader({
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, name, chapter, event_type, starts_at, ends_at, location, description, capacity, spots_taken, is_published",
+      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken, is_published",
     )
     .eq("id", eventId)
     .maybeSingle();
@@ -38,7 +40,9 @@ async function RsvpLoader({
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("first_name, last_name, email, phone")
+    .select(
+      "first_name, last_name, email, phone, emergency_contact, emergency_phone",
+    )
     .eq("id", userId)
     .maybeSingle();
 
@@ -50,12 +54,30 @@ async function RsvpLoader({
 
   return (
     <RsvpForm
-      event={event}
+      event={{
+        id: event.id,
+        name: event.name,
+        chapter: event.chapter,
+        event_type: event.event_type,
+        dateRange: formatEventDateRange(
+          event.starts_at,
+          event.ends_at,
+          event.timezone,
+        ),
+        location: event.location,
+        description: event.description,
+        capacity: event.capacity,
+        spots_taken: event.spots_taken,
+      }}
       profile={{
         first_name: profile?.first_name ?? "",
         last_name: profile?.last_name ?? "",
         email: profile?.email ?? "",
         phone: profile?.phone ?? "",
+        emergency_contact: profile?.emergency_contact ?? "",
+        // Reformat in case the stored value predates the phone mask, same as
+        // the profile page does for its own initial values.
+        emergency_phone: formatPhoneNumber(profile?.emergency_phone ?? ""),
       }}
       initialRsvp={
         existingRsvp

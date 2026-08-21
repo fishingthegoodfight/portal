@@ -5,7 +5,22 @@ import { createClient } from "@/lib/supabase/server";
 import { ProfileForm } from "@/components/profile-form";
 import { formatPhoneNumber } from "@/lib/phone";
 
-async function ProfileFormLoader() {
+// Only ever redirect back into our own /protected pages — a bare "starts
+// with /protected/" check keeps this from being turned into an open redirect
+// via a return_to like "https://evil.example" or "//evil.example".
+function safeReturnTo(value: string | undefined): string | null {
+  if (!value) return null;
+  return value.startsWith("/protected/") ? value : null;
+}
+
+async function ProfileFormLoader({
+  searchParams,
+}: {
+  searchParams: Promise<{ return_to?: string }>;
+}) {
+  const { return_to } = await searchParams;
+  const returnTo = safeReturnTo(return_to);
+
   const supabase = await createClient();
   const { data, error } = await supabase.auth.getClaims();
 
@@ -27,6 +42,7 @@ async function ProfileFormLoader() {
   return (
     <ProfileForm
       userId={userId}
+      returnTo={returnTo}
       initialProfile={{
         first_name: profile?.first_name ?? "",
         last_name: profile?.last_name ?? "",
@@ -48,7 +64,11 @@ async function ProfileFormLoader() {
   );
 }
 
-export default function ProfilePage() {
+export default function ProfilePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ return_to?: string }>;
+}) {
   return (
     <div className="flex-1 w-full flex flex-col gap-8 max-w-lg">
       <div>
@@ -59,7 +79,7 @@ export default function ProfilePage() {
         </p>
       </div>
       <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>
-        <ProfileFormLoader />
+        <ProfileFormLoader searchParams={searchParams} />
       </Suspense>
     </div>
   );

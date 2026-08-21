@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -36,10 +37,13 @@ type ProfileData = {
 export function ProfileForm({
   userId,
   initialProfile,
+  returnTo,
 }: {
   userId: string;
   initialProfile: ProfileData;
+  returnTo?: string | null;
 }) {
+  const router = useRouter();
   const [profile, setProfile] = useState<ProfileData>(initialProfile);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -115,6 +119,11 @@ export function ProfileForm({
         );
       }
       setSuccess(true);
+      if (returnTo) {
+        // Give the "Profile saved" message a beat on screen before leaving,
+        // so the save doesn't look like it silently no-op'd.
+        setTimeout(() => router.push(returnTo), 900);
+      }
     } catch (error: unknown) {
       // Log the full error (message alone often hides the useful `hint`/`code`
       // for RLS and constraint failures) so it's visible in the browser console.
@@ -270,12 +279,19 @@ export function ProfileForm({
           </div>
           {error && <p className="text-sm text-red-500">{error}</p>}
           {success && (
-            <p className="text-sm text-green-600">Profile saved.</p>
+            <p className="text-sm text-green-600">
+              Profile saved.
+              {returnTo ? " Returning to your RSVP..." : ""}
+            </p>
           )}
         </CardContent>
         <CardFooter>
           <Button type="submit" disabled={isSaving}>
-            {isSaving ? "Saving..." : "Save profile"}
+            {isSaving
+              ? "Saving..."
+              : returnTo
+                ? "Save & return to RSVP"
+                : "Save profile"}
           </Button>
         </CardFooter>
       </form>

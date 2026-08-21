@@ -26,7 +26,7 @@ async function EventsListLoader() {
   const { data: events, error: eventsError } = await supabase
     .from("events")
     .select(
-      "id, name, chapter, event_type, starts_at, ends_at, location, description, capacity, spots_taken",
+      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken",
     )
     .eq("is_published", true)
     .gte("starts_at", new Date().toISOString())
@@ -48,14 +48,30 @@ async function EventsListLoader() {
     );
   }
 
+  // RLS scopes rsvps to the caller's own rows, so this is just "my RSVPs
+  // for the events on this page" without needing an explicit user_id filter.
+  const { data: rsvps } = await supabase
+    .from("rsvps")
+    .select("event_id, status")
+    .in(
+      "event_id",
+      events.map((event) => event.id),
+    );
+  const rsvpStatusByEvent = new Map(
+    (rsvps ?? []).map((rsvp) => [rsvp.event_id, rsvp.status]),
+  );
+
   return (
     <div className="flex flex-col gap-4">
       {events.map((event) => {
+        const rsvpStatus = rsvpStatusByEvent.get(event.id) ?? null;
+        const hasActiveRsvp =
+          rsvpStatus != null && rsvpStatus !== "cancelled";
         const spotsLeft =
           event.capacity != null && event.spots_taken != null
             ? event.capacity - event.spots_taken
             : null;
-        const isFull = spotsLeft != null && spotsLeft <= 0;
+        const isFull = spotsLeft != null && spotsLeft <= 0 && !hasActiveRsvp;
 
         return (
           <Card key={event.id}>
@@ -64,7 +80,11 @@ async function EventsListLoader() {
                 <div>
                   <CardTitle>{event.name}</CardTitle>
                   <CardDescription>
-                    {formatEventDateRange(event.starts_at, event.ends_at)}
+                    {formatEventDateRange(
+                      event.starts_at,
+                      event.ends_at,
+                      event.timezone,
+                    )}
                     {event.location ? ` · ${event.location}` : ""}
                   </CardDescription>
                 </div>
@@ -87,13 +107,23 @@ async function EventsListLoader() {
             )}
             <CardFooter className="flex items-center justify-between">
               <span className="text-sm text-muted-foreground">
-                {spotsLeft != null
-                  ? isFull
-                    ? "Full"
-                    : `${spotsLeft} spot${spotsLeft === 1 ? "" : "s"} left`
-                  : null}
+                {hasActiveRsvp
+                  ? rsvpStatus === "waitlisted"
+                    ? "You're waitlisted"
+                    : "You're RSVP'd"
+                  : spotsLeft != null
+                    ? isFull
+                      ? "Full"
+                      : `${spotsLeft} spot${spotsLeft === 1 ? "" : "s"} left`
+                    : null}
               </span>
-              {isFull ? (
+              {hasActiveRsvp ? (
+                <Button asChild variant="outline">
+                  <Link href={`/protected/events/${event.id}/rsvp`}>
+                    View RSVP
+                  </Link>
+                </Button>
+              ) : isFull ? (
                 <Button disabled variant="secondary">
                   Full
                 </Button>
