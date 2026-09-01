@@ -12,7 +12,7 @@ import { formatPhoneNumber } from "@/lib/phone";
  * change — it renders this catalog generically.
  */
 
-export type RegistrationFieldType = "text" | "tel" | "textarea";
+export type RegistrationFieldType = "text" | "tel" | "textarea" | "yesno";
 
 export type RegistrationField = {
   /** Also the `profiles` column name that stores this field's value. */
@@ -20,10 +20,24 @@ export type RegistrationField = {
   label: string;
   type: RegistrationFieldType;
   placeholder?: string;
+  /**
+   * Whether this field must have a value for the section to count as complete
+   * (and to allow the RSVP). The catalog is the single source of truth here —
+   * `isSectionComplete` and the RSVP form's submit gate both read it — so a
+   * future section can freely mix required and optional fields.
+   */
   required?: boolean;
   /** Normalizes input as the user types, e.g. the phone mask. */
   format?: (value: string) => string;
 };
+
+/**
+ * Sentinel stored in `profiles.dietary_notes` when a member answers "No" to
+ * "Any dietary restrictions?". Keeping an explicit value on file (rather than
+ * leaving the column empty) is what lets the section count as complete, so a
+ * later RSVP doesn't ask again — no separate boolean column needed.
+ */
+export const DIETARY_NONE = "None";
 
 export type RegistrationSection = {
   id: string;
@@ -63,16 +77,24 @@ export const REGISTRATION_SECTIONS: RegistrationSection[] = [
   },
   {
     id: "dietary",
-    title: "Dietary notes",
+    title: "Any dietary restrictions?",
     fields: [
       {
+        // A single backing column holds three states:
+        //   ""            → not answered yet
+        //   DIETARY_NONE  → answered "No"
+        //   any other text → answered "Yes", the text being the details
         key: "dietary_notes",
-        label: "Dietary notes",
-        type: "textarea",
-        placeholder: "Allergies, preferences, etc. (optional)",
+        label: "What should we know?",
+        type: "yesno",
+        placeholder: "Allergies, medical needs, preferences…",
+        required: true,
       },
     ],
-    summary: (profileFields) => truncate(profileFields.dietary_notes ?? ""),
+    summary: (profileFields) => {
+      const value = (profileFields.dietary_notes ?? "").trim();
+      return value === DIETARY_NONE ? "No dietary restrictions" : truncate(value);
+    },
   },
 ];
 
@@ -81,12 +103,16 @@ export const REGISTRATION_PROFILE_FIELD_KEYS = Array.from(
   new Set(REGISTRATION_SECTIONS.flatMap((s) => s.fields.map((f) => f.key))),
 );
 
+/**
+ * A section is complete once every field the catalog marks `required` has a
+ * value on file. Optional fields never block completeness.
+ */
 export function isSectionComplete(
   section: RegistrationSection,
   profileFields: Record<string, string>,
 ): boolean {
-  return section.fields.every((field) =>
-    Boolean(profileFields[field.key]?.trim()),
+  return section.fields.every(
+    (field) => !field.required || Boolean(profileFields[field.key]?.trim()),
   );
 }
 
