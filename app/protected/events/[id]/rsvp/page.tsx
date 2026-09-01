@@ -4,7 +4,7 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/supabase/server";
 import { RsvpForm } from "@/components/rsvp-form";
 import { formatEventDateRange } from "@/lib/format-date";
-import { formatPhoneNumber } from "@/lib/phone";
+import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 
 async function RsvpLoader({
   params,
@@ -29,7 +29,7 @@ async function RsvpLoader({
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken, is_published",
+      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken, is_published, registration_sections",
     )
     .eq("id", eventId)
     .maybeSingle();
@@ -38,11 +38,12 @@ async function RsvpLoader({
     notFound();
   }
 
+  // select("*") rather than an explicit column list so a new registration
+  // section's profile column (see lib/registration-sections.ts) is picked up
+  // here automatically, with no loader edit needed.
   const { data: profile } = await supabase
     .from("profiles")
-    .select(
-      "first_name, last_name, email, phone, emergency_contact, emergency_phone",
-    )
+    .select("*")
     .eq("id", userId)
     .maybeSingle();
 
@@ -52,8 +53,20 @@ async function RsvpLoader({
     .eq("event_id", eventId)
     .maybeSingle();
 
+  // Every registration field's current value, keyed by its profile column —
+  // formatted (e.g. the phone mask) in case a stored value predates that
+  // formatting, same as the profile page does for its own initial values.
+  const profileFields: Record<string, string> = {};
+  for (const section of REGISTRATION_SECTIONS) {
+    for (const field of section.fields) {
+      const raw = (profile?.[field.key] as string | null) ?? "";
+      profileFields[field.key] = field.format ? field.format(raw) : raw;
+    }
+  }
+
   return (
     <RsvpForm
+      userId={userId}
       event={{
         id: event.id,
         name: event.name,
@@ -68,17 +81,15 @@ async function RsvpLoader({
         description: event.description,
         capacity: event.capacity,
         spots_taken: event.spots_taken,
+        registration_sections: event.registration_sections ?? [],
       }}
       profile={{
         first_name: profile?.first_name ?? "",
         last_name: profile?.last_name ?? "",
         email: profile?.email ?? "",
         phone: profile?.phone ?? "",
-        emergency_contact: profile?.emergency_contact ?? "",
-        // Reformat in case the stored value predates the phone mask, same as
-        // the profile page does for its own initial values.
-        emergency_phone: formatPhoneNumber(profile?.emergency_phone ?? ""),
       }}
+      profileFields={profileFields}
       initialRsvp={
         existingRsvp
           ? {

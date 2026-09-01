@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import Link from "next/link";
+import { CheckCircle2, XCircle } from "lucide-react";
 
 import { createClient } from "@/lib/supabase/server";
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +15,33 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { formatEventDateRange } from "@/lib/format-date";
+
+async function ConfirmationBannerLoader({
+  searchParams,
+}: {
+  searchParams: Promise<{ rsvp?: string; event?: string }>;
+}) {
+  const { rsvp, event } = await searchParams;
+  if (!rsvp) return null;
+
+  const cancelled = rsvp === "cancelled";
+  const message = cancelled
+    ? `RSVP cancelled${event ? ` for ${event}` : ""}.`
+    : rsvp === "waitlisted"
+      ? `You're waitlisted${event ? ` for ${event}` : ""}.`
+      : `You're RSVP'd${event ? ` for ${event}` : ""}.`;
+
+  return (
+    <div className="bg-accent text-sm p-3 px-5 rounded-md text-foreground flex gap-3 items-center">
+      {cancelled ? (
+        <XCircle size={16} strokeWidth={2} />
+      ) : (
+        <CheckCircle2 size={16} strokeWidth={2} />
+      )}
+      {message}
+    </div>
+  );
+}
 
 async function EventsListLoader() {
   const supabase = await createClient();
@@ -89,6 +117,19 @@ async function EventsListLoader() {
                   </CardDescription>
                 </div>
                 <div className="flex flex-col items-end gap-1 shrink-0">
+                  {hasActiveRsvp && (
+                    <Badge
+                      className={
+                        rsvpStatus === "waitlisted"
+                          ? "bg-amber-600 text-white border-transparent hover:bg-amber-600/80"
+                          : "bg-green-600 text-white border-transparent hover:bg-green-600/80"
+                      }
+                    >
+                      {rsvpStatus === "waitlisted"
+                        ? "Waitlisted"
+                        : "You're going"}
+                    </Badge>
+                  )}
                   {event.chapter && (
                     <Badge variant="secondary">{event.chapter}</Badge>
                   )}
@@ -107,20 +148,16 @@ async function EventsListLoader() {
             )}
             <CardFooter className="flex items-center justify-between">
               <span className="text-sm text-muted-foreground">
-                {hasActiveRsvp
-                  ? rsvpStatus === "waitlisted"
-                    ? "You're waitlisted"
-                    : "You're RSVP'd"
-                  : spotsLeft != null
-                    ? isFull
-                      ? "Full"
-                      : `${spotsLeft} spot${spotsLeft === 1 ? "" : "s"} left`
-                    : null}
+                {!hasActiveRsvp && spotsLeft != null
+                  ? isFull
+                    ? "Full"
+                    : `${spotsLeft} spot${spotsLeft === 1 ? "" : "s"} left`
+                  : null}
               </span>
               {hasActiveRsvp ? (
                 <Button asChild variant="outline">
                   <Link href={`/protected/events/${event.id}/rsvp`}>
-                    View RSVP
+                    View / Change RSVP
                   </Link>
                 </Button>
               ) : isFull ? (
@@ -140,9 +177,16 @@ async function EventsListLoader() {
   );
 }
 
-export default function EventsPage() {
+export default function EventsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ rsvp?: string; event?: string }>;
+}) {
   return (
     <div className="flex-1 w-full flex flex-col gap-8 max-w-2xl">
+      <Suspense fallback={null}>
+        <ConfirmationBannerLoader searchParams={searchParams} />
+      </Suspense>
       <div>
         <h1 className="font-bold text-2xl mb-1">Upcoming events</h1>
         <p className="text-sm text-muted-foreground">

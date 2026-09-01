@@ -101,3 +101,19 @@ alter table public.events
 update public.events
    set timezone = 'America/New_York'
  where chapter in ('Atlanta', 'Rome');
+
+-- =============================================================================
+-- 2026-09-01 — Registration sections: per-event array + profile-backed fields
+-- =============================================================================
+-- Replaces a one-off per-section boolean column on events with a general
+-- registration_sections array, so future sections (sizing, a waiver, etc.)
+-- don't each need their own events column. See lib/registration-sections.ts
+-- for the catalog of section ids and the profile columns backing each one.
+alter table public.events
+  add column if not exists registration_sections text[] not null default '{}'::text[];
+
+-- The dietary section is profile-backed like emergency contact: collected
+-- once on an RSVP, then reused on every future one instead of being asked
+-- again.
+alter table public.profiles
+  add column if not exists dietary_notes text;

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/client";
@@ -14,8 +15,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  isSectionComplete,
+  sectionsForEvent,
+  type RegistrationSection,
+} from "@/lib/registration-sections";
 
 type EventSummary = {
   id: number;
@@ -31,6 +38,7 @@ type EventSummary = {
   description: string | null;
   capacity: number | null;
   spots_taken: number | null;
+  registration_sections: string[];
 };
 
 type ProfileSummary = {
@@ -38,8 +46,6 @@ type ProfileSummary = {
   last_name: string;
   email: string;
   phone: string;
-  emergency_contact: string;
-  emergency_phone: string;
 };
 
 type InitialRsvp = {
@@ -58,25 +64,31 @@ function extractErrorMessage(error: unknown): string {
 }
 
 export function RsvpForm({
+  userId,
   event,
   profile,
+  profileFields,
   initialRsvp,
 }: {
+  userId: string;
   event: EventSummary;
   profile: ProfileSummary;
+  /** Every registration field's current profile value, keyed by column. */
+  profileFields: Record<string, string>;
   initialRsvp: InitialRsvp;
 }) {
-  const [dietaryNotes, setDietaryNotes] = useState(
-    initialRsvp?.dietaryNotes ?? "",
-  );
-  const [status, setStatus] = useState<string | null>(
-    initialRsvp?.status ?? null,
-  );
+  const router = useRouter();
+  // Seeded from the profile so a partially-complete section (e.g. a name but
+  // no phone) doesn't make the user retype what's already on file.
+  const [fieldValues, setFieldValues] =
+    useState<Record<string, string>>(profileFields);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
 
+  const activeSections = sectionsForEvent(event.registration_sections);
+
+  const status = initialRsvp?.status ?? null;
   const hasActiveRsvp = Boolean(status) && status !== "cancelled";
   const spotsLeft =
     event.capacity != null && event.spots_taken != null
@@ -87,55 +99,77 @@ export function RsvpForm({
   const isFull = spotsLeft != null && spotsLeft <= 0 && !hasActiveRsvp;
   const profileIncomplete =
     !profile.first_name || !profile.last_name || !profile.email;
-  const emergencyContactMissing =
-    !profile.emergency_contact || !profile.emergency_phone;
+
+  const updateField = (key: string, value: string) =>
+    setFieldValues((prev) => ({ ...prev, [key]: value }));
+
+  const incompleteRequiredSection = activeSections.find((section) => {
+    if (isSectionComplete(section, fieldValues)) return false;
+    return section.fields.some(
+      (field) => field.required && !(fieldValues[field.key] ?? "").trim(),
+    );
+  });
+  const hasMissingRequired = Boolean(incompleteRequiredSection);
+
   const editProfileHref = `/protected/profile?return_to=${encodeURIComponent(
     `/protected/events/${event.id}/rsvp`,
   )}`;
 
-  // After the RPC runs, re-read the row rather than assume what it did —
-  // rsvp_to_event may confirm or waitlist, and cancel_rsvp may soft-cancel
-  // or delete, so this is the only reliable way to know the resulting state.
-  const refreshStatus = async (supabase: ReturnType<typeof createClient>) => {
-    const { data } = await supabase
-      .from("rsvps")
-      .select("status, dietary_notes")
-      .eq("event_id", event.id)
-      .maybeSingle();
-    return data;
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    setMessage(null);
-    if (emergencyContactMissing) {
+    if (incompleteRequiredSection) {
       // Belt-and-suspenders: the submit button is disabled for this case
       // too, but guard here in case the form is ever submitted some other
       // way (e.g. pressing Enter before React re-renders the disabled state).
-      setError("Add an emergency contact and phone number before RSVPing.");
+      setError(
+        `Add your ${incompleteRequiredSection.title.toLowerCase()} before RSVPing.`,
+      );
       return;
     }
     setIsSubmitting(true);
     const supabase = createClient();
 
     try {
+      // Save any newly-entered values to the profile so these sections are
+      // never asked again on a future RSVP. Sections already complete are
+      // left untouched.
+      const profileUpdates: Record<string, string> = {};
+      for (const section of activeSections) {
+        if (isSectionComplete(section, profileFields)) continue;
+        for (const field of section.fields) {
+          const value = (fieldValues[field.key] ?? "").trim();
+          if (value) profileUpdates[field.key] = value;
+        }
+      }
+      if (Object.keys(profileUpdates).length > 0) {
+        const { error: profileError } = await supabase
+          .from("profiles")
+          .update(profileUpdates)
+          .eq("id", userId);
+        if (profileError) throw profileError;
+      }
+
+      const effectiveValues = { ...fieldValues, ...profileUpdates };
+      const dietaryActive = activeSections.some((s) => s.id === "dietary");
+
       const { data, error } = await supabase.rpc("rsvp_to_event", {
         p_event_id: event.id,
-        p_dietary: dietaryNotes || null,
+        p_dietary: dietaryActive
+          ? effectiveValues.dietary_notes || null
+          : null,
       });
       if (error) throw error;
 
-      const refreshed = await refreshStatus(supabase);
-      setStatus(refreshed?.status ?? "confirmed");
-      if (refreshed?.dietary_notes != null) {
-        setDietaryNotes(refreshed.dietary_notes);
-      }
-      setMessage(typeof data === "string" && data ? data : "RSVP submitted.");
+      const rsvpStatus = typeof data === "string" && data ? data : "confirmed";
+      const params = new URLSearchParams({
+        rsvp: rsvpStatus === "waitlisted" ? "waitlisted" : "confirmed",
+        event: event.name,
+      });
+      router.push(`/protected/events?${params.toString()}`);
     } catch (err: unknown) {
       console.error("RSVP failed:", err);
       setError(extractErrorMessage(err));
-    } finally {
       setIsSubmitting(false);
     }
   };
@@ -143,7 +177,6 @@ export function RsvpForm({
   const handleCancel = async () => {
     setIsCancelling(true);
     setError(null);
-    setMessage(null);
     const supabase = createClient();
 
     try {
@@ -152,13 +185,14 @@ export function RsvpForm({
       });
       if (error) throw error;
 
-      const refreshed = await refreshStatus(supabase);
-      setStatus(refreshed?.status ?? null);
-      setMessage("Your RSVP has been cancelled.");
+      const params = new URLSearchParams({
+        rsvp: "cancelled",
+        event: event.name,
+      });
+      router.push(`/protected/events?${params.toString()}`);
     } catch (err: unknown) {
       console.error("Cancel RSVP failed:", err);
       setError(extractErrorMessage(err));
-    } finally {
       setIsCancelling(false);
     }
   };
@@ -217,28 +251,16 @@ export function RsvpForm({
                 RSVP, but consider completing it first.
               </p>
             )}
-            <div className="grid gap-1 rounded-md border p-3">
-              <span className="text-sm font-medium">Emergency contact</span>
-              {profile.emergency_contact || profile.emergency_phone ? (
-                <span className="text-sm text-muted-foreground">
-                  {profile.emergency_contact || "?"}
-                  {profile.emergency_phone
-                    ? ` · ${profile.emergency_phone}`
-                    : ""}
-                </span>
-              ) : (
-                <span className="text-sm text-amber-600">
-                  Required to RSVP — none on file yet.{" "}
-                  <Link
-                    href={editProfileHref}
-                    className="underline underline-offset-4"
-                  >
-                    Add one in your profile
-                  </Link>
-                  .
-                </span>
-              )}
-            </div>
+            {activeSections.map((section) => (
+              <RegistrationSectionField
+                key={section.id}
+                section={section}
+                profileFields={profileFields}
+                fieldValues={fieldValues}
+                onChange={updateField}
+                editProfileHref={editProfileHref}
+              />
+            ))}
             {status && (
               <p className="text-sm">
                 Current status: <span className="font-medium">{status}</span>
@@ -250,22 +272,12 @@ export function RsvpForm({
                 may be waitlisted.
               </p>
             )}
-            <div className="grid gap-2">
-              <Label htmlFor="dietary_notes">Dietary notes</Label>
-              <Textarea
-                id="dietary_notes"
-                placeholder="Allergies, preferences, etc. (optional)"
-                value={dietaryNotes}
-                onChange={(e) => setDietaryNotes(e.target.value)}
-              />
-            </div>
             {error && <p className="text-sm text-red-500">{error}</p>}
-            {message && <p className="text-sm text-green-600">{message}</p>}
           </CardContent>
           <CardFooter className="flex gap-2">
             <Button
               type="submit"
-              disabled={isSubmitting || emergencyContactMissing}
+              disabled={isSubmitting || hasMissingRequired}
             >
               {isSubmitting
                 ? "Submitting..."
@@ -286,6 +298,91 @@ export function RsvpForm({
           </CardFooter>
         </form>
       </Card>
+    </div>
+  );
+}
+
+function RegistrationSectionField({
+  section,
+  profileFields,
+  fieldValues,
+  onChange,
+  editProfileHref,
+}: {
+  section: RegistrationSection;
+  profileFields: Record<string, string>;
+  fieldValues: Record<string, string>;
+  onChange: (key: string, value: string) => void;
+  editProfileHref: string;
+}) {
+  // "On file" is based on the profile as loaded, not live edits — otherwise
+  // finishing the last field of a section would make it flip to the
+  // read-only summary mid-fill.
+  const complete = isSectionComplete(section, profileFields);
+  const hasRequiredField = section.fields.some((field) => field.required);
+
+  return (
+    <div className="grid gap-1 rounded-md border p-3">
+      <span className="text-sm font-medium">{section.title}</span>
+      {complete ? (
+        <span className="text-sm text-muted-foreground">
+          On file: {section.summary(profileFields)}.{" "}
+          <Link
+            href={editProfileHref}
+            className="underline underline-offset-4"
+          >
+            Edit on profile
+          </Link>
+        </span>
+      ) : (
+        <>
+          {hasRequiredField && (
+            <span className="text-sm text-amber-600 mb-1">
+              Required to RSVP — none on file yet.
+            </span>
+          )}
+          <div
+            className={
+              section.fields.length > 1
+                ? "grid grid-cols-2 gap-4"
+                : "grid gap-2"
+            }
+          >
+            {section.fields.map((field) => (
+              <div key={field.key} className="grid gap-2">
+                <Label htmlFor={field.key}>{field.label}</Label>
+                {field.type === "textarea" ? (
+                  <Textarea
+                    id={field.key}
+                    placeholder={field.placeholder}
+                    required={field.required}
+                    value={fieldValues[field.key] ?? ""}
+                    onChange={(e) => onChange(field.key, e.target.value)}
+                  />
+                ) : (
+                  <Input
+                    id={field.key}
+                    type={field.type === "tel" ? "tel" : "text"}
+                    inputMode={field.type === "tel" ? "numeric" : undefined}
+                    placeholder={field.placeholder}
+                    maxLength={field.type === "tel" ? 14 : undefined}
+                    required={field.required}
+                    value={fieldValues[field.key] ?? ""}
+                    onChange={(e) =>
+                      onChange(
+                        field.key,
+                        field.format
+                          ? field.format(e.target.value)
+                          : e.target.value,
+                      )
+                    }
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
