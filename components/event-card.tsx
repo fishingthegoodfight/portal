@@ -57,8 +57,11 @@ export function EventCard({
       ? { label: "Full", tone: "bg-muted text-muted-foreground" }
       : null;
 
+  // Shown whenever there's genuine capacity left — including when you're
+  // already "Going" (handy for nudging others). Hidden for waitlisted, since
+  // spots_taken >= capacity there would read "0 spots left".
   const spotsLeftLabel =
-    !hasActiveRsvp && !isFull && spotsLeft != null
+    !waitlisted && spotsLeft != null && spotsLeft > 0
       ? `${spotsLeft} spot${spotsLeft === 1 ? "" : "s"} left`
       : null;
 
@@ -78,19 +81,28 @@ export function EventCard({
             <CardDescription>
               {event.dateRange}
               {event.location ? ` · ${event.location}` : ""}
-              {event.chapter ? ` · ${event.chapter}` : ""}
             </CardDescription>
           </div>
-          {statusPill && (
-            <span
-              className={cn(
-                "shrink-0 rounded-full px-2 py-0.5 text-xs font-medium",
-                statusPill.tone,
-              )}
-            >
-              {statusPill.label}
-            </span>
-          )}
+          {/* Chapter lives here (not on the location line, where it's
+            * redundant after the address) so it stays visible when the
+            * address is elsewhere or missing. */}
+          <div className="flex shrink-0 flex-col items-end gap-1 text-right">
+            {statusPill && (
+              <span
+                className={cn(
+                  "rounded-full px-2 py-0.5 text-xs font-medium",
+                  statusPill.tone,
+                )}
+              >
+                {statusPill.label}
+              </span>
+            )}
+            {event.chapter && (
+              <span className="text-xs text-muted-foreground">
+                {event.chapter} chapter
+              </span>
+            )}
+          </div>
         </div>
       </CardHeader>
       {event.description && (

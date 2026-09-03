@@ -104,6 +104,21 @@ export const REGISTRATION_PROFILE_FIELD_KEYS = Array.from(
 );
 
 /**
+ * True once the member has entered *anything* for this section — even a
+ * partial answer. The profile page uses this to decide whether an optional
+ * section is worth surfacing as its own card at all; a never-answered section
+ * only appears once an RSVP that requires it collects it.
+ */
+export function isSectionAnswered(
+  section: RegistrationSection,
+  profileFields: Record<string, string>,
+): boolean {
+  return section.fields.some((field) =>
+    Boolean(profileFields[field.key]?.trim()),
+  );
+}
+
+/**
  * A section is complete once every field the catalog marks `required` has a
  * value on file. Optional fields never block completeness.
  */

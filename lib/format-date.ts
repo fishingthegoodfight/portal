@@ -47,12 +47,14 @@ export function formatEventDateRange(
   const { date, time, timeWithZone } = buildFormatters(timeZone);
   const start = new Date(startsAt);
   const startDate = date.format(start);
+  const end = endsAt ? new Date(endsAt) : null;
 
-  if (!endsAt) {
+  // No end time, or an end that's just a copy of the start (some events get
+  // saved that way) — show the start only, not "6:00 PM – 6:00 PM".
+  if (!end || end.getTime() === start.getTime()) {
     return `${startDate} · ${timeWithZone.format(start)}`;
   }
 
-  const end = new Date(endsAt);
   const sameDay = startDate === date.format(end);
 
   if (sameDay) {

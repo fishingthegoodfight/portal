@@ -1,14 +1,15 @@
 "use client";
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
+import { ChevronDown } from "lucide-react";
 
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -18,8 +19,13 @@ import { Select } from "@/components/ui/select";
 import { RegistrationFieldInput } from "@/components/registration-fields";
 import { CHAPTERS, NOT_LOCAL_CHAPTER } from "@/lib/chapters";
 import { formatPhoneNumber, formatPostalCode } from "@/lib/phone";
-import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
+import {
+  isSectionAnswered,
+  REGISTRATION_SECTIONS,
+  type RegistrationSection,
+} from "@/lib/registration-sections";
 import { US_STATES } from "@/lib/us-states";
+import { cn } from "@/lib/utils";
 
 type ProfileData = {
   first_name: string;
@@ -33,6 +39,11 @@ type ProfileData = {
   state: string;
   postal_code: string;
 };
+
+// Where the "Medical information" card links to. Deliberately not built yet —
+// medical data is handled on its own page, separate from the rest of the
+// profile. The card is just a signpost for now.
+const MEDICAL_INFO_HREF = "/protected/profile/medical";
 
 export function ProfileForm({
   userId,
@@ -78,6 +89,58 @@ export function ProfileForm({
       }
     };
   }, []);
+
+  // Always-open at the top; every other section is a collapsible card. Only
+  // sections the member has actually answered get a card — an untouched
+  // optional section stays hidden until an RSVP collects it. Frozen to the
+  // values as loaded so editing a field can't make its own card disappear
+  // mid-edit.
+  const alwaysOpenSections = REGISTRATION_SECTIONS.filter(
+    (section) => section.alwaysRequired,
+  );
+  const [collapsibleSections] = useState(() =>
+    REGISTRATION_SECTIONS.filter(
+      (section) =>
+        !section.alwaysRequired &&
+        isSectionAnswered(section, initialRegistrationFields),
+    ),
+  );
+
+  // Which collapsible cards are expanded. Seeded from the URL hash in an
+  // effect (not initial state) so SSR and hydration agree — see the
+  // hydration note on formatEventDateRange for the same reasoning.
+  const [openSectionIds, setOpenSectionIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  useEffect(() => {
+    const openFromHash = () => {
+      const id = window.location.hash.replace(/^#/, "");
+      if (!id) return;
+      setOpenSectionIds((prev) => {
+        if (prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.add(id);
+        return next;
+      });
+      // Scroll once the card has rendered in its open state — Next's own
+      // hash-scroll fires before React re-renders it taller.
+      requestAnimationFrame(() =>
+        document.getElementById(id)?.scrollIntoView({ block: "start" }),
+      );
+    };
+    openFromHash();
+    // Covers landing on a #hash link while already on this page.
+    window.addEventListener("hashchange", openFromHash);
+    return () => window.removeEventListener("hashchange", openFromHash);
+  }, []);
+
+  const toggleSection = (id: string) =>
+    setOpenSectionIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   const updateField = (field: keyof ProfileData) =>
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -181,11 +244,11 @@ export function ProfileForm({
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Contact details</CardTitle>
-      </CardHeader>
-      <form onSubmit={handleSubmit}>
+    <form onSubmit={handleSubmit} className="flex flex-col gap-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Contact details</CardTitle>
+        </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2">
@@ -293,36 +356,67 @@ export function ProfileForm({
               />
             </div>
           </div>
-          {REGISTRATION_SECTIONS.map((section) => (
-            <div key={section.id} className="grid gap-2">
-              <span className="text-sm font-medium">{section.title}</span>
-              <div
-                className={
-                  section.fields.length > 1
-                    ? "grid grid-cols-2 gap-4"
-                    : "grid gap-2"
-                }
-              >
-                {section.fields.map((field) => (
-                  <RegistrationFieldInput
-                    key={field.key}
-                    field={field}
-                    value={registrationFields[field.key] ?? ""}
-                    onChange={updateRegistrationField}
-                  />
-                ))}
-              </div>
-            </div>
-          ))}
-          {error && <p className="text-sm text-red-500">{error}</p>}
-          {success && (
-            <p className="text-sm text-green-600">
-              Profile saved.
-              {returnTo ? " Returning to your RSVP..." : ""}
-            </p>
-          )}
         </CardContent>
-        <CardFooter>
+      </Card>
+
+      {alwaysOpenSections.map((section) => (
+        <Card key={section.id} id={section.id}>
+          <CardHeader>
+            <CardTitle>{section.title}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <SectionFields
+              section={section}
+              values={registrationFields}
+              onChange={updateRegistrationField}
+            />
+          </CardContent>
+        </Card>
+      ))}
+
+      {collapsibleSections.map((section) => (
+        <CollapsibleSectionCard
+          key={section.id}
+          section={section}
+          open={openSectionIds.has(section.id)}
+          summary={section.summary(registrationFields)}
+          onToggle={() => toggleSection(section.id)}
+        >
+          <SectionFields
+            section={section}
+            values={registrationFields}
+            onChange={updateRegistrationField}
+          />
+        </CollapsibleSectionCard>
+      ))}
+
+      <Card id="medical">
+        <CardHeader>
+          <CardTitle>Medical information</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2">
+          <p className="text-sm text-muted-foreground">
+            Allergies, conditions, and medications are kept on a separate,
+            more private page.
+          </p>
+          <Link
+            href={MEDICAL_INFO_HREF}
+            className="text-sm underline underline-offset-4"
+          >
+            Manage medical information
+          </Link>
+        </CardContent>
+      </Card>
+
+      <div className="flex flex-col gap-3">
+        {error && <p className="text-sm text-red-500">{error}</p>}
+        {success && (
+          <p className="text-sm text-green-600">
+            Profile saved.
+            {returnTo ? " Returning to your RSVP..." : ""}
+          </p>
+        )}
+        <div>
           <Button type="submit" disabled={isSaving}>
             {isSaving
               ? "Saving..."
@@ -330,8 +424,84 @@ export function ProfileForm({
                 ? "Save & return to RSVP"
                 : "Save profile"}
           </Button>
-        </CardFooter>
-      </form>
+        </div>
+      </div>
+    </form>
+  );
+}
+
+/** A section's inputs, laid out generically from the catalog — shared by the
+ * always-open cards and the collapsible ones. */
+function SectionFields({
+  section,
+  values,
+  onChange,
+}: {
+  section: RegistrationSection;
+  values: Record<string, string>;
+  onChange: (key: string, value: string) => void;
+}) {
+  return (
+    <div
+      className={
+        section.fields.length > 1 ? "grid grid-cols-2 gap-4" : "grid gap-2"
+      }
+    >
+      {section.fields.map((field) => (
+        <RegistrationFieldInput
+          key={field.key}
+          field={field}
+          value={values[field.key] ?? ""}
+          onChange={onChange}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** A registration section as a collapsible card: title + one-line summary when
+ * closed, the edit form when open. The card carries `id={section.id}` so a
+ * `/protected/profile#<id>` deep link scrolls to (and, via the effect above,
+ * opens) it. */
+function CollapsibleSectionCard({
+  section,
+  open,
+  summary,
+  onToggle,
+  children,
+}: {
+  section: RegistrationSection;
+  open: boolean;
+  summary: string;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <Card id={section.id}>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex w-full items-start justify-between gap-4 p-6 text-left"
+      >
+        <span className="flex flex-col gap-1">
+          <span className="font-semibold leading-none tracking-tight">
+            {section.title}
+          </span>
+          {!open && (
+            <span className="text-sm text-muted-foreground">
+              {summary || "Not answered yet"}
+            </span>
+          )}
+        </span>
+        <ChevronDown
+          className={cn(
+            "mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+      {open && <CardContent>{children}</CardContent>}
     </Card>
   );
 }

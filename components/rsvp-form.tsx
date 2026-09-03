@@ -116,6 +116,10 @@ export function RsvpForm({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // A confirmed/waitlisted RSVP shows no submit button — this only fires if
+    // the form is submitted another way (e.g. Enter). Cancel is the only
+    // action available from that state.
+    if (hasActiveRsvp) return;
     setError(null);
     if (incompleteRequiredSection) {
       // Belt-and-suspenders: the submit button is disabled for this case
@@ -174,6 +178,10 @@ export function RsvpForm({
     } catch (err: unknown) {
       console.error("RSVP failed:", err);
       setError(extractErrorMessage(err));
+    } finally {
+      // Clear pending on every path, success included — otherwise a bfcache
+      // restore of this page (browser back after the redirect) shows a stuck,
+      // disabled "Submitting...".
       setIsSubmitting(false);
     }
   };
@@ -197,6 +205,7 @@ export function RsvpForm({
     } catch (err: unknown) {
       console.error("Cancel RSVP failed:", err);
       setError(extractErrorMessage(err));
+    } finally {
       setIsCancelling(false);
     }
   };
@@ -252,17 +261,7 @@ export function RsvpForm({
             {error && <p className="text-sm text-red-500">{error}</p>}
           </CardContent>
           <CardFooter className="flex gap-2">
-            <Button
-              type="submit"
-              disabled={isSubmitting || hasMissingRequired}
-            >
-              {isSubmitting
-                ? "Submitting..."
-                : hasActiveRsvp
-                  ? "Update RSVP"
-                  : "RSVP"}
-            </Button>
-            {hasActiveRsvp && (
+            {hasActiveRsvp ? (
               <Button
                 type="button"
                 variant="outline"
@@ -270,6 +269,13 @@ export function RsvpForm({
                 disabled={isCancelling}
               >
                 {isCancelling ? "Cancelling..." : "Cancel RSVP"}
+              </Button>
+            ) : (
+              <Button
+                type="submit"
+                disabled={isSubmitting || hasMissingRequired}
+              >
+                {isSubmitting ? "Submitting..." : "RSVP"}
               </Button>
             )}
           </CardFooter>
@@ -305,7 +311,9 @@ function RegistrationSectionField({
         <span className="text-sm text-muted-foreground">
           On file: {section.summary(profileFields)}.{" "}
           <Link
-            href={editProfileHref}
+            // Deep-link straight to this section's card on the profile page,
+            // which opens it (see profile-form.tsx).
+            href={`${editProfileHref}#${section.id}`}
             className="underline underline-offset-4"
           >
             Edit on profile
