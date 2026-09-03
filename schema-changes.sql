@@ -117,3 +117,87 @@ alter table public.events
 -- again.
 alter table public.profiles
   add column if not exists dietary_notes text;
+
+-- =============================================================================
+-- 2026-09-03 — cancel_rsvp: delete the row instead of soft-cancelling
+-- =============================================================================
+-- Reported bug: after cancelling, submitting a new RSVP for the same event
+-- left the "Submitting..." button stuck. Root cause: cancel_rsvp only ever
+-- soft-cancelled (status = 'cancelled', row kept), which left a row sitting
+-- on the (event_id, user_id) unique slot forever and never gave back the
+-- capacity it held. That should have been harmless — rsvp_to_event's upsert
+-- (below, re-created unchanged from the 2026-08-18 fix) is written to update
+-- that row back to confirmed/waitlisted rather than conflict on it — but it
+-- also meant a cancelled-then-never-reclaimed spot stayed counted against
+-- capacity forever. Deleting on cancel fixes both: a fresh RSVP is a plain
+-- insert with nothing to conflict against, and a freed confirmed spot goes
+-- back into circulation immediately for the next signup or waitlist promotion.
+--
+-- rsvp_to_event is included here too (create-or-replace, safe to re-run) just
+-- to guarantee the 2026-08-18 upsert fix is actually live — its ON CONFLICT
+-- branch now mainly serves as a safety net for two concurrent RSVP submits,
+-- since cancel_rsvp no longer leaves a row behind for a resubmit to find.
+create or replace function public.cancel_rsvp(p_event_id bigint)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_status text;
+begin
+  delete from public.rsvps
+   where event_id = p_event_id and user_id = auth.uid()
+  returning status into v_status;
+
+  if v_status = 'confirmed' then
+    update public.events
+       set spots_taken = greatest(spots_taken - 1, 0), updated_at = now()
+     where id = p_event_id;
+  end if;
+end $function$;
+
+create or replace function public.rsvp_to_event(p_event_id bigint, p_dietary text default null::text)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_status text;
+  v_existing_status text;
+begin
+  select status into v_existing_status
+    from public.rsvps
+   where event_id = p_event_id and user_id = auth.uid();
+
+  if v_existing_status in ('confirmed', 'waitlisted') then
+    -- Already holding a spot (or a place in line) — just update the
+    -- dietary notes, don't touch capacity.
+    update public.rsvps
+       set dietary_notes = p_dietary, updated_at = now()
+     where event_id = p_event_id and user_id = auth.uid();
+    return v_existing_status;
+  end if;
+
+  -- No active RSVP yet (first-time signup, or re-signing up after a
+  -- cancel, which now deletes rather than leaves a row): attempt the
+  -- capacity-checked update; the row lock it takes is what makes
+  -- simultaneous signups safe.
+  update public.events
+     set spots_taken = spots_taken + 1, updated_at = now()
+   where id = p_event_id
+     and is_published
+     and spots_taken < capacity;
+
+  v_status := case when found then 'confirmed' else 'waitlisted' end;
+
+  insert into public.rsvps (event_id, user_id, status, dietary_notes)
+  values (p_event_id, auth.uid(), v_status, p_dietary)
+  on conflict (event_id, user_id)
+  do update set status = excluded.status,
+                dietary_notes = excluded.dietary_notes,
+                updated_at = now();
+
+  return v_status;
+end $function$;

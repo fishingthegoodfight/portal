@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/supabase/server";
 import { ProfileForm } from "@/components/profile-form";
 import { formatPhoneNumber } from "@/lib/phone";
+import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 
 // Only ever redirect back into our own /protected pages — a bare "starts
 // with /protected/" check keeps this from being turned into an open redirect
@@ -31,13 +32,25 @@ async function ProfileFormLoader({
   const userId = data.claims.sub as string;
   const userEmail = data.claims.email as string;
 
+  // select("*") rather than an explicit column list so a new registration
+  // section's profile column (see lib/registration-sections.ts) is picked up
+  // here automatically, same as the RSVP page loader does.
   const { data: profile } = await supabase
     .from("profiles")
-    .select(
-      "id, first_name, last_name, email, phone, chapter, emergency_contact, emergency_phone, address_line1, address_line2, city, state, postal_code",
-    )
+    .select("*")
     .eq("id", userId)
     .maybeSingle();
+
+  // Every registration field's current value, keyed by its profile column —
+  // formatted (e.g. the phone mask) in case a stored value predates that
+  // formatting, same as the RSVP page does for its own initial values.
+  const registrationFields: Record<string, string> = {};
+  for (const section of REGISTRATION_SECTIONS) {
+    for (const field of section.fields) {
+      const raw = (profile?.[field.key] as string | null) ?? "";
+      registrationFields[field.key] = field.format ? field.format(raw) : raw;
+    }
+  }
 
   return (
     <ProfileForm
@@ -52,14 +65,13 @@ async function ProfileFormLoader({
         // display is always standardized, not just newly-typed input.
         phone: formatPhoneNumber(profile?.phone ?? ""),
         chapter: profile?.chapter ?? "",
-        emergency_contact: profile?.emergency_contact ?? "",
-        emergency_phone: formatPhoneNumber(profile?.emergency_phone ?? ""),
         address_line1: profile?.address_line1 ?? "",
         address_line2: profile?.address_line2 ?? "",
         city: profile?.city ?? "",
         state: profile?.state ?? "",
         postal_code: profile?.postal_code ?? "",
       }}
+      initialRegistrationFields={registrationFields}
     />
   );
 }

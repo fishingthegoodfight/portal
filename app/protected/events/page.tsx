@@ -5,14 +5,7 @@ import { CheckCircle2, XCircle } from "lucide-react";
 
 import { createClient } from "@/lib/supabase/server";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { EventCard } from "@/components/event-card";
 import { formatEventDateRange } from "@/lib/format-date";
 import {
   CHAPTER_FILTERS,
@@ -163,66 +156,27 @@ async function EventsListLoader({
               ? event.capacity - event.spots_taken
               : null;
           const isFull = spotsLeft != null && spotsLeft <= 0 && !hasActiveRsvp;
-          const waitlisted = rsvpStatus === "waitlisted";
-
-          const statusPill = hasActiveRsvp
-            ? waitlisted
-              ? { label: "Waitlisted", tone: "bg-amber-500/15 text-amber-700 dark:text-amber-400" }
-              : { label: "Going", tone: "bg-green-600/15 text-green-700 dark:text-green-500" }
-            : isFull
-              ? { label: "Full", tone: "bg-muted text-muted-foreground" }
-              : null;
 
           return (
-            <Card
+            <EventCard
               key={event.id}
-              className={cn(
-                hasActiveRsvp &&
-                  (waitlisted
-                    ? "border-l-4 border-l-amber-500"
-                    : "border-l-4 border-l-green-600"),
-              )}
-            >
-              <CardHeader>
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <CardTitle>{event.name}</CardTitle>
-                    <CardDescription>
-                      {formatEventDateRange(
-                        event.starts_at,
-                        event.ends_at,
-                        event.timezone,
-                      )}
-                      {event.location ? ` · ${event.location}` : ""}
-                      {event.chapter ? ` · ${event.chapter}` : ""}
-                    </CardDescription>
-                  </div>
-                  {statusPill && (
-                    <span
-                      className={cn(
-                        "shrink-0 rounded-full px-2 py-0.5 text-xs font-medium",
-                        statusPill.tone,
-                      )}
-                    >
-                      {statusPill.label}
-                    </span>
-                  )}
-                </div>
-              </CardHeader>
-              {event.description && (
-                <CardContent>
-                  <p className="text-sm text-muted-foreground">
-                    {event.description}
-                  </p>
-                </CardContent>
-              )}
-              <CardFooter className="flex items-center justify-between">
-                <span className="text-sm text-muted-foreground">
-                  {!hasActiveRsvp && !isFull && spotsLeft != null
-                    ? `${spotsLeft} spot${spotsLeft === 1 ? "" : "s"} left`
-                    : null}
-                </span>
-                {hasActiveRsvp ? (
+              event={{
+                id: event.id,
+                name: event.name,
+                chapter: event.chapter,
+                location: event.location,
+                description: event.description,
+                dateRange: formatEventDateRange(
+                  event.starts_at,
+                  event.ends_at,
+                  event.timezone,
+                ),
+                capacity: event.capacity,
+                spots_taken: event.spots_taken,
+              }}
+              rsvpStatus={rsvpStatus}
+              action={
+                hasActiveRsvp ? (
                   <Button asChild variant="outline">
                     <Link href={`/protected/events/${event.id}/rsvp`}>
                       View / Change RSVP
@@ -238,9 +192,9 @@ async function EventsListLoader({
                       RSVP
                     </Link>
                   </Button>
-                )}
-              </CardFooter>
-            </Card>
+                )
+              }
+            />
           );
         })
       )}

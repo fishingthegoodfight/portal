@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/client";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -15,14 +14,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import { EventCard } from "@/components/event-card";
+import { RegistrationFieldInput } from "@/components/registration-fields";
 import {
   DIETARY_NONE,
   isSectionComplete,
   sectionsForEvent,
-  type RegistrationField,
   type RegistrationSection,
 } from "@/lib/registration-sections";
 
@@ -206,34 +203,7 @@ export function RsvpForm({
 
   return (
     <div className="flex flex-col gap-8">
-      <Card>
-        <CardHeader>
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <CardTitle>{event.name}</CardTitle>
-              <CardDescription>
-                {event.dateRange}
-                {event.location ? ` · ${event.location}` : ""}
-              </CardDescription>
-            </div>
-            <div className="flex flex-col items-end gap-1 shrink-0">
-              {event.chapter && (
-                <Badge variant="secondary">{event.chapter}</Badge>
-              )}
-              {event.event_type && (
-                <Badge variant="outline">{event.event_type}</Badge>
-              )}
-            </div>
-          </div>
-        </CardHeader>
-        {event.description && (
-          <CardContent>
-            <p className="text-sm text-muted-foreground">
-              {event.description}
-            </p>
-          </CardContent>
-        )}
-      </Card>
+      <EventCard event={event} rsvpStatus={status} />
 
       <Card>
         <CardHeader>
@@ -355,115 +325,16 @@ function RegistrationSectionField({
                 : "grid gap-2"
             }
           >
-            {section.fields.map((field) =>
-              field.type === "yesno" ? (
-                <YesNoNotesField
-                  key={field.key}
-                  field={field}
-                  value={fieldValues[field.key] ?? ""}
-                  onChange={onChange}
-                />
-              ) : (
-                <div key={field.key} className="grid gap-2">
-                  <Label htmlFor={field.key}>{field.label}</Label>
-                  {field.type === "textarea" ? (
-                    <Textarea
-                      id={field.key}
-                      placeholder={field.placeholder}
-                      required={field.required}
-                      value={fieldValues[field.key] ?? ""}
-                      onChange={(e) => onChange(field.key, e.target.value)}
-                    />
-                  ) : (
-                    <Input
-                      id={field.key}
-                      type={field.type === "tel" ? "tel" : "text"}
-                      inputMode={field.type === "tel" ? "numeric" : undefined}
-                      placeholder={field.placeholder}
-                      maxLength={field.type === "tel" ? 14 : undefined}
-                      required={field.required}
-                      value={fieldValues[field.key] ?? ""}
-                      onChange={(e) =>
-                        onChange(
-                          field.key,
-                          field.format
-                            ? field.format(e.target.value)
-                            : e.target.value,
-                        )
-                      }
-                    />
-                  )}
-                </div>
-              ),
-            )}
+            {section.fields.map((field) => (
+              <RegistrationFieldInput
+                key={field.key}
+                field={field}
+                value={fieldValues[field.key] ?? ""}
+                onChange={onChange}
+              />
+            ))}
           </div>
         </>
-      )}
-    </div>
-  );
-}
-
-/**
- * A "Yes / No" radio backed by a single free-text column: "No" stores the
- * DIETARY_NONE sentinel, "Yes" reveals a required notes box whose text is the
- * stored value. An empty stored value means "not answered yet", so the RSVP
- * submit gate (which requires this field) stays blocked until a choice is made
- * — and until notes are entered when the choice is "Yes".
- */
-function YesNoNotesField({
-  field,
-  value,
-  onChange,
-}: {
-  field: RegistrationField;
-  value: string;
-  onChange: (key: string, value: string) => void;
-}) {
-  const trimmed = value.trim();
-  const [choice, setChoice] = useState<"yes" | "no" | "">(
-    trimmed === "" ? "" : trimmed === DIETARY_NONE ? "no" : "yes",
-  );
-
-  const pick = (next: "yes" | "no") => {
-    setChoice(next);
-    // "Yes" clears the column back to empty so the notes box starts blank and
-    // the submit gate holds until something is typed.
-    onChange(field.key, next === "no" ? DIETARY_NONE : "");
-  };
-
-  return (
-    <div className="grid gap-2">
-      <div className="flex gap-6 text-sm">
-        <label className="flex items-center gap-2">
-          <input
-            type="radio"
-            name={field.key}
-            checked={choice === "yes"}
-            onChange={() => pick("yes")}
-          />
-          Yes
-        </label>
-        <label className="flex items-center gap-2">
-          <input
-            type="radio"
-            name={field.key}
-            checked={choice === "no"}
-            onChange={() => pick("no")}
-          />
-          No
-        </label>
-      </div>
-      {choice === "yes" && (
-        <div className="grid gap-2">
-          <Label htmlFor={field.key}>{field.label}</Label>
-          <Textarea
-            id={field.key}
-            placeholder={field.placeholder}
-            required
-            value={value === DIETARY_NONE ? "" : value}
-            onChange={(e) => onChange(field.key, e.target.value)}
-          />
-        </div>
       )}
     </div>
   );

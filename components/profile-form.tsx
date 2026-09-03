@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/client";
@@ -15,8 +15,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
+import { RegistrationFieldInput } from "@/components/registration-fields";
 import { CHAPTERS, NOT_LOCAL_CHAPTER } from "@/lib/chapters";
 import { formatPhoneNumber, formatPostalCode } from "@/lib/phone";
+import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 import { US_STATES } from "@/lib/us-states";
 
 type ProfileData = {
@@ -25,8 +27,6 @@ type ProfileData = {
   email: string;
   phone: string;
   chapter: string;
-  emergency_contact: string;
-  emergency_phone: string;
   address_line1: string;
   address_line2: string;
   city: string;
@@ -37,17 +37,47 @@ type ProfileData = {
 export function ProfileForm({
   userId,
   initialProfile,
+  initialRegistrationFields,
   returnTo,
 }: {
   userId: string;
   initialProfile: ProfileData;
+  /** Every registration section field's current value, keyed by its profile
+   * column (see lib/registration-sections.ts). Rendered generically below so
+   * a future section needs no changes here. */
+  initialRegistrationFields: Record<string, string>;
   returnTo?: string | null;
 }) {
   const router = useRouter();
   const [profile, setProfile] = useState<ProfileData>(initialProfile);
+  const [registrationFields, setRegistrationFields] = useState<
+    Record<string, string>
+  >(initialRegistrationFields);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  // Next.js (Cache Components) preserves this page's React state via
+  // Activity instead of unmounting it on navigation, so revisiting this page
+  // (e.g. clicking "Edit on profile" again) can show the *previous* visit's
+  // leftover "Profile saved" state before this visit has done anything. Only
+  // reset it — never mid-edit — after a save actually completes and the user
+  // navigates away, so an in-progress draft is never wiped.
+  const shouldResetOnHideRef = useRef(false);
+  const redirectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+  useLayoutEffect(() => {
+    return () => {
+      if (redirectTimeoutRef.current) {
+        clearTimeout(redirectTimeoutRef.current);
+        redirectTimeoutRef.current = null;
+      }
+      if (shouldResetOnHideRef.current) {
+        shouldResetOnHideRef.current = false;
+        setSuccess(false);
+      }
+    };
+  }, []);
 
   const updateField = (field: keyof ProfileData) =>
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -55,14 +85,18 @@ export function ProfileForm({
       setSuccess(false);
     };
 
-  const updatePhoneField = (field: "phone" | "emergency_phone") =>
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      setProfile((prev) => ({
-        ...prev,
-        [field]: formatPhoneNumber(e.target.value),
-      }));
-      setSuccess(false);
-    };
+  const updatePhoneField = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setProfile((prev) => ({
+      ...prev,
+      phone: formatPhoneNumber(e.target.value),
+    }));
+    setSuccess(false);
+  };
+
+  const updateRegistrationField = (key: string, value: string) => {
+    setRegistrationFields((prev) => ({ ...prev, [key]: value }));
+    setSuccess(false);
+  };
 
   const updateChapter = (e: React.ChangeEvent<HTMLSelectElement>) => {
     setProfile((prev) => ({ ...prev, chapter: e.target.value }));
@@ -108,7 +142,7 @@ export function ProfileForm({
       // (e.g. the trigger hasn't run yet) instead of silently no-op'ing.
       const { data: updated, error } = await supabase
         .from("profiles")
-        .update(profile)
+        .update({ ...profile, ...registrationFields })
         .eq("id", userId)
         .select()
         .maybeSingle();
@@ -119,10 +153,14 @@ export function ProfileForm({
         );
       }
       setSuccess(true);
+      shouldResetOnHideRef.current = true;
       if (returnTo) {
         // Give the "Profile saved" message a beat on screen before leaving,
         // so the save doesn't look like it silently no-op'd.
-        setTimeout(() => router.push(returnTo), 900);
+        redirectTimeoutRef.current = setTimeout(
+          () => router.push(returnTo),
+          900,
+        );
       }
     } catch (error: unknown) {
       // Log the full error (message alone often hides the useful `hint`/`code`
@@ -188,7 +226,7 @@ export function ProfileForm({
               placeholder="(303) 555-0100"
               maxLength={14}
               value={profile.phone}
-              onChange={updatePhoneField("phone")}
+              onChange={updatePhoneField}
             />
           </div>
           <div className="grid gap-2">
@@ -255,28 +293,27 @@ export function ProfileForm({
               />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="emergency_contact">Emergency contact</Label>
-              <Input
-                id="emergency_contact"
-                value={profile.emergency_contact}
-                onChange={updateField("emergency_contact")}
-              />
+          {REGISTRATION_SECTIONS.map((section) => (
+            <div key={section.id} className="grid gap-2">
+              <span className="text-sm font-medium">{section.title}</span>
+              <div
+                className={
+                  section.fields.length > 1
+                    ? "grid grid-cols-2 gap-4"
+                    : "grid gap-2"
+                }
+              >
+                {section.fields.map((field) => (
+                  <RegistrationFieldInput
+                    key={field.key}
+                    field={field}
+                    value={registrationFields[field.key] ?? ""}
+                    onChange={updateRegistrationField}
+                  />
+                ))}
+              </div>
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="emergency_phone">Emergency phone</Label>
-              <Input
-                id="emergency_phone"
-                type="tel"
-                inputMode="numeric"
-                placeholder="(303) 555-0100"
-                maxLength={14}
-                value={profile.emergency_phone}
-                onChange={updatePhoneField("emergency_phone")}
-              />
-            </div>
-          </div>
+          ))}
           {error && <p className="text-sm text-red-500">{error}</p>}
           {success && (
             <p className="text-sm text-green-600">
