@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { Button } from "@/components/ui/button";
 import { LogoutButton } from "@/components/logout-button";
 import { EnvVarWarning } from "@/components/env-var-warning";
+import { NavLink } from "@/components/nav-link";
 import { hasEnvVars } from "@/lib/utils";
 
 function HeaderWordmark() {
@@ -59,19 +60,13 @@ async function HeaderContent() {
 
   return (
     <>
-      <div className="flex gap-5 items-center font-semibold">
-        <Link href="/">Fishing the Good Fight</Link>
-        <Link href="/protected/events" className="font-normal">
-          Events
+      <div className="flex gap-5 items-center">
+        <Link href="/" className="font-semibold">
+          Fishing the Good Fight
         </Link>
-        <Link href="/protected/profile" className="font-normal">
-          Profile
-        </Link>
-        {profile?.is_admin && (
-          <Link href="/protected/admin" className="font-normal">
-            Admin
-          </Link>
-        )}
+        <NavLink href="/protected/events">Events</NavLink>
+        <NavLink href="/protected/profile">Profile</NavLink>
+        {profile?.is_admin && <NavLink href="/protected/admin">Admin</NavLink>}
       </div>
       <div className="flex items-center gap-4">
         Hey, {claims.email as string}!
