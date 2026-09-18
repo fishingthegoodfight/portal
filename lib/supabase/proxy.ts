@@ -47,6 +47,15 @@ export async function updateSession(request: NextRequest) {
   const { data } = await supabase.auth.getClaims();
   const user = data?.claims;
 
+  // A signed-in visitor hitting the marketing landing page belongs on the
+  // events list instead — redirect here (before any rendering) rather than
+  // in the page itself, so there's no logged-in flash of the hero.
+  if (user && request.nextUrl.pathname === "/") {
+    const url = request.nextUrl.clone();
+    url.pathname = "/protected/events";
+    return NextResponse.redirect(url);
+  }
+
   if (
     request.nextUrl.pathname !== "/" &&
     !user &&

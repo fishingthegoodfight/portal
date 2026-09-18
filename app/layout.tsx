@@ -3,14 +3,14 @@ import { Geist } from "next/font/google";
 import { ThemeProvider } from "next-themes";
 import "./globals.css";
 
-const defaultUrl = process.env.VERCEL_URL
-  ? `https://${process.env.VERCEL_URL}`
-  : "http://localhost:3000";
+import { SiteHeader } from "@/components/site-header";
+import { getSiteUrl } from "@/lib/site-url";
 
 export const metadata: Metadata = {
-  metadataBase: new URL(defaultUrl),
-  title: "Next.js and Supabase Starter Kit",
-  description: "The fastest way to build apps with Next.js and Supabase",
+  metadataBase: new URL(getSiteUrl()),
+  title: "Fishing the Good Fight",
+  description:
+    "Fishing the Good Fight participant portal — RSVP to chapter events and manage your information.",
 };
 
 const geistSans = Geist({
@@ -33,6 +33,7 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
+          <SiteHeader />
           {children}
         </ThemeProvider>
       </body>
