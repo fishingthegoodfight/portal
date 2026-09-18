@@ -83,9 +83,10 @@ async function EventsListLoader({
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("chapter")
+    .select("chapter, is_admin")
     .eq("id", userId)
     .maybeSingle();
+  const isAdmin = profile?.is_admin ?? false;
 
   // An explicit `?chapter=` wins; otherwise fall back to the member's own
   // chapter (or "All" if they have none).
@@ -176,23 +177,32 @@ async function EventsListLoader({
               }}
               rsvpStatus={rsvpStatus}
               action={
-                hasActiveRsvp ? (
-                  <Button asChild variant="outline">
-                    <Link href={`/protected/events/${event.id}/rsvp`}>
-                      View / Change RSVP
-                    </Link>
-                  </Button>
-                ) : isFull ? (
-                  <Button disabled variant="secondary">
-                    Full
-                  </Button>
-                ) : (
-                  <Button asChild>
-                    <Link href={`/protected/events/${event.id}/rsvp`}>
-                      RSVP
-                    </Link>
-                  </Button>
-                )
+                <div className="flex gap-2">
+                  {isAdmin && (
+                    <Button asChild variant="outline">
+                      <Link href={`/protected/admin/events/${event.id}`}>
+                        Manage
+                      </Link>
+                    </Button>
+                  )}
+                  {hasActiveRsvp ? (
+                    <Button asChild variant="outline">
+                      <Link href={`/protected/events/${event.id}/rsvp`}>
+                        View / Change RSVP
+                      </Link>
+                    </Button>
+                  ) : isFull ? (
+                    <Button disabled variant="secondary">
+                      Full
+                    </Button>
+                  ) : (
+                    <Button asChild>
+                      <Link href={`/protected/events/${event.id}/rsvp`}>
+                        RSVP
+                      </Link>
+                    </Button>
+                  )}
+                </div>
               }
             />
           );

@@ -213,3 +213,166 @@ alter table public.events
   add column if not exists lead_name text,
   add column if not exists lead_phone text,
   add column if not exists custom_email_note text;
+
+-- =============================================================================
+-- 2026-09-18 — Admin event page: is_admin, check-in, walk-up capacity helper
+-- =============================================================================
+-- Backs the new /protected/admin/events/[id] roster/check-in page.
+alter table public.profiles
+  add column if not exists is_admin boolean not null default false;
+
+alter table public.rsvps
+  add column if not exists checked_in_at timestamptz;
+
+-- SECURITY DEFINER so the RLS policies below can call it from a `profiles`
+-- policy without recursing into `profiles` under RLS — it reads the row
+-- directly, the same way rsvp_to_event/cancel_rsvp already bypass RLS to
+-- update `events`.
+create or replace function public.is_admin(p_user_id uuid default auth.uid())
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce(
+    (select is_admin from public.profiles where id = p_user_id),
+    false
+  );
+$function$;
+
+-- Extracted out of rsvp_to_event so the admin walk-up flow (below) claims
+-- capacity through the exact same atomic check-and-increment instead of a
+-- second copy of this logic that could drift out of sync.
+create or replace function public.try_claim_event_spot(p_event_id bigint)
+returns boolean
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  update public.events
+     set spots_taken = spots_taken + 1, updated_at = now()
+   where id = p_event_id
+     and is_published
+     and spots_taken < capacity;
+  return found;
+end $function$;
+
+-- Same behavior as before, now calling try_claim_event_spot instead of
+-- inlining its own copy of the UPDATE ... WHERE spots_taken < capacity check.
+create or replace function public.rsvp_to_event(p_event_id bigint, p_dietary text default null::text)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_status text;
+  v_existing_status text;
+begin
+  select status into v_existing_status
+    from public.rsvps
+   where event_id = p_event_id and user_id = auth.uid();
+
+  if v_existing_status in ('confirmed', 'waitlisted') then
+    update public.rsvps
+       set dietary_notes = p_dietary, updated_at = now()
+     where event_id = p_event_id and user_id = auth.uid();
+    return v_existing_status;
+  end if;
+
+  v_status := case when public.try_claim_event_spot(p_event_id) then 'confirmed' else 'waitlisted' end;
+
+  insert into public.rsvps (event_id, user_id, status, dietary_notes)
+  values (p_event_id, auth.uid(), v_status, p_dietary)
+  on conflict (event_id, user_id)
+  do update set status = excluded.status,
+                dietary_notes = excluded.dietary_notes,
+                updated_at = now();
+
+  return v_status;
+end $function$;
+
+-- Called by the "Add walk-up" server action (lib/actions/admin-walkup.ts)
+-- after it has already resolved p_profile_id to an existing or
+-- freshly-created profile — profile creation needs the Supabase Admin API
+-- (to create the backing auth user), which plain SQL/RLS can't do, so that
+-- step happens in JS before this function runs.
+--
+-- p_force lets an admin confirm past capacity: called with p_force false
+-- against a full event, this returns 'capacity_exceeded' and changes
+-- nothing, so the UI can ask "add anyway?" before a second call with
+-- p_force true forces spots_taken over capacity and confirms them.
+create or replace function public.admin_upsert_walkup_rsvp(
+  p_event_id bigint,
+  p_profile_id uuid,
+  p_force boolean default false
+)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_existing_status text;
+  v_claimed boolean;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can add walk-up RSVPs';
+  end if;
+
+  select status into v_existing_status
+    from public.rsvps
+   where event_id = p_event_id and user_id = p_profile_id;
+
+  if v_existing_status in ('confirmed', 'waitlisted') then
+    -- Already RSVP'd (e.g. pre-registered, or a retry after a capacity
+    -- confirmation) — just check them in, don't touch capacity again.
+    update public.rsvps
+       set status = 'confirmed', checked_in_at = now(), updated_at = now()
+     where event_id = p_event_id and user_id = p_profile_id;
+    return 'confirmed';
+  end if;
+
+  v_claimed := public.try_claim_event_spot(p_event_id);
+
+  if not v_claimed and not p_force then
+    return 'capacity_exceeded';
+  end if;
+
+  if not v_claimed and p_force then
+    update public.events
+       set spots_taken = spots_taken + 1, updated_at = now()
+     where id = p_event_id;
+  end if;
+
+  insert into public.rsvps (event_id, user_id, status, checked_in_at)
+  values (p_event_id, p_profile_id, 'confirmed', now())
+  on conflict (event_id, user_id)
+  do update set status = excluded.status,
+                checked_in_at = excluded.checked_in_at,
+                updated_at = now();
+
+  return 'confirmed';
+end $function$;
+
+-- Admin read access for the roster page: everyone's rsvps and profiles for
+-- any event, not just the caller's own row. Additive (permissive) policies —
+-- Postgres ORs multiple permissive policies together, so these don't replace
+-- each table's existing "read your own row" policy, just add a second way to
+-- satisfy SELECT.
+create policy admin_select_all_profiles on public.profiles
+  for select
+  using (public.is_admin());
+
+create policy admin_select_all_rsvps on public.rsvps
+  for select
+  using (public.is_admin());
+
+-- Lets the check-in toggle update checked_in_at directly from the browser
+-- client (RLS-protected), without a server round trip, so it feels instant.
+create policy admin_update_rsvps on public.rsvps
+  for update
+  using (public.is_admin())
+  with check (public.is_admin());
