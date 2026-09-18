@@ -101,6 +101,7 @@ async function EventsListLoader({
       "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken",
     )
     .eq("is_published", true)
+    .eq("status", "scheduled")
     .gte("starts_at", new Date().toISOString())
     .order("starts_at", { ascending: true });
 

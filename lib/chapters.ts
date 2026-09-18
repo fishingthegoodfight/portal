@@ -18,6 +18,30 @@ export const CHAPTERS: Chapter[] = [
 // Stored in profiles.chapter for members not local to any chapter above.
 export const NOT_LOCAL_CHAPTER = "Not local to a chapter";
 
+/**
+ * Distinct timezones any chapter runs events in, as select options for the
+ * admin event editor — so an admin picks a zone by name, never a raw UTC
+ * offset. Labeled with the chapters that use it, e.g. "Denver (Denver, CO
+ * Springs)".
+ */
+export const TIMEZONE_OPTIONS: { value: string; label: string }[] = Array.from(
+  new Set(CHAPTERS.map((c) => c.timezone)),
+).map((timezone) => ({
+  value: timezone,
+  label: `${timezone.replace("America/", "").replace(/_/g, " ")} (${CHAPTERS.filter(
+    (c) => c.timezone === timezone,
+  )
+    .map((c) => c.name)
+    .join(", ")})`,
+}));
+
+/** The default timezone for a given chapter name — used to seed a new
+ * event's timezone field, or as a fallback if an event's own timezone is
+ * somehow unset. */
+export function timezoneForChapter(chapter: string | null | undefined): string {
+  return CHAPTERS.find((c) => c.name === chapter)?.timezone ?? TIMEZONE_OPTIONS[0]?.value ?? "America/Denver";
+}
+
 // =============================================================================
 // Regions — groupings of chapters
 // =============================================================================

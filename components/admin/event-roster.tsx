@@ -6,6 +6,8 @@ import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/client";
 import { addWalkupRsvpAction } from "@/lib/actions/admin-walkup";
+import { CancelEventDialog } from "@/components/admin/cancel-event-dialog";
+import { RestoreEventDialog } from "@/components/admin/restore-event-dialog";
 import { EventCard, type EventCardEvent } from "@/components/event-card";
 import { Button } from "@/components/ui/button";
 import {
@@ -42,13 +44,18 @@ const EMPTY_WALKUP_FORM: WalkupFormState = {
 export function EventRoster({
   eventId,
   eventCard,
+  status,
+  cancellationReason,
   initialRoster,
 }: {
   eventId: number;
   eventCard: EventCardEvent;
+  status: string;
+  cancellationReason: string | null;
   initialRoster: RosterPerson[];
 }) {
   const router = useRouter();
+  const isCancelled = status === "cancelled";
 
   // Re-synced from the server whenever a fresh load comes in (router.refresh()
   // after adding a walk-up) — initialRoster is a new array each time the
@@ -160,6 +167,13 @@ export function EventRoster({
     <div className="flex flex-col gap-6">
       <EventCard event={eventCard} rsvpStatus={null} />
 
+      {isCancelled && (
+        <div className="rounded-md border border-red-500/50 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-400">
+          <p className="font-semibold">This event is cancelled.</p>
+          {cancellationReason && <p className="mt-1">Reason: {cancellationReason}</p>}
+        </div>
+      )}
+
       <div className="grid grid-cols-3 gap-3">
         <StatTile label="Capacity" value={eventCard.capacity ?? "—"} />
         <StatTile label="Confirmed" value={confirmedCount} />
@@ -173,13 +187,30 @@ export function EventRoster({
           onChange={(e) => setSearch(e.target.value)}
           className="sm:max-w-xs"
         />
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <Button asChild variant="outline">
+            <Link href={`/protected/admin/events/${eventId}/edit`}>Edit event</Link>
+          </Button>
           <Button asChild variant="outline">
             <Link href={`/protected/admin/events/${eventId}/print`} target="_blank">
               Print roster
             </Link>
           </Button>
-          <Button onClick={openWalkupForm}>Add walk-up</Button>
+          {!isCancelled && <Button onClick={openWalkupForm}>Add walk-up</Button>}
+          {isCancelled ? (
+            <RestoreEventDialog
+              eventId={eventId}
+              eventName={eventCard.name}
+              confirmedCount={confirmedCount}
+              onRestored={() => router.refresh()}
+            />
+          ) : (
+            <CancelEventDialog
+              eventId={eventId}
+              eventName={eventCard.name}
+              onCancelled={() => router.refresh()}
+            />
+          )}
         </div>
       </div>
 

@@ -2,28 +2,12 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { requireAdmin } from "@/lib/admin/require-admin";
 
 export type WalkupResult =
   | { ok: true; status: "confirmed"; wasExistingProfile: boolean }
   | { ok: true; status: "capacity_exceeded" }
   | { ok: false; error: string };
-
-async function requireAdmin(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-): Promise<{ userId: string } | { error: string }> {
-  const { data: claims, error: authError } = await supabase.auth.getClaims();
-  if (authError || !claims?.claims) return { error: "Not authenticated" };
-  const userId = claims.claims.sub as string;
-
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("is_admin")
-    .eq("id", userId)
-    .maybeSingle();
-  if (!profile?.is_admin) return { error: "Admins only" };
-
-  return { userId };
-}
 
 /**
  * Adds a confirmed, checked-in "walk-up" RSVP. If the email matches an

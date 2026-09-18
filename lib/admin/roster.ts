@@ -15,6 +15,8 @@ export type AdminEventSummary = {
   lead_name: string | null;
   lead_phone: string | null;
   custom_email_note: string | null;
+  status: string;
+  cancellation_reason: string | null;
 };
 
 export type RosterPerson = {
@@ -53,7 +55,7 @@ export async function loadEventRoster(
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken, lead_name, lead_phone, custom_email_note",
+      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken, lead_name, lead_phone, custom_email_note, status, cancellation_reason",
     )
     .eq("id", eventId)
     .maybeSingle();

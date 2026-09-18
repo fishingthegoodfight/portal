@@ -14,7 +14,7 @@ export type RsvpActionResult =
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
 const EVENT_EMAIL_COLUMNS =
-  "id, name, starts_at, ends_at, timezone, location, lead_name, lead_phone, custom_email_note";
+  "id, name, starts_at, ends_at, timezone, location, lead_name, lead_phone, lead_email, custom_email_note, ics_sequence";
 
 async function loadEmailContext(
   supabase: SupabaseServerClient,

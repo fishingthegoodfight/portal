@@ -1,7 +1,8 @@
 /**
- * .ics (iCalendar, RFC 5545) generation for RSVP emails: a METHOD:REQUEST
- * invite on confirmation, a METHOD:CANCEL update (same UID) on cancellation
- * so calendar apps replace rather than duplicate the entry.
+ * .ics (iCalendar, RFC 5545) generation for RSVP and admin-triggered event
+ * emails: a METHOD:REQUEST invite on confirmation or an attendee-notified
+ * edit, a METHOD:CANCEL update (same UID) on RSVP or event cancellation, so
+ * calendar apps replace rather than duplicate the entry.
  *
  * VTIMEZONE is built generically from each zone's actual UTC offset (via
  * Intl) rather than a hardcoded table, so a new chapter in any US timezone
@@ -11,6 +12,8 @@
  * single fixed offset for a zone that doesn't observe DST at all (e.g.
  * America/Phoenix).
  */
+
+import { getTimeZoneOffsetMinutes } from "@/lib/timezone";
 
 export type IcsEventInput = {
   id: number;
@@ -57,21 +60,6 @@ function formatIcsDateTimeInZone(date: Date, timeZone: string): string {
   return `${get("year")}${get("month")}${get("day")}T${hour}${get("minute")}${get("second")}`;
 }
 
-/** UTC offset of `timeZone` at `date`, in minutes (e.g. -360 for CST). */
-function offsetMinutes(date: Date, timeZone: string): number {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    timeZoneName: "shortOffset",
-  }).formatToParts(date);
-  const raw = parts.find((p) => p.type === "timeZoneName")?.value ?? "GMT+0";
-  const match = raw.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
-  if (!match) return 0;
-  const sign = match[1] === "-" ? -1 : 1;
-  const hours = Number(match[2]);
-  const minutes = match[3] ? Number(match[3]) : 0;
-  return sign * (hours * 60 + minutes);
-}
-
 function formatIcsOffset(minutes: number): string {
   const sign = minutes < 0 ? "-" : "+";
   const abs = Math.abs(minutes);
@@ -79,8 +67,14 @@ function formatIcsOffset(minutes: number): string {
 }
 
 function buildVTimezone(timeZone: string, referenceYear: number): string {
-  const winterOffset = offsetMinutes(new Date(Date.UTC(referenceYear, 0, 15, 12)), timeZone);
-  const summerOffset = offsetMinutes(new Date(Date.UTC(referenceYear, 6, 15, 12)), timeZone);
+  const winterOffset = getTimeZoneOffsetMinutes(
+    new Date(Date.UTC(referenceYear, 0, 15, 12)),
+    timeZone,
+  );
+  const summerOffset = getTimeZoneOffsetMinutes(
+    new Date(Date.UTC(referenceYear, 6, 15, 12)),
+    timeZone,
+  );
 
   if (winterOffset === summerOffset) {
     return [
@@ -145,9 +139,17 @@ export function icsUidForEvent(eventId: number): string {
 export function buildEventIcs({
   event,
   method,
+  sequence,
 }: {
   event: IcsEventInput;
   method: "REQUEST" | "CANCEL";
+  /**
+   * events.ics_sequence at the time this is sent — the caller owns bumping
+   * it (on a date/time/location edit or a cancellation) and persisting the
+   * new value, so every calendar client that's seen an earlier SEQUENCE for
+   * this UID accepts this one as the newer version rather than ignoring it.
+   */
+  sequence: number;
 }): string {
   const start = new Date(event.startsAt);
   const end = event.endsAt
@@ -156,12 +158,6 @@ export function buildEventIcs({
 
   const uid = icsUidForEvent(event.id);
   const dtstamp = formatIcsDateTimeUTC(new Date());
-  // A cancellation must carry a SEQUENCE at or above the invite it's
-  // replacing so calendar apps apply it rather than ignore it as stale; a
-  // fresh re-confirm after that reuses SEQUENCE 0, which is a simplification
-  // (RFC 5546 expects it to keep climbing) most calendar clients tolerate
-  // fine given the UID+DTSTAMP still change.
-  const sequence = method === "CANCEL" ? 1 : 0;
   const status = method === "CANCEL" ? "CANCELLED" : "CONFIRMED";
 
   const lines = [

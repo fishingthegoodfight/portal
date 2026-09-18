@@ -21,6 +21,10 @@ export type EventCardEvent = {
   dateRange: string;
   capacity: number | null;
   spots_taken: number | null;
+  /** True once the organizer has cancelled the event — overrides every
+   * other status pill (Going/Waitlisted/Full) since none of those still
+   * apply. Optional since most callers show only scheduled events. */
+  cancelled?: boolean;
 };
 
 /**
@@ -49,13 +53,15 @@ export function EventCard({
       : null;
   const isFull = spotsLeft != null && spotsLeft <= 0 && !hasActiveRsvp;
 
-  const statusPill = hasActiveRsvp
-    ? waitlisted
-      ? { label: "Waitlisted", tone: "bg-amber-500/15 text-amber-700 dark:text-amber-400" }
-      : { label: "Going", tone: "bg-green-600/15 text-green-700 dark:text-green-500" }
-    : isFull
-      ? { label: "Full", tone: "bg-muted text-muted-foreground" }
-      : null;
+  const statusPill = event.cancelled
+    ? { label: "Cancelled", tone: "bg-red-600/15 text-red-700 dark:text-red-400" }
+    : hasActiveRsvp
+      ? waitlisted
+        ? { label: "Waitlisted", tone: "bg-amber-500/15 text-amber-700 dark:text-amber-400" }
+        : { label: "Going", tone: "bg-green-600/15 text-green-700 dark:text-green-500" }
+      : isFull
+        ? { label: "Full", tone: "bg-muted text-muted-foreground" }
+        : null;
 
   // Shown whenever there's genuine capacity left — including when you're
   // already "Going" (handy for nudging others). Hidden for waitlisted, since

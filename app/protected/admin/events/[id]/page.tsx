@@ -33,6 +33,8 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
         capacity: event.capacity,
         spots_taken: event.spots_taken,
       }}
+      status={event.status}
+      cancellationReason={event.cancellation_reason}
       initialRoster={roster}
     />
   );

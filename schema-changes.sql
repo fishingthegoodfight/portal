@@ -376,3 +376,118 @@ create policy admin_update_rsvps on public.rsvps
   for update
   using (public.is_admin())
   with check (public.is_admin());
+
+-- =============================================================================
+-- 2026-09-18 — Event edit/cancel: status, cancellation, .ics sequence tracking
+-- =============================================================================
+-- Backs admin event editing and cancellation (/protected/admin/events/[id]/edit,
+-- the "Cancel event" flow) and RFC 5546-correct calendar updates for both.
+alter table public.events
+  add column if not exists status text not null default 'scheduled'
+    check (status in ('scheduled', 'cancelled')),
+  add column if not exists cancellation_reason text,
+  add column if not exists cancelled_at timestamptz,
+  -- The iCalendar SEQUENCE for this event's VEVENT (see lib/email/ics.ts).
+  -- Bumped whenever the calendar entry itself changes — date, time,
+  -- location, or a cancellation — so a calendar client that's already seen
+  -- an earlier SEQUENCE for this UID accepts the update instead of ignoring
+  -- it as stale. A plain new RSVP confirmation reads this as-is, unbumped.
+  add column if not exists ics_sequence integer not null default 0;
+
+-- A cancelled event can no longer take RSVPs (regular signups or admin
+-- walk-ups both go through this), on top of the existing is_published gate.
+create or replace function public.try_claim_event_spot(p_event_id bigint)
+returns boolean
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  update public.events
+     set spots_taken = spots_taken + 1, updated_at = now()
+   where id = p_event_id
+     and is_published
+     and status = 'scheduled'
+     and spots_taken < capacity;
+  return found;
+end $function$;
+
+-- Admin write access for the edit/cancel flows — both go through a plain
+-- UPDATE on events (see lib/actions/admin-event.ts), not a RPC, so this is
+-- needed the same way admin_update_rsvps already is for check-in.
+create policy admin_update_events on public.events
+  for update
+  using (public.is_admin())
+  with check (public.is_admin());
+
+-- =============================================================================
+-- 2026-09-18 — Add lead_email to events
+-- =============================================================================
+-- Alongside lead_name/lead_phone — shown in the confirmation email's day-of
+-- contact block and editable from the admin event editor.
+alter table public.events
+  add column if not exists lead_email text;
+
+-- =============================================================================
+-- 2026-09-18 — admin_upsert_walkup_rsvp: block walk-ups on a cancelled event
+-- =============================================================================
+-- p_force is meant to bypass capacity only — it never should have been able
+-- to add someone to an event that's actually cancelled. try_claim_event_spot
+-- already refuses non-scheduled events, but the p_force branch skips that
+-- function entirely, so it needs its own check.
+create or replace function public.admin_upsert_walkup_rsvp(
+  p_event_id bigint,
+  p_profile_id uuid,
+  p_force boolean default false
+)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_existing_status text;
+  v_claimed boolean;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can add walk-up RSVPs';
+  end if;
+
+  if not exists (
+    select 1 from public.events where id = p_event_id and status = 'scheduled'
+  ) then
+    raise exception 'Event is not scheduled';
+  end if;
+
+  select status into v_existing_status
+    from public.rsvps
+   where event_id = p_event_id and user_id = p_profile_id;
+
+  if v_existing_status in ('confirmed', 'waitlisted') then
+    update public.rsvps
+       set status = 'confirmed', checked_in_at = now(), updated_at = now()
+     where event_id = p_event_id and user_id = p_profile_id;
+    return 'confirmed';
+  end if;
+
+  v_claimed := public.try_claim_event_spot(p_event_id);
+
+  if not v_claimed and not p_force then
+    return 'capacity_exceeded';
+  end if;
+
+  if not v_claimed and p_force then
+    update public.events
+       set spots_taken = spots_taken + 1, updated_at = now()
+     where id = p_event_id;
+  end if;
+
+  insert into public.rsvps (event_id, user_id, status, checked_in_at)
+  values (p_event_id, p_profile_id, 'confirmed', now())
+  on conflict (event_id, user_id)
+  do update set status = excluded.status,
+                checked_in_at = excluded.checked_in_at,
+                updated_at = now();
+
+  return 'confirmed';
+end $function$;

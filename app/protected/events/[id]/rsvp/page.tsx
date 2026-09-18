@@ -1,8 +1,11 @@
 import { notFound, redirect } from "next/navigation";
 import { Suspense } from "react";
+import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/server";
 import { RsvpForm } from "@/components/rsvp-form";
+import { EventCard } from "@/components/event-card";
+import { Button } from "@/components/ui/button";
 import { formatEventDateRange } from "@/lib/format-date";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 
@@ -29,13 +32,45 @@ async function RsvpLoader({
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken, is_published, registration_sections",
+      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken, is_published, registration_sections, status, cancellation_reason",
     )
     .eq("id", eventId)
     .maybeSingle();
 
   if (!event || !event.is_published) {
     notFound();
+  }
+
+  // A cancelled event may still be reached via an old link (e.g. the "View
+  // event" button in a confirmation email sent before it was cancelled) —
+  // show the cancellation instead of notFound(), since a confirmed attendee
+  // landing here should see what happened, not a dead link.
+  if (event.status === "cancelled") {
+    return (
+      <div className="flex flex-col gap-6">
+        <EventCard
+          event={{
+            id: event.id,
+            name: event.name,
+            chapter: event.chapter,
+            location: event.location,
+            description: event.description,
+            dateRange: formatEventDateRange(event.starts_at, event.ends_at, event.timezone),
+            capacity: event.capacity,
+            spots_taken: event.spots_taken,
+            cancelled: true,
+          }}
+          rsvpStatus={null}
+        />
+        <p className="text-sm text-muted-foreground">
+          This event has been cancelled
+          {event.cancellation_reason ? `: ${event.cancellation_reason}` : "."}
+        </p>
+        <Button asChild variant="outline" className="w-fit">
+          <Link href="/protected/events">Back to events</Link>
+        </Button>
+      </div>
+    );
   }
 
   // select("*") rather than an explicit column list so a new registration
