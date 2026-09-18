@@ -201,3 +201,15 @@ begin
 
   return v_status;
 end $function$;
+
+-- =============================================================================
+-- 2026-09-18 — Add RSVP email lead contact + custom note to events
+-- =============================================================================
+-- Backs the RSVP confirmation/cancellation emails (Resend): lead_name and
+-- lead_phone give attendees a day-of contact, custom_email_note is optional
+-- per-event copy appended to the confirmation email. All nullable — the
+-- email omits a section entirely when its column is unset.
+alter table public.events
+  add column if not exists lead_name text,
+  add column if not exists lead_phone text,
+  add column if not exists custom_email_note text;

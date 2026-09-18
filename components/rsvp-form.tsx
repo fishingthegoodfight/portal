@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/client";
+import { confirmRsvpAction, cancelRsvpAction } from "@/lib/actions/rsvp";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -160,16 +161,15 @@ export function RsvpForm({
       // of notes here.
       const dietaryNotes = effectiveValues.dietary_notes;
 
-      const { data, error } = await supabase.rpc("rsvp_to_event", {
-        p_event_id: event.id,
-        p_dietary:
-          dietaryActive && dietaryNotes && dietaryNotes !== DIETARY_NONE
-            ? dietaryNotes
-            : null,
-      });
-      if (error) throw error;
+      const result = await confirmRsvpAction(
+        event.id,
+        dietaryActive && dietaryNotes && dietaryNotes !== DIETARY_NONE
+          ? dietaryNotes
+          : null,
+      );
+      if (!result.ok) throw new Error(result.error);
 
-      const rsvpStatus = typeof data === "string" && data ? data : "confirmed";
+      const rsvpStatus = result.status === "waitlisted" ? "waitlisted" : "confirmed";
       const params = new URLSearchParams({
         rsvp: rsvpStatus === "waitlisted" ? "waitlisted" : "confirmed",
         event: event.name,
@@ -189,13 +189,10 @@ export function RsvpForm({
   const handleCancel = async () => {
     setIsCancelling(true);
     setError(null);
-    const supabase = createClient();
 
     try {
-      const { error } = await supabase.rpc("cancel_rsvp", {
-        p_event_id: event.id,
-      });
-      if (error) throw error;
+      const result = await cancelRsvpAction(event.id);
+      if (!result.ok) throw new Error(result.error);
 
       const params = new URLSearchParams({
         rsvp: "cancelled",

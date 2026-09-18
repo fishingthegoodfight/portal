@@ -1,0 +1,209 @@
+/**
+ * .ics (iCalendar, RFC 5545) generation for RSVP emails: a METHOD:REQUEST
+ * invite on confirmation, a METHOD:CANCEL update (same UID) on cancellation
+ * so calendar apps replace rather than duplicate the entry.
+ *
+ * VTIMEZONE is built generically from each zone's actual UTC offset (via
+ * Intl) rather than a hardcoded table, so a new chapter in any US timezone
+ * works without a code change. It assumes the post-2007 US DST rule (starts
+ * 2nd Sunday in March, ends 1st Sunday in November) — true for every chapter
+ * timezone today (America/Denver, America/New_York) — and falls back to a
+ * single fixed offset for a zone that doesn't observe DST at all (e.g.
+ * America/Phoenix).
+ */
+
+export type IcsEventInput = {
+  id: number;
+  name: string;
+  startsAt: string;
+  endsAt: string | null;
+  timezone: string;
+  location: string | null;
+};
+
+function pad(n: number, len = 2): string {
+  return String(n).padStart(len, "0");
+}
+
+function formatIcsDateTimeUTC(date: Date): string {
+  return (
+    date.getUTCFullYear().toString() +
+    pad(date.getUTCMonth() + 1) +
+    pad(date.getUTCDate()) +
+    "T" +
+    pad(date.getUTCHours()) +
+    pad(date.getUTCMinutes()) +
+    pad(date.getUTCSeconds()) +
+    "Z"
+  );
+}
+
+/** A date's wall-clock time in `timeZone`, formatted for a DTSTART/DTEND
+ * that carries `TZID=<timeZone>` (no trailing Z — local, not UTC). */
+function formatIcsDateTimeInZone(date: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "00";
+  // Some engines format midnight as hour "24" under hour12:false.
+  const hour = get("hour") === "24" ? "00" : get("hour");
+  return `${get("year")}${get("month")}${get("day")}T${hour}${get("minute")}${get("second")}`;
+}
+
+/** UTC offset of `timeZone` at `date`, in minutes (e.g. -360 for CST). */
+function offsetMinutes(date: Date, timeZone: string): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    timeZoneName: "shortOffset",
+  }).formatToParts(date);
+  const raw = parts.find((p) => p.type === "timeZoneName")?.value ?? "GMT+0";
+  const match = raw.match(/GMT([+-])(\d{1,2})(?::(\d{2}))?/);
+  if (!match) return 0;
+  const sign = match[1] === "-" ? -1 : 1;
+  const hours = Number(match[2]);
+  const minutes = match[3] ? Number(match[3]) : 0;
+  return sign * (hours * 60 + minutes);
+}
+
+function formatIcsOffset(minutes: number): string {
+  const sign = minutes < 0 ? "-" : "+";
+  const abs = Math.abs(minutes);
+  return `${sign}${pad(Math.floor(abs / 60))}${pad(abs % 60)}`;
+}
+
+function buildVTimezone(timeZone: string, referenceYear: number): string {
+  const winterOffset = offsetMinutes(new Date(Date.UTC(referenceYear, 0, 15, 12)), timeZone);
+  const summerOffset = offsetMinutes(new Date(Date.UTC(referenceYear, 6, 15, 12)), timeZone);
+
+  if (winterOffset === summerOffset) {
+    return [
+      "BEGIN:VTIMEZONE",
+      `TZID:${timeZone}`,
+      "BEGIN:STANDARD",
+      "DTSTART:19700101T000000",
+      `TZOFFSETFROM:${formatIcsOffset(winterOffset)}`,
+      `TZOFFSETTO:${formatIcsOffset(winterOffset)}`,
+      "END:STANDARD",
+      "END:VTIMEZONE",
+    ].join("\r\n");
+  }
+
+  const standardOffset = Math.min(winterOffset, summerOffset);
+  const daylightOffset = Math.max(winterOffset, summerOffset);
+
+  return [
+    "BEGIN:VTIMEZONE",
+    `TZID:${timeZone}`,
+    "BEGIN:DAYLIGHT",
+    "DTSTART:19700308T020000",
+    "RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=2SU",
+    `TZOFFSETFROM:${formatIcsOffset(standardOffset)}`,
+    `TZOFFSETTO:${formatIcsOffset(daylightOffset)}`,
+    "END:DAYLIGHT",
+    "BEGIN:STANDARD",
+    "DTSTART:19701101T020000",
+    "RRULE:FREQ=YEARLY;BYMONTH=11;BYDAY=1SU",
+    `TZOFFSETFROM:${formatIcsOffset(daylightOffset)}`,
+    `TZOFFSETTO:${formatIcsOffset(standardOffset)}`,
+    "END:STANDARD",
+    "END:VTIMEZONE",
+  ].join("\r\n");
+}
+
+function escapeIcsText(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/;/g, "\\;")
+    .replace(/,/g, "\\,")
+    .replace(/\n/g, "\\n");
+}
+
+/** RFC 5545 folds lines at 75 octets; long SUMMARY/LOCATION values can
+ * exceed that. */
+function foldIcsLine(line: string): string {
+  if (line.length <= 75) return line;
+  let result = "";
+  let rest = line;
+  while (rest.length > 75) {
+    result += rest.slice(0, 75) + "\r\n ";
+    rest = rest.slice(75);
+  }
+  return result + rest;
+}
+
+export function icsUidForEvent(eventId: number): string {
+  return `event-${eventId}@fishingthegoodfight.org`;
+}
+
+export function buildEventIcs({
+  event,
+  method,
+}: {
+  event: IcsEventInput;
+  method: "REQUEST" | "CANCEL";
+}): string {
+  const start = new Date(event.startsAt);
+  const end = event.endsAt
+    ? new Date(event.endsAt)
+    : new Date(start.getTime() + 60 * 60 * 1000);
+
+  const uid = icsUidForEvent(event.id);
+  const dtstamp = formatIcsDateTimeUTC(new Date());
+  // A cancellation must carry a SEQUENCE at or above the invite it's
+  // replacing so calendar apps apply it rather than ignore it as stale; a
+  // fresh re-confirm after that reuses SEQUENCE 0, which is a simplification
+  // (RFC 5546 expects it to keep climbing) most calendar clients tolerate
+  // fine given the UID+DTSTAMP still change.
+  const sequence = method === "CANCEL" ? 1 : 0;
+  const status = method === "CANCEL" ? "CANCELLED" : "CONFIRMED";
+
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Fishing the Good Fight//RSVP//EN",
+    `METHOD:${method}`,
+    "CALSCALE:GREGORIAN",
+    buildVTimezone(event.timezone, start.getUTCFullYear()),
+    "BEGIN:VEVENT",
+    `UID:${uid}`,
+    `DTSTAMP:${dtstamp}`,
+    `DTSTART;TZID=${event.timezone}:${formatIcsDateTimeInZone(start, event.timezone)}`,
+    `DTEND;TZID=${event.timezone}:${formatIcsDateTimeInZone(end, event.timezone)}`,
+    foldIcsLine(`SUMMARY:${escapeIcsText(event.name)}`),
+    ...(event.location
+      ? [foldIcsLine(`LOCATION:${escapeIcsText(event.location)}`)]
+      : []),
+    `SEQUENCE:${sequence}`,
+    `STATUS:${status}`,
+    "END:VEVENT",
+    "END:VCALENDAR",
+  ];
+
+  return lines.join("\r\n") + "\r\n";
+}
+
+/** "Add to Google Calendar" link used as the email's fallback to the .ics
+ * attachment. */
+export function buildGoogleCalendarLink(event: IcsEventInput): string {
+  const start = new Date(event.startsAt);
+  const end = event.endsAt
+    ? new Date(event.endsAt)
+    : new Date(start.getTime() + 60 * 60 * 1000);
+
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: event.name,
+    dates: `${formatIcsDateTimeUTC(start)}/${formatIcsDateTimeUTC(end)}`,
+    ctz: event.timezone,
+  });
+  if (event.location) params.set("location", event.location);
+
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
