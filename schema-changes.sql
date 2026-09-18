@@ -491,3 +491,56 @@ begin
 
   return 'confirmed';
 end $function$;
+
+-- =============================================================================
+-- 2026-09-18 — Admin event creation: location fields, recurrence, volunteers
+-- =============================================================================
+-- Backs /protected/admin/events/new. event_type already existed (free text,
+-- read since Phase 1) — left unconstrained rather than adding a CHECK, since
+-- existing rows' values aren't known here; the create/edit forms are the
+-- only things that need to agree on the catalog (lib/event-types.ts).
+--
+-- marketing_tier: added per request but intentionally left unwired — no
+-- form field sets it, no code reads it. Nullable so that's safe.
+alter table public.events
+  add column if not exists venue_name text,
+  add column if not exists street_address text,
+  add column if not exists city text,
+  add column if not exists state text,
+  add column if not exists marketing_tier text,
+  -- Shared across every row generated from one "repeat weekly/biweekly/
+  -- monthly" submission, null for a one-off event — lets a future edit
+  -- offer "this event" vs. "this and all future". recurrence_frequency and
+  -- recurrence_end_date describe the pattern that produced the series;
+  -- stored on every row in it (simple, if redundant) rather than a separate
+  -- series table, since nothing here needs to edit the pattern itself yet.
+  add column if not exists series_id uuid,
+  add column if not exists recurrence_frequency text
+    check (recurrence_frequency in ('weekly', 'biweekly', 'monthly')),
+  add column if not exists recurrence_end_date date;
+
+create policy admin_insert_events on public.events
+  for insert
+  with check (public.is_admin());
+
+-- New registration sections (lib/registration-sections.ts): "sizing" for
+-- Fish A-Long gear/shirt sizing, "waiver" as a lightweight typed-signature
+-- liability acknowledgment. Profile-backed like the existing sections.
+alter table public.profiles
+  add column if not exists sizing_notes text,
+  add column if not exists waiver_signature text;
+
+-- shift_start/shift_end/what_to_bring didn't exist on the Phase 0 table —
+-- role, description, slots, is_published, created_at already did.
+alter table public.volunteer_opportunities
+  add column if not exists shift_start timestamptz,
+  add column if not exists shift_end timestamptz,
+  add column if not exists what_to_bring text;
+
+create policy admin_insert_volunteer_opportunities on public.volunteer_opportunities
+  for insert
+  with check (public.is_admin());
+
+create policy admin_select_volunteer_opportunities on public.volunteer_opportunities
+  for select
+  using (public.is_admin());

@@ -63,11 +63,16 @@ async function AdminEventsLoader() {
 export default function AdminEventsIndexPage() {
   return (
     <div className="flex-1 w-full flex flex-col gap-8 max-w-2xl">
-      <div>
-        <h1 className="font-bold text-2xl mb-1">Manage events</h1>
-        <p className="text-sm text-muted-foreground">
-          Every event, including cancelled and past ones.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="font-bold text-2xl mb-1">Manage events</h1>
+          <p className="text-sm text-muted-foreground">
+            Every event, including cancelled and past ones.
+          </p>
+        </div>
+        <Button asChild>
+          <Link href="/protected/admin/events/new">New event</Link>
+        </Button>
       </div>
       <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>
         <AdminEventsLoader />

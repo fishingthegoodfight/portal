@@ -4,20 +4,14 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { updateEventAction, type EventEditInput } from "@/lib/actions/admin-event";
+import { DateTimeFields } from "@/components/admin/fields/datetime-fields";
+import { LeadContactFields } from "@/components/admin/fields/lead-contact-fields";
+import { RegistrationSectionsFields } from "@/components/admin/fields/registration-sections-fields";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { TIMEZONE_OPTIONS } from "@/lib/chapters";
-import { formatPhoneNumber } from "@/lib/phone";
-import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
-
-// Always-required sections (e.g. emergency contact) apply to every event
-// regardless — only optional ones are worth exposing as a per-event choice.
-const OPTIONAL_SECTIONS = REGISTRATION_SECTIONS.filter((s) => !s.alwaysRequired);
 
 export function EventEditForm({
   eventId,
@@ -40,8 +34,8 @@ export function EventEditForm({
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
       setForm((prev) => ({ ...prev, [field]: e.target.value }));
 
-  const updateLeadPhone = (e: React.ChangeEvent<HTMLInputElement>) =>
-    setForm((prev) => ({ ...prev, leadPhone: formatPhoneNumber(e.target.value) }));
+  const setField = (field: keyof Omit<EventEditInput, "registrationSections">) => (value: string) =>
+    setForm((prev) => ({ ...prev, [field]: value }));
 
   const toggleSection = (sectionId: string, checked: boolean) =>
     setForm((prev) => ({
@@ -131,90 +125,27 @@ export function EventEditForm({
               />
             </div>
 
-            <div className="grid grid-cols-2 gap-4 rounded-md border p-3">
-              <div className="col-span-2 text-sm font-medium">When</div>
-              <div className="grid gap-2">
-                <Label htmlFor="edit_date">Date</Label>
-                <Input
-                  id="edit_date"
-                  type="date"
-                  required
-                  value={form.date}
-                  onChange={updateField("date")}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="edit_timezone">Time zone</Label>
-                <Select
-                  id="edit_timezone"
-                  required
-                  value={form.timezone}
-                  onChange={updateField("timezone")}
-                >
-                  {TIMEZONE_OPTIONS.map((tz) => (
-                    <option key={tz.value} value={tz.value}>
-                      {tz.label}
-                    </option>
-                  ))}
-                </Select>
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="edit_time">Start time</Label>
-                <Input
-                  id="edit_time"
-                  type="time"
-                  required
-                  value={form.time}
-                  onChange={updateField("time")}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="edit_end_time">End time</Label>
-                <Input
-                  id="edit_end_time"
-                  type="time"
-                  placeholder="Optional"
-                  value={form.endTime}
-                  onChange={updateField("endTime")}
-                />
-                <span className="text-xs text-muted-foreground">
-                  Leave blank for an open-ended event.
-                </span>
-              </div>
-            </div>
+            <DateTimeFields
+              idPrefix="edit"
+              date={form.date}
+              time={form.time}
+              endTime={form.endTime}
+              timezone={form.timezone}
+              onChangeDate={setField("date")}
+              onChangeTime={setField("time")}
+              onChangeEndTime={setField("endTime")}
+              onChangeTimezone={setField("timezone")}
+            />
 
-            <div className="grid grid-cols-2 gap-4">
-              <div className="grid gap-2">
-                <Label htmlFor="edit_lead_name">Lead name</Label>
-                <Input
-                  id="edit_lead_name"
-                  placeholder="Day-of contact"
-                  value={form.leadName}
-                  onChange={updateField("leadName")}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="edit_lead_phone">Lead phone</Label>
-                <Input
-                  id="edit_lead_phone"
-                  type="tel"
-                  inputMode="numeric"
-                  placeholder="(303) 555-0100"
-                  maxLength={14}
-                  value={form.leadPhone}
-                  onChange={updateLeadPhone}
-                />
-              </div>
-              <div className="grid gap-2 col-span-2">
-                <Label htmlFor="edit_lead_email">Lead email</Label>
-                <Input
-                  id="edit_lead_email"
-                  type="email"
-                  value={form.leadEmail}
-                  onChange={updateField("leadEmail")}
-                />
-              </div>
-            </div>
+            <LeadContactFields
+              idPrefix="edit"
+              name={form.leadName}
+              phone={form.leadPhone}
+              email={form.leadEmail}
+              onChangeName={setField("leadName")}
+              onChangePhone={setField("leadPhone")}
+              onChangeEmail={setField("leadEmail")}
+            />
 
             <div className="grid gap-2">
               <Label htmlFor="edit_custom_note">Custom email note</Label>
@@ -226,25 +157,11 @@ export function EventEditForm({
               />
             </div>
 
-            {OPTIONAL_SECTIONS.length > 0 && (
-              <div className="grid gap-2">
-                <span className="text-sm font-medium">Registration sections</span>
-                {OPTIONAL_SECTIONS.map((section) => (
-                  <label
-                    key={section.id}
-                    className="flex items-center gap-2 text-sm"
-                    htmlFor={`edit_section_${section.id}`}
-                  >
-                    <Checkbox
-                      id={`edit_section_${section.id}`}
-                      checked={form.registrationSections.includes(section.id)}
-                      onCheckedChange={(checked) => toggleSection(section.id, checked === true)}
-                    />
-                    {section.title}
-                  </label>
-                ))}
-              </div>
-            )}
+            <RegistrationSectionsFields
+              idPrefix="edit"
+              selected={form.registrationSections}
+              onToggle={toggleSection}
+            />
 
             {notifyPrompt && (
               <div className="flex flex-col gap-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-3">

@@ -96,6 +96,32 @@ export const REGISTRATION_SECTIONS: RegistrationSection[] = [
       return value === DIETARY_NONE ? "No dietary restrictions" : truncate(value);
     },
   },
+  {
+    id: "sizing",
+    title: "Sizing",
+    fields: [
+      {
+        key: "sizing_notes",
+        label: "What size do you need? (shirt, waders, etc.)",
+        type: "text",
+        required: true,
+      },
+    ],
+    summary: (profileFields) => truncate(profileFields.sizing_notes ?? ""),
+  },
+  {
+    id: "waiver",
+    title: "Liability waiver",
+    fields: [
+      {
+        key: "waiver_signature",
+        label: "Type your full name to sign the liability waiver",
+        type: "text",
+        required: true,
+      },
+    ],
+    summary: (profileFields) => profileFields.waiver_signature ?? "",
+  },
 ];
 
 /** Every profile column any section might read or write, deduped. */
