@@ -10,6 +10,8 @@ import {
   eventCancellationEmail,
   eventRestoredEmail,
   eventUpdateEmail,
+  reminderEmail,
+  type ReminderKind,
   type EventChangeDiffEntry,
   type EventChangeAction,
   type RsvpEmailEventInfo,
@@ -315,5 +317,32 @@ export async function sendAdminChangeNotificationEmail(params: {
   );
   if (response.error) {
     throw new Error(response.error.message);
+  }
+}
+
+/** Pre-event reminder (no .ics). Throws on failure — the cron caller catches
+ * per participant so one bad send doesn't stop the batch. */
+export async function sendReminderEmail({
+  event,
+  toEmail,
+  kind,
+}: {
+  event: RsvpEmailEvent;
+  toEmail: string;
+  kind: ReminderKind;
+}): Promise<void> {
+  const resend = getResendClient();
+  const { subject, html, text } = reminderEmail(buildEventInfo(event), kind);
+
+  const { error } = await resend.emails.send({
+    from: FROM_ADDRESS,
+    to: toEmail,
+    replyTo: REPLY_TO,
+    subject,
+    html,
+    text,
+  });
+  if (error) {
+    throw new Error(error.message);
   }
 }

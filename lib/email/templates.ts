@@ -352,3 +352,53 @@ export function adminChangeNotificationEmail({
 
   return { subject, html, text };
 }
+
+export type ReminderKind = "1week" | "1day";
+
+/**
+ * Pre-event reminder, sent a week out and again the day before. No .ics — the
+ * confirmation email already carried it.
+ */
+export function reminderEmail(info: RsvpEmailEventInfo, kind: ReminderKind): RenderedEmail {
+  const name = escapeHtml(info.name);
+  const when = kind === "1week" ? "one week from now" : "tomorrow";
+  const subject =
+    kind === "1week" ? `One week away: ${info.name}` : `Tomorrow: ${info.name}`;
+  const heading = kind === "1week" ? "See you in a week!" : "See you tomorrow!";
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">${heading}</p>`,
+      `<p style="margin:0 0 16px;">A reminder that <strong>${name}</strong> is ${when}.</p>`,
+      `<p style="margin:0 0 4px;"><strong>When:</strong> ${escapeHtml(info.dateRange)}</p>`,
+      info.location
+        ? `<p style="margin:0 0 16px;"><strong>Where:</strong> ${escapeHtml(info.location)}</p>`
+        : "",
+      leadSectionHtml(info),
+      info.customNote ? `<p style="margin:0 0 16px;">${htmlWithLineBreaks(info.customNote)}</p>` : "",
+      `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">View event</a></p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Can't make it? Please let us know: visit the event page above and click "Cancel RSVP."</p>`,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+
+  const text = [
+    heading,
+    "",
+    `A reminder that ${info.name} is ${when}.`,
+    "",
+    `When: ${info.dateRange}`,
+    info.location ? `Where: ${info.location}` : "",
+    leadSectionText(info),
+    info.customNote ?? "",
+    "",
+    `Event page: ${info.eventUrl}`,
+    "",
+    `Can't make it? Please let us know: visit the event page and click "Cancel RSVP."`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return { subject, html, text };
+}

@@ -569,3 +569,11 @@ begin
   return new;
 end;
 $$;
+
+-- =============================================================================
+-- Pre-event reminder emails (/api/cron/reminders)
+-- =============================================================================
+-- Set when the 1-week / 1-day reminder goes out, so it never sends twice.
+alter table public.rsvps
+  add column if not exists sent_1week_at timestamptz,
+  add column if not exists sent_1day_at timestamptz;
