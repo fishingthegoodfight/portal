@@ -34,6 +34,7 @@ export async function addWalkupRsvpAction(input: {
   phone: string;
   emergencyContactName: string;
   emergencyContactPhone: string;
+  directoryOptIn: boolean;
   force: boolean;
 }): Promise<WalkupResult> {
   const supabase = await createClient();
@@ -133,6 +134,7 @@ export async function addWalkupRsvpAction(input: {
         phone,
         emergency_contact: emergencyContactName,
         emergency_phone: emergencyContactPhone,
+        directory_opt_in: input.directoryOptIn,
       })
       .eq("id", profileId);
     if (updateError) {

@@ -26,6 +26,25 @@ export function RegistrationFieldInput({
     return <YesNoNotesField field={field} value={value} onChange={onChange} />;
   }
 
+  if (field.type === "checkbox") {
+    return (
+      <div className="grid gap-1">
+        <label className="flex items-center gap-2 text-sm font-medium">
+          <input
+            id={field.key}
+            type="checkbox"
+            checked={value === "true"}
+            onChange={(e) => onChange(field.key, e.target.checked ? "true" : "false")}
+          />
+          {field.label}
+        </label>
+        {field.helpText && (
+          <p className="text-sm text-muted-foreground">{field.helpText}</p>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="grid gap-2">
       <Label htmlFor={field.key}>{field.label}</Label>

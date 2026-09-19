@@ -7,7 +7,10 @@ import { RsvpForm } from "@/components/rsvp-form";
 import { EventCard } from "@/components/event-card";
 import { Button } from "@/components/ui/button";
 import { formatEventDateRange } from "@/lib/format-date";
-import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
+import {
+  profileValueFromColumn,
+  REGISTRATION_SECTIONS,
+} from "@/lib/registration-sections";
 
 async function RsvpLoader({
   params,
@@ -94,8 +97,7 @@ async function RsvpLoader({
   const profileFields: Record<string, string> = {};
   for (const section of REGISTRATION_SECTIONS) {
     for (const field of section.fields) {
-      const raw = (profile?.[field.key] as string | null) ?? "";
-      profileFields[field.key] = field.format ? field.format(raw) : raw;
+      profileFields[field.key] = profileValueFromColumn(field, profile?.[field.key]);
     }
   }
 

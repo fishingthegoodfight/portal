@@ -544,3 +544,28 @@ create policy admin_insert_volunteer_opportunities on public.volunteer_opportuni
 create policy admin_select_volunteer_opportunities on public.volunteer_opportunities
   for select
   using (public.is_admin());
+
+-- Directory participation (lib/registration-sections.ts "directory" section).
+-- Opt-in, so existing and new members default to not listed.
+alter table public.profiles
+  add column if not exists directory_opt_in boolean not null default false;
+
+-- handle_new_user now also copies the sign-up form's directory choice
+-- (auth user_metadata.directory_opt_in, a JSON boolean) onto the new profile.
+-- Missing/null (e.g. admin-created walk-up users) falls back to false.
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.profiles (id, email, directory_opt_in)
+  values (
+    new.id,
+    new.email,
+    coalesce((new.raw_user_meta_data->>'directory_opt_in')::boolean, false)
+  );
+  return new;
+end;
+$$;

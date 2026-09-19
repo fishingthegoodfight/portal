@@ -19,9 +19,14 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RegistrationFieldInput } from "@/components/registration-fields";
 import { formatPhoneNumber } from "@/lib/phone";
+import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 import { cn } from "@/lib/utils";
 import type { RosterPerson } from "@/lib/admin/roster";
+
+const DIRECTORY_FIELD = REGISTRATION_SECTIONS.find((s) => s.id === "directory")!
+  .fields[0];
 
 type WalkupFormState = {
   firstName: string;
@@ -30,6 +35,7 @@ type WalkupFormState = {
   phone: string;
   emergencyContactName: string;
   emergencyContactPhone: string;
+  directoryOptIn: boolean;
 };
 
 const EMPTY_WALKUP_FORM: WalkupFormState = {
@@ -39,6 +45,7 @@ const EMPTY_WALKUP_FORM: WalkupFormState = {
   phone: "",
   emergencyContactName: "",
   emergencyContactPhone: "",
+  directoryOptIn: false,
 };
 
 export function EventRoster({
@@ -145,6 +152,7 @@ export function EventRoster({
       phone: walkupForm.phone,
       emergencyContactName: walkupForm.emergencyContactName,
       emergencyContactPhone: walkupForm.emergencyContactPhone,
+      directoryOptIn: walkupForm.directoryOptIn,
       force: capacityConfirmPending,
     });
 
@@ -319,6 +327,13 @@ export function EventRoster({
                     />
                   </div>
                 </div>
+                <RegistrationFieldInput
+                  field={DIRECTORY_FIELD}
+                  value={walkupForm.directoryOptIn ? "true" : "false"}
+                  onChange={(_key, value) =>
+                    setWalkupForm((prev) => ({ ...prev, directoryOptIn: value === "true" }))
+                  }
+                />
                 {capacityConfirmPending && (
                   <p className="text-sm text-amber-600">
                     This event is at capacity. Add {walkupForm.firstName || "them"} anyway?

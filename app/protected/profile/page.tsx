@@ -4,7 +4,10 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/supabase/server";
 import { ProfileForm } from "@/components/profile-form";
 import { formatPhoneNumber } from "@/lib/phone";
-import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
+import {
+  profileValueFromColumn,
+  REGISTRATION_SECTIONS,
+} from "@/lib/registration-sections";
 
 // Only ever redirect back into our own /protected pages — a bare "starts
 // with /protected/" check keeps this from being turned into an open redirect
@@ -47,8 +50,7 @@ async function ProfileFormLoader({
   const registrationFields: Record<string, string> = {};
   for (const section of REGISTRATION_SECTIONS) {
     for (const field of section.fields) {
-      const raw = (profile?.[field.key] as string | null) ?? "";
-      registrationFields[field.key] = field.format ? field.format(raw) : raw;
+      registrationFields[field.key] = profileValueFromColumn(field, profile?.[field.key]);
     }
   }
 

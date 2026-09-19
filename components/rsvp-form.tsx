@@ -18,6 +18,7 @@ import {
 import { EventCard } from "@/components/event-card";
 import { RegistrationFieldInput } from "@/components/registration-fields";
 import {
+  columnValuesFromProfile,
   DIETARY_NONE,
   isSectionComplete,
   sectionsForEvent,
@@ -140,7 +141,9 @@ export function RsvpForm({
       // left untouched.
       const profileUpdates: Record<string, string> = {};
       for (const section of activeSections) {
-        if (isSectionComplete(section, profileFields)) continue;
+        if (!section.alwaysEditable && isSectionComplete(section, profileFields)) {
+          continue;
+        }
         for (const field of section.fields) {
           const value = (fieldValues[field.key] ?? "").trim();
           if (value) profileUpdates[field.key] = value;
@@ -149,7 +152,7 @@ export function RsvpForm({
       if (Object.keys(profileUpdates).length > 0) {
         const { error: profileError } = await supabase
           .from("profiles")
-          .update(profileUpdates)
+          .update(columnValuesFromProfile(profileUpdates))
           .eq("id", userId);
         if (profileError) throw profileError;
       }
@@ -298,7 +301,8 @@ function RegistrationSectionField({
   // "On file" is based on the profile as loaded, not live edits — otherwise
   // finishing the last field of a section would make it flip to the
   // read-only summary mid-fill.
-  const complete = isSectionComplete(section, profileFields);
+  const complete =
+    !section.alwaysEditable && isSectionComplete(section, profileFields);
   const hasRequiredField = section.fields.some((field) => field.required);
 
   return (

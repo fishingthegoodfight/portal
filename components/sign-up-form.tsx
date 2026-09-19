@@ -16,6 +16,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
+import { RegistrationFieldInput } from "@/components/registration-fields";
+import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
+
+const DIRECTORY_FIELD = REGISTRATION_SECTIONS.find((s) => s.id === "directory")!
+  .fields[0];
+
 export function SignUpForm({
   className,
   ...props
@@ -23,6 +29,7 @@ export function SignUpForm({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [repeatPassword, setRepeatPassword] = useState("");
+  const [directoryOptIn, setDirectoryOptIn] = useState("false");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const router = useRouter();
@@ -45,6 +52,8 @@ export function SignUpForm({
         password,
         options: {
           emailRedirectTo: `${window.location.origin}/protected/events`,
+          // Read by the handle_new_user trigger into profiles.directory_opt_in.
+          data: { directory_opt_in: directoryOptIn === "true" },
         },
       });
       if (error) throw error;
@@ -101,6 +110,11 @@ export function SignUpForm({
                   onChange={(e) => setRepeatPassword(e.target.value)}
                 />
               </div>
+              <RegistrationFieldInput
+                field={DIRECTORY_FIELD}
+                value={directoryOptIn}
+                onChange={(_key, value) => setDirectoryOptIn(value)}
+              />
               {error && <p className="text-sm text-red-500">{error}</p>}
               <Button type="submit" className="w-full" disabled={isLoading}>
                 {isLoading ? "Creating an account..." : "Sign up"}

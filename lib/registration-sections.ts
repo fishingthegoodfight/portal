@@ -12,7 +12,12 @@ import { formatPhoneNumber } from "@/lib/phone";
  * change — it renders this catalog generically.
  */
 
-export type RegistrationFieldType = "text" | "tel" | "textarea" | "yesno";
+export type RegistrationFieldType =
+  | "text"
+  | "tel"
+  | "textarea"
+  | "yesno"
+  | "checkbox";
 
 export type RegistrationField = {
   /** Also the `profiles` column name that stores this field's value. */
@@ -20,6 +25,8 @@ export type RegistrationField = {
   label: string;
   type: RegistrationFieldType;
   placeholder?: string;
+  /** Explanatory text shown under the input (used by checkbox fields). */
+  helpText?: string;
   /**
    * Whether this field must have a value for the section to count as complete
    * (and to allow the RSVP). The catalog is the single source of truth here —
@@ -44,6 +51,13 @@ export type RegistrationSection = {
   title: string;
   /** Collected on every RSVP regardless of the event's registration_sections. */
   alwaysRequired?: boolean;
+  /**
+   * A setting the member must always be able to see and change, rather than
+   * data collected once. Never collapses to the "On file" summary on the RSVP
+   * form, always shows as an open card on the profile page, and is re-saved
+   * on every RSVP that includes it.
+   */
+  alwaysEditable?: boolean;
   fields: RegistrationField[];
   /** One-line "On file" summary shown once the section is already complete. */
   summary: (profileFields: Record<string, string>) => string;
@@ -122,7 +136,54 @@ export const REGISTRATION_SECTIONS: RegistrationSection[] = [
     ],
     summary: (profileFields) => profileFields.waiver_signature ?? "",
   },
+  {
+    id: "directory",
+    title: "Participant directory",
+    alwaysEditable: true,
+    fields: [
+      {
+        // Boolean column, held as "true"/"false" strings in form state like
+        // every other field (see profileValueFromColumn / columnValueFromProfile).
+        key: "directory_opt_in",
+        label: "Include me in the FTGF participant directory",
+        type: "checkbox",
+        helpText:
+          "This publishes your name, chapter, email, and phone in a directory that is intended to be public and searchable. You can change this any time from your profile.",
+      },
+    ],
+    summary: (profileFields) =>
+      profileFields.directory_opt_in === "true"
+        ? "Included in the directory"
+        : "Not included in the directory",
+  },
 ];
+
+/** Reads a profiles column into the string form used in form state. */
+export function profileValueFromColumn(
+  field: RegistrationField,
+  raw: unknown,
+): string {
+  if (field.type === "checkbox") return raw === true ? "true" : "false";
+  const value = (raw as string | null | undefined) ?? "";
+  return field.format ? field.format(value) : value;
+}
+
+/** Converts form-state strings back to column values (checkbox → boolean). */
+export function columnValuesFromProfile(
+  values: Record<string, string>,
+): Record<string, string | boolean> {
+  const checkboxKeys = new Set(
+    REGISTRATION_SECTIONS.flatMap((s) => s.fields)
+      .filter((f) => f.type === "checkbox")
+      .map((f) => f.key),
+  );
+  return Object.fromEntries(
+    Object.entries(values).map(([k, v]) => [
+      k,
+      checkboxKeys.has(k) ? v === "true" : v,
+    ]),
+  );
+}
 
 /** Every profile column any section might read or write, deduped. */
 export const REGISTRATION_PROFILE_FIELD_KEYS = Array.from(

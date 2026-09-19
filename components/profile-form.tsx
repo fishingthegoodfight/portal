@@ -20,6 +20,7 @@ import { RegistrationFieldInput } from "@/components/registration-fields";
 import { CHAPTERS, NOT_LOCAL_CHAPTER } from "@/lib/chapters";
 import { formatPhoneNumber, formatPostalCode } from "@/lib/phone";
 import {
+  columnValuesFromProfile,
   isSectionAnswered,
   REGISTRATION_SECTIONS,
   type RegistrationSection,
@@ -96,12 +97,13 @@ export function ProfileForm({
   // values as loaded so editing a field can't make its own card disappear
   // mid-edit.
   const alwaysOpenSections = REGISTRATION_SECTIONS.filter(
-    (section) => section.alwaysRequired,
+    (section) => section.alwaysRequired || section.alwaysEditable,
   );
   const [collapsibleSections] = useState(() =>
     REGISTRATION_SECTIONS.filter(
       (section) =>
         !section.alwaysRequired &&
+        !section.alwaysEditable &&
         isSectionAnswered(section, initialRegistrationFields),
     ),
   );
@@ -205,7 +207,10 @@ export function ProfileForm({
       // (e.g. the trigger hasn't run yet) instead of silently no-op'ing.
       const { data: updated, error } = await supabase
         .from("profiles")
-        .update({ ...profile, ...registrationFields })
+        .update({
+          ...profile,
+          ...columnValuesFromProfile(registrationFields),
+        })
         .eq("id", userId)
         .select()
         .maybeSingle();
