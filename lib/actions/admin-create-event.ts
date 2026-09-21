@@ -12,6 +12,7 @@ import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 import { sendAdminChangeNotificationEmail } from "@/lib/email/send";
 import type { EventChangeDiffEntry } from "@/lib/email/templates";
 import { zonedDateTimeToUtc } from "@/lib/timezone";
+import { capacityError, parseCapacity } from "@/lib/event-capacity";
 import { composeLocation, locationErrors } from "@/lib/event-location";
 import { waiverStateForChapter } from "@/lib/waivers";
 
@@ -35,7 +36,7 @@ export type CreateEventInput = {
   date: string;
   /** "HH:MM" */
   time: string;
-  /** "HH:MM" */
+  /** "HH:MM" — blank means an open-ended event (ends_at stays null). */
   endTime: string;
   timezone: string;
   // Step 2 — Details
@@ -44,11 +45,13 @@ export type CreateEventInput = {
   city: string;
   state: string;
   description: string;
-  /** Raw form text — minimum 1, never "unlimited" like the edit form. */
+  /** Raw form text — blank means unlimited; otherwise at least 1. */
   capacity: string;
   leadName: string;
   leadEmail: string;
   leadPhone: string;
+  /** Shown in the RSVP confirmation email, if set. */
+  customEmailNote: string;
   registrationSections: string[];
   // Step 3 — Volunteers
   volunteersNeeded: boolean;
@@ -60,8 +63,7 @@ export type CreateEventInput = {
 };
 
 export type CreateEventResult =
-  | { ok: true; eventIds: number[]; seriesId: string | null }
-  | { ok: false; error: string };
+  { ok: true; eventIds: number[]; seriesId: string | null } | { ok: false; error: string };
 
 /**
  * Creates one event, or (for a repeating choice) up to
@@ -88,15 +90,17 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
   if (!EVENT_TYPES.includes(input.eventType as (typeof EVENT_TYPES)[number])) {
     return { ok: false, error: "Choose an event type" };
   }
-  if (!input.date || !input.time || !input.endTime) {
-    return { ok: false, error: "Date, start time, and end time are required" };
+  if (!input.date || !input.time) {
+    return { ok: false, error: "Date and start time are required" };
   }
   const timezone = input.timezone || timezoneForChapter(input.chapter);
 
   const firstStarts = zonedDateTimeToUtc(input.date, input.time, timezone);
-  const firstEnds = zonedDateTimeToUtc(input.date, input.endTime, timezone);
-  if (firstEnds.getTime() <= firstStarts.getTime()) {
-    return { ok: false, error: "End time must be after the start time" };
+  if (input.endTime) {
+    const firstEnds = zonedDateTimeToUtc(input.date, input.endTime, timezone);
+    if (firstEnds.getTime() <= firstStarts.getTime()) {
+      return { ok: false, error: "End time must be after the start time" };
+    }
   }
   if (firstStarts.getTime() < Date.now()) {
     return { ok: false, error: "Date and time can't be in the past" };
@@ -109,10 +113,9 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
   const state = input.state.trim();
   const locationProblems = locationErrors(input);
   if (locationProblems.length > 0) return { ok: false, error: locationProblems.join("; ") };
-  const capacity = Number(input.capacity.trim());
-  if (!Number.isFinite(capacity) || capacity < 1) {
-    return { ok: false, error: "Capacity must be at least 1" };
-  }
+  const capacityProblem = capacityError(input.capacity);
+  if (capacityProblem) return { ok: false, error: capacityProblem };
+  const capacity = parseCapacity(input.capacity);
   const validSectionIds = new Set(
     REGISTRATION_SECTIONS.filter((s) => !s.alwaysRequired && !s.profileOnly).map((s) => s.id),
   );
@@ -151,7 +154,11 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
       return { ok: false, error: "The repeat end date must be after the start date" };
     }
     recurrenceFrequency = input.recurrence;
-    occurrenceDates = generateRecurrenceDates(input.date, input.recurrence, input.recurrenceEndDate);
+    occurrenceDates = generateRecurrenceDates(
+      input.date,
+      input.recurrence,
+      input.recurrenceEndDate,
+    );
   }
 
   const seriesId = occurrenceDates.length > 1 ? randomUUID() : null;
@@ -161,7 +168,9 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
 
   for (const occurrenceDate of occurrenceDates) {
     const startsAt = zonedDateTimeToUtc(occurrenceDate, input.time, timezone);
-    const endsAt = zonedDateTimeToUtc(occurrenceDate, input.endTime, timezone);
+    const endsAt = input.endTime
+      ? zonedDateTimeToUtc(occurrenceDate, input.endTime, timezone)
+      : null;
 
     const { data: created, error: insertError } = await supabase
       .from("events")
@@ -180,10 +189,11 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
         lead_name: input.leadName.trim() || null,
         lead_email: input.leadEmail.trim() || null,
         lead_phone: input.leadPhone.trim() || null,
+        custom_email_note: input.customEmailNote.trim() || null,
         registration_sections: registrationSections,
         waiver_state: waiverState,
         starts_at: startsAt.toISOString(),
-        ends_at: endsAt.toISOString(),
+        ends_at: endsAt ? endsAt.toISOString() : null,
         timezone,
         is_published: true,
         status: "scheduled",
@@ -232,7 +242,9 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
     const whenSummary =
       formatEventDateRange(
         zonedDateTimeToUtc(occurrenceDates[0], input.time, timezone).toISOString(),
-        zonedDateTimeToUtc(occurrenceDates[0], input.endTime, timezone).toISOString(),
+        input.endTime
+          ? zonedDateTimeToUtc(occurrenceDates[0], input.endTime, timezone).toISOString()
+          : null,
         timezone,
       ) +
       (occurrenceDates.length > 1
@@ -244,7 +256,7 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
       { label: "Event type", before: "", after: input.eventType },
       { label: "When", before: "", after: whenSummary },
       { label: "Location", before: "", after: location ?? "" },
-      { label: "Capacity", before: "", after: String(capacity) },
+      { label: "Capacity", before: "", after: capacity == null ? "Unlimited" : String(capacity) },
     ];
     if (roles.length > 0) {
       diff.push({

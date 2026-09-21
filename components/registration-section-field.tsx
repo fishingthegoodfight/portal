@@ -22,6 +22,9 @@ export function RegistrationSectionField({
   onChange,
   editProfileHref,
   requiredNote = "Required to RSVP — none on file yet.",
+  editing = false,
+  onStartEditing,
+  onStopEditing,
 }: {
   section: RegistrationSection;
   /** The profile's values as loaded (empty for someone with no profile yet). */
@@ -32,11 +35,18 @@ export function RegistrationSectionField({
    * form, where an admin isn't editing the person's own profile). */
   editProfileHref?: string;
   requiredNote?: string;
+  /** For someone who already has an RSVP ("Update my registration"): lets a
+   * section that's complete on file be opened up for changes. `editing` is
+   * controlled by the parent, which also saves the change. */
+  editing?: boolean;
+  onStartEditing?: () => void;
+  onStopEditing?: () => void;
 }) {
   // "On file" is based on the profile as loaded, not live edits — otherwise
   // finishing the last field of a section would make it flip to the
   // read-only summary mid-fill.
-  const complete = !section.alwaysEditable && isSectionComplete(section, profileFields);
+  const complete =
+    !section.alwaysEditable && isSectionComplete(section, profileFields) && !editing;
   const fields = visibleFields(section, fieldValues);
   const hasRequiredField = fields.some((field) => field.required);
 
@@ -59,10 +69,24 @@ export function RegistrationSectionField({
               </Link>
             </>
           )}
+          {onStartEditing && (
+            <>
+              {" "}
+              <button
+                type="button"
+                onClick={onStartEditing}
+                className="underline underline-offset-4"
+              >
+                Change here
+              </button>
+            </>
+          )}
         </span>
       ) : (
         <>
-          {hasRequiredField && <span className="mb-1 text-sm text-amber-600">{requiredNote}</span>}
+          {hasRequiredField && !editing && (
+            <span className="mb-1 text-sm text-amber-600">{requiredNote}</span>
+          )}
           <div
             className={
               fields.length > 1 && section.layout !== "stack"
@@ -79,6 +103,15 @@ export function RegistrationSectionField({
               />
             ))}
           </div>
+          {editing && onStopEditing && (
+            <button
+              type="button"
+              onClick={onStopEditing}
+              className="w-fit text-sm text-muted-foreground underline underline-offset-4"
+            >
+              Cancel change
+            </button>
+          )}
         </>
       )}
     </div>

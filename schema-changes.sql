@@ -1730,3 +1730,251 @@ end $$;
 
 alter table public.events
   alter column waiver_state set not null;
+
+-- =============================================================================
+-- 2026-09-21 — Lowering capacity expires offers that no longer fit; update-my-registration
+-- =============================================================================
+
+-- When an admin lowers an event's capacity, open waitlist offers can end up
+-- holding more spots than exist (spots_taken + open offers > capacity), and
+-- those people would hit "spot no longer available" on Claim. This expires the
+-- offers that no longer fit — the people who joined the waitlist LAST lose
+-- theirs first, so earlier joiners keep theirs — and returns who was expired
+-- so the app can send the usual "offer lapsed" email. Changes nothing when
+-- everything still fits or the event is unlimited (capacity null).
+-- Internal: service-role only, like offer_waitlisted_spots.
+create or replace function public.expire_excess_offers(p_event_id bigint)
+returns table (o_user_id uuid)
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_event public.events%rowtype;
+  v_room integer;
+  v_offered integer;
+begin
+  perform 1 from public.events where id = p_event_id for update;
+  select * into v_event from public.events where id = p_event_id;
+
+  if not found or v_event.capacity is null then
+    return;
+  end if;
+
+  v_room := greatest(v_event.capacity - coalesce(v_event.spots_taken, 0), 0);
+  select count(*) into v_offered
+    from public.rsvps
+   where event_id = p_event_id and status = 'offered';
+
+  if v_offered <= v_room then
+    return;
+  end if;
+
+  return query
+  with excess as (
+    select r.id
+      from public.rsvps r
+     where r.event_id = p_event_id and r.status = 'offered'
+     order by coalesce(r.joined_at, 'infinity'::timestamptz) desc, r.id desc
+     limit v_offered - v_room
+       for update
+  )
+  update public.rsvps r
+     set status = 'expired', updated_at = now()
+    from excess
+   where r.id = excess.id
+  returning r.user_id;
+end $function$;
+
+revoke all on function public.expire_excess_offers(bigint) from public, anon, authenticated;
+grant execute on function public.expire_excess_offers(bigint) to service_role;
+
+-- "Update my registration": saves a participant's answers to an RSVP they
+-- already hold. Unlike rsvp_to_event it can never create a row or touch
+-- capacity — if the caller has no active RSVP (say they cancelled in another
+-- tab) it does nothing and returns NULL, instead of quietly re-registering
+-- them. p_update_dietary says whether this event collects the dietary answer
+-- (if not, the existing note is left alone). Returns their unchanged status.
+create or replace function public.update_rsvp_answers(
+  p_event_id bigint,
+  p_dietary text default null,
+  p_update_dietary boolean default false
+)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_status text;
+begin
+  update public.rsvps
+     set dietary_notes = case when p_update_dietary then p_dietary else dietary_notes end,
+         updated_at = now()
+   where event_id = p_event_id
+     and user_id = auth.uid()
+     and status in ('confirmed', 'waitlisted', 'offered')
+  returning status into v_status;
+
+  return v_status;
+end $function$;
+
+-- =============================================================================
+-- 2026-09-21 — Capacity-displaced offers go back on the waitlist, not "expired"
+-- =============================================================================
+-- Replaces the body of expire_excess_offers (name kept so existing callers
+-- keep working). When an admin lowers capacity and an open offer no longer
+-- fits, the person hasn't done anything wrong — the spot just doesn't exist —
+-- so instead of marking the offer 'expired' (which drops them off the list)
+-- it returns them to 'waitlisted' with their ORIGINAL joined_at, i.e. their
+-- old place in line. Same choice of who: the latest joiners lose their offer
+-- first. Still never offers a spot to anyone: with no room, the next person
+-- in line stays waiting. Cron-lapsed offers are unchanged (still 'expired').
+create or replace function public.expire_excess_offers(p_event_id bigint)
+returns table (o_user_id uuid)
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_event public.events%rowtype;
+  v_room integer;
+  v_offered integer;
+begin
+  perform 1 from public.events where id = p_event_id for update;
+  select * into v_event from public.events where id = p_event_id;
+
+  if not found or v_event.capacity is null then
+    return;
+  end if;
+
+  v_room := greatest(v_event.capacity - coalesce(v_event.spots_taken, 0), 0);
+  select count(*) into v_offered
+    from public.rsvps
+   where event_id = p_event_id and status = 'offered';
+
+  if v_offered <= v_room then
+    return;
+  end if;
+
+  return query
+  with excess as (
+    select r.id
+      from public.rsvps r
+     where r.event_id = p_event_id and r.status = 'offered'
+     order by coalesce(r.joined_at, 'infinity'::timestamptz) desc, r.id desc
+     limit v_offered - v_room
+       for update
+  )
+  update public.rsvps r
+     set status = 'waitlisted', offer_expires_at = null, updated_at = now()
+    from excess
+   where r.id = excess.id
+  returning r.user_id;
+end $function$;
+
+-- =============================================================================
+-- 2026-09-21 — Keep the roster's dietary note in sync with the profile answer
+-- =============================================================================
+-- rsvps.dietary_notes is a copy of the person's profiles.dietary_notes for
+-- events that collect dietary (the roster and print sheet read the copy). The
+-- copy used to be written only by the RSVP form, from the form's own state —
+-- so if the profile changed elsewhere first (profile page, another event, an
+-- earlier "Update my registration"), the form could write the OLD answer over
+-- it and the roster showed a stale value. The app now sends the profile's
+-- value, and this makes the copy correct by construction: whenever a profile's
+-- dietary answer changes, every active RSVP of theirs for an upcoming,
+-- scheduled event that collects dietary is updated to match. "No" / blank
+-- become no note, same as the RSVP form.
+create or replace function public.dietary_note_from_profile(p_value text)
+returns text
+language sql
+immutable
+as $function$
+  select case
+    when p_value is null or btrim(p_value) = '' or btrim(p_value) = 'None' then null
+    else btrim(p_value)
+  end;
+$function$;
+
+create or replace function public.sync_profile_dietary_to_rsvps()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  update public.rsvps r
+     set dietary_notes = public.dietary_note_from_profile(new.dietary_notes),
+         updated_at = now()
+    from public.events e
+   where r.user_id = new.id
+     and e.id = r.event_id
+     and r.status in ('confirmed', 'waitlisted', 'offered')
+     and 'dietary' = any(e.registration_sections)
+     and e.status = 'scheduled'
+     and e.starts_at > now()
+     and r.dietary_notes is distinct from public.dietary_note_from_profile(new.dietary_notes);
+  return new;
+end $function$;
+
+drop trigger if exists profiles_sync_dietary_to_rsvps on public.profiles;
+create trigger profiles_sync_dietary_to_rsvps
+  after update of dietary_notes on public.profiles
+  for each row
+  when (old.dietary_notes is distinct from new.dietary_notes)
+  execute function public.sync_profile_dietary_to_rsvps();
+
+-- One-time repair of copies that are already stale (same rule as the trigger).
+update public.rsvps r
+   set dietary_notes = public.dietary_note_from_profile(p.dietary_notes),
+       updated_at = now()
+  from public.profiles p, public.events e
+ where p.id = r.user_id
+   and e.id = r.event_id
+   and r.status in ('confirmed', 'waitlisted', 'offered')
+   and 'dietary' = any(e.registration_sections)
+   and e.status = 'scheduled'
+   and e.starts_at > now()
+   and r.dietary_notes is distinct from public.dietary_note_from_profile(p.dietary_notes);
+
+-- =============================================================================
+-- 2026-09-21 — Dietary copy: "answered No" is stored, distinct from "never answered"
+-- =============================================================================
+-- rsvps.dietary_notes now has three distinct states instead of two:
+--   NULL      never answered (the roster shows a "not answered" marker)
+--   'None'    answered "No" — no restrictions (the roster shows "No restrictions")
+--   any text  the restrictions
+-- Before, "No" was dropped to NULL, so it looked the same as never answering.
+-- The sync trigger already calls dietary_note_from_profile for the value, so
+-- changing that one function changes the trigger too: a profile answer of
+-- 'None' now lands on the RSVP row as 'None'. A blank/NULL profile answer stays
+-- NULL. (The app's RSVP form, "Update my registration" and the walk-up path
+-- send the same three-state value.)
+create or replace function public.dietary_note_from_profile(p_value text)
+returns text
+language sql
+immutable
+as $function$
+  select case
+    when p_value is null or btrim(p_value) = '' then null
+    else btrim(p_value)
+  end;
+$function$;
+
+-- Repair: bring every active RSVP for an upcoming, scheduled event that
+-- collects dietary in line with its person's profile — this is what turns the
+-- earlier "answered No" rows (stored as NULL) into 'None'. "Is distinct from"
+-- compares NULLs correctly, so a NULL copy IS filled when the profile has an
+-- answer, and a NULL copy for someone who never answered stays NULL.
+update public.rsvps r
+   set dietary_notes = public.dietary_note_from_profile(p.dietary_notes),
+       updated_at = now()
+  from public.profiles p, public.events e
+ where p.id = r.user_id
+   and e.id = r.event_id
+   and r.status in ('confirmed', 'waitlisted', 'offered')
+   and 'dietary' = any(e.registration_sections)
+   and e.status = 'scheduled'
+   and e.starts_at > now()
+   and r.dietary_notes is distinct from public.dietary_note_from_profile(p.dietary_notes);

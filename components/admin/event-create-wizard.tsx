@@ -10,12 +10,19 @@ import {
 } from "@/lib/actions/admin-create-event";
 import { generateRecurrenceDates, type RecurrenceFrequency } from "@/lib/admin/recurrence";
 import { timezoneForChapter } from "@/lib/chapters";
+import {
+  CapacityField,
+  CustomEmailNoteField,
+  DescriptionField,
+  EventTypeField,
+  TitleField,
+} from "@/components/admin/fields/event-text-fields";
+import { capacityError } from "@/lib/event-capacity";
 import { ChapterField } from "@/components/admin/fields/chapter-field";
 import { LocationFields } from "@/components/admin/fields/location-fields";
 import { locationErrors } from "@/lib/event-location";
-import { defaultRegistrationSectionsFor, EVENT_TYPES } from "@/lib/event-types";
+import { defaultRegistrationSectionsFor } from "@/lib/event-types";
 import { formatEventDateRange } from "@/lib/format-date";
-import { formatPhoneNumber } from "@/lib/phone";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 import { zonedDateTimeToUtc } from "@/lib/timezone";
 import { cn } from "@/lib/utils";
@@ -52,6 +59,7 @@ function emptyForm(prefill: AdminPrefill): CreateEventInput {
     leadName: prefill.leadName,
     leadEmail: prefill.leadEmail,
     leadPhone: prefill.leadPhone,
+    customEmailNote: "",
     registrationSections: [],
     volunteersNeeded: false,
     volunteerRoles: [],
@@ -82,7 +90,6 @@ function step1Errors(form: CreateEventInput): string[] {
   if (!form.title.trim()) errors.push("Title is required");
   if (!form.date) errors.push("Date is required");
   if (!form.time) errors.push("Start time is required");
-  if (!form.endTime) errors.push("End time is required");
   if (form.time && form.endTime && form.endTime <= form.time) {
     errors.push("End time must be after the start time");
   }
@@ -95,10 +102,8 @@ function step1Errors(form: CreateEventInput): string[] {
 function step2Errors(form: CreateEventInput): string[] {
   const errors: string[] = [];
   errors.push(...locationErrors(form));
-  const capacity = Number(form.capacity.trim());
-  if (!form.capacity.trim() || !Number.isFinite(capacity) || capacity < 1) {
-    errors.push("Capacity must be at least 1");
-  }
+  const capacityProblem = capacityError(form.capacity);
+  if (capacityProblem) errors.push(capacityProblem);
   return errors;
 }
 
@@ -303,11 +308,11 @@ export function EventCreateWizard({ adminPrefill }: { adminPrefill: AdminPrefill
   };
 
   const whenPreview = (() => {
-    if (!form.date || !form.time || !form.endTime || !form.timezone) return null;
+    if (!form.date || !form.time || !form.timezone) return null;
     try {
       return formatEventDateRange(
         zonedDateTimeToUtc(form.date, form.time, form.timezone).toISOString(),
-        zonedDateTimeToUtc(form.date, form.endTime, form.timezone).toISOString(),
+        form.endTime ? zonedDateTimeToUtc(form.date, form.endTime, form.timezone).toISOString() : null,
         form.timezone,
       );
     } catch {
@@ -349,32 +354,9 @@ export function EventCreateWizard({ adminPrefill }: { adminPrefill: AdminPrefill
           <div className="flex flex-col gap-4">
             <div className="grid grid-cols-2 gap-4">
               <ChapterField idPrefix="create" value={form.chapter} onChange={updateChapter} />
-              <div className="grid gap-2">
-                <Label htmlFor="create_event_type">Event type</Label>
-                <Select
-                  id="create_event_type"
-                  required
-                  value={form.eventType}
-                  onChange={(e) => updateEventType(e.target.value)}
-                >
-                  <option value="">Select a type</option>
-                  {EVENT_TYPES.map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ))}
-                </Select>
-              </div>
+              <EventTypeField idPrefix="create" value={form.eventType} onChange={updateEventType} />
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="create_title">Title</Label>
-              <Input
-                id="create_title"
-                required
-                value={form.title}
-                onChange={(e) => setField("title")(e.target.value)}
-              />
-            </div>
+            <TitleField idPrefix="create" value={form.title} onChange={setField("title")} />
             {form.chapter ? (
               <DateTimeFields
                 idPrefix="create"
@@ -387,7 +369,6 @@ export function EventCreateWizard({ adminPrefill }: { adminPrefill: AdminPrefill
                 onChangeEndTime={setField("endTime")}
                 onChangeTimezone={setField("timezone")}
                 timezoneDerived
-                requireEndTime
                 onOverrideTimezone={() => setTimezoneOverridden(true)}
               />
             ) : (
@@ -406,27 +387,13 @@ export function EventCreateWizard({ adminPrefill }: { adminPrefill: AdminPrefill
               onChange={(field, value) => setField(field)(value)}
             />
 
-            <div className="grid gap-2">
-              <Label htmlFor="create_description">Public description</Label>
-              <Textarea
-                id="create_description"
-                value={form.description}
-                onChange={(e) => setField("description")(e.target.value)}
-              />
-            </div>
+            <DescriptionField
+              idPrefix="create"
+              value={form.description}
+              onChange={setField("description")}
+            />
 
-            <div className="grid gap-2">
-              <Label htmlFor="create_capacity">Capacity</Label>
-              <Input
-                id="create_capacity"
-                type="number"
-                inputMode="numeric"
-                min={1}
-                required
-                value={form.capacity}
-                onChange={(e) => setField("capacity")(e.target.value)}
-              />
-            </div>
+            <CapacityField idPrefix="create" value={form.capacity} onChange={setField("capacity")} />
 
             <LeadContactFields
               idPrefix="create"
@@ -434,8 +401,14 @@ export function EventCreateWizard({ adminPrefill }: { adminPrefill: AdminPrefill
               phone={form.leadPhone}
               email={form.leadEmail}
               onChangeName={setField("leadName")}
-              onChangePhone={(v) => setField("leadPhone")(formatPhoneNumber(v))}
+              onChangePhone={setField("leadPhone")}
               onChangeEmail={setField("leadEmail")}
+            />
+
+            <CustomEmailNoteField
+              idPrefix="create"
+              value={form.customEmailNote}
+              onChange={setField("customEmailNote")}
             />
 
             <RegistrationSectionsFields
@@ -617,11 +590,12 @@ export function EventCreateWizard({ adminPrefill }: { adminPrefill: AdminPrefill
                   .join(", ")}
               />
               <ReviewRow label="Description" value={form.description || "—"} />
-              <ReviewRow label="Capacity" value={form.capacity} />
+              <ReviewRow label="Capacity" value={form.capacity.trim() || "Unlimited"} />
               <ReviewRow
                 label="Lead contact"
                 value={[form.leadName, form.leadPhone, form.leadEmail].filter(Boolean).join(" · ") || "—"}
               />
+              <ReviewRow label="Custom email note" value={form.customEmailNote.trim() || "—"} />
               <ReviewRow
                 label="Registration sections"
                 value={

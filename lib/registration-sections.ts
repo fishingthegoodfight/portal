@@ -340,6 +340,45 @@ export function isSectionComplete(
   );
 }
 
+/**
+ * What an RSVP row's dietary copy says, in three distinct states:
+ *   null          → never answered (or the event doesn't collect it)
+ *   DIETARY_NONE  → answered "No" — no restrictions
+ *   any text      → the restrictions
+ * The roster and print sheet show each differently (see dietaryDisplay).
+ */
+export type DietaryDisplay =
+  | { kind: "not_answered" }
+  | { kind: "none" }
+  | { kind: "restrictions"; text: string };
+
+export function dietaryDisplay(note: string | null | undefined): DietaryDisplay {
+  const value = (note ?? "").trim();
+  if (!value) return { kind: "not_answered" };
+  if (value === DIETARY_NONE) return { kind: "none" };
+  return { kind: "restrictions", text: value };
+}
+
+/**
+ * The dietary answer copied onto an RSVP row for the roster and print sheet —
+ * or null when the event doesn't collect dietary or nothing has been answered.
+ * "No" is kept as the DIETARY_NONE sentinel (not dropped to null) so "answered
+ * No" stays distinguishable from "never answered". Taken from what's being saved now (`updates`) or else what the
+ * PROFILE has on file (`onFile`) — never from a form's own state, which can be
+ * stale when the profile was changed elsewhere (the profile page, another
+ * event) since the form was loaded. One rule for the RSVP form, "Update my
+ * registration" and the walk-up action.
+ */
+export function dietaryNoteForRsvp(
+  sections: RegistrationSection[],
+  onFile: Record<string, string>,
+  updates: Record<string, string>,
+): string | null {
+  if (!sections.some((section) => section.id === "dietary")) return null;
+  const value = (updates.dietary_notes ?? onFile.dietary_notes ?? "").trim();
+  return value || null;
+}
+
 /** The sections that apply to a given event: always-required ones plus
  * whichever optional ones are listed in that event's `registration_sections`. */
 export function sectionsForEvent(
@@ -386,12 +425,23 @@ export function collectSectionUpdates(
   sections: RegistrationSection[],
   onFile: Record<string, string>,
   values: Record<string, string>,
+  options: {
+    /** Section ids to save even though they're already complete on file — a
+     * participant who chose to change an existing answer. */
+    include?: ReadonlySet<string>;
+  } = {},
 ): Record<string, string> {
   const cleared = withHiddenFieldsCleared(values);
   const updates: Record<string, string> = {};
   for (const section of sections) {
     if (section.kind === "waiver") continue;
-    if (!section.alwaysEditable && isSectionComplete(section, onFile)) continue;
+    if (
+      !section.alwaysEditable &&
+      !options.include?.has(section.id) &&
+      isSectionComplete(section, onFile)
+    ) {
+      continue;
+    }
     for (const field of section.fields) {
       const value = (cleared[field.key] ?? "").trim();
       if (value || !isFieldVisible(field, cleared)) updates[field.key] = value;

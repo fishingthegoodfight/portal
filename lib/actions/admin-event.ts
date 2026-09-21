@@ -4,7 +4,11 @@ import { createClient } from "@/lib/supabase/server";
 import { actorLabel, requireAdmin } from "@/lib/admin/require-admin";
 import { formatEventDateRange } from "@/lib/format-date";
 import { zonedDateTimeToUtc } from "@/lib/timezone";
-import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
+import {
+  isSectionComplete,
+  profileValueFromColumn,
+  REGISTRATION_SECTIONS,
+} from "@/lib/registration-sections";
 import {
   previewEventCancellationEmail,
   sendAdminChangeNotificationEmail,
@@ -14,7 +18,9 @@ import {
   type RsvpEmailEvent,
 } from "@/lib/email/send";
 import type { EventChangeDiffEntry } from "@/lib/email/templates";
-import { offerFreeSpots } from "@/lib/waitlist";
+import { expireExcessOffers, offerFreeSpots } from "@/lib/waitlist";
+import { capacityError, parseCapacity } from "@/lib/event-capacity";
+import { EVENT_TYPES } from "@/lib/event-types";
 import { composeLocation, isLocationEmpty, locationErrors } from "@/lib/event-location";
 import { CHAPTERS } from "@/lib/chapters";
 import {
@@ -29,6 +35,7 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 type EventRow = {
   id: number;
   name: string;
+  event_type: string | null;
   description: string | null;
   location: string | null;
   venue_name: string | null;
@@ -52,7 +59,7 @@ type EventRow = {
 };
 
 const EVENT_COLUMNS =
-  "id, name, description, location, venue_name, street_address, city, state, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason";
+  "id, name, event_type, description, location, venue_name, street_address, city, state, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason";
 
 async function loadEvent(
   supabase: SupabaseServerClient,
@@ -199,6 +206,7 @@ function buildDiff(before: EventRow, after: EventRow): EventChangeDiffEntry[] {
   };
 
   push("Title", before.name, after.name);
+  push("Event type", before.event_type ?? "", after.event_type ?? "");
   push("Chapter", before.chapter ?? "", after.chapter ?? "");
   push("Description", before.description ?? "", after.description ?? "");
   push("Location", before.location ?? "", after.location ?? "");
@@ -226,6 +234,8 @@ function buildDiff(before: EventRow, after: EventRow): EventChangeDiffEntry[] {
 
 export type EventEditInput = {
   name: string;
+  /** One of lib/event-types.ts (or the event's existing legacy value). Changing it never re-defaults the registration sections. */
+  eventType: string;
   /** Must be one of lib/chapters.ts — also decides which state's waiver applies. */
   chapter: string;
   description: string;
@@ -235,7 +245,7 @@ export type EventEditInput = {
   streetAddress: string;
   city: string;
   state: string;
-  /** Raw form text — "" means unlimited. */
+  /** Raw form text — "" means unlimited, otherwise at least 1 (lib/event-capacity.ts). */
   capacity: string;
   leadName: string;
   leadPhone: string;
@@ -270,11 +280,76 @@ export type WaiverChangeImpact = {
   newWaiverMissing: boolean;
 };
 
+/** Something the admin should confirm before an edit is saved. Returned (with
+ * nothing written) until they confirm; several can apply at once. */
+export type EditWarning =
+  | ({ kind: "waiver"; severity: "warning" } & WaiverChangeImpact)
+  | {
+      kind: "capacity";
+      severity: "warning" | "strong";
+      newCapacity: number;
+      confirmedCount: number;
+      /** How many confirmed people exceed the new capacity (0 if none). */
+      overBy: number;
+      openOffers: number;
+      /** Open offers that no longer fit and will be expired (and emailed). */
+      offersDisplaced: number;
+    }
+  | { kind: "past_date"; severity: "warning"; registeredCount: number }
+  | { kind: "sections_removed"; severity: "warning"; titles: string[] }
+  | {
+      kind: "sections_added";
+      severity: "warning";
+      registeredCount: number;
+      sections: { title: string; missingCount: number }[];
+    };
+
 export type UpdateEventResult =
-  | ({ ok: true; needsWaiverConfirm: true } & WaiverChangeImpact)
+  | { ok: true; needsConfirm: true; warnings: EditWarning[] }
   | { ok: true; needsNotifyDecision: true; confirmedCount: number }
   | { ok: true; needsNotifyDecision: false }
   | { ok: false; error: string };
+
+const sectionTitleById = (id: string) =>
+  REGISTRATION_SECTIONS.find((s) => s.id === id)?.title ?? id;
+
+/** The people holding or awaiting a spot, with what they've answered so far —
+ * read once and reused for every warning. */
+async function loadRegistrants(supabase: SupabaseServerClient, eventId: number) {
+  const { data: rsvps } = await supabase
+    .from("rsvps")
+    .select("user_id, status")
+    .eq("event_id", eventId)
+    .in("status", ["confirmed", "waitlisted", "offered"]);
+  const rows = (rsvps ?? []) as { user_id: string; status: string }[];
+  return {
+    userIds: rows.map((r) => r.user_id),
+    confirmedCount: rows.filter((r) => r.status === "confirmed").length,
+    offeredCount: rows.filter((r) => r.status === "offered").length,
+  };
+}
+
+/** How many of these people haven't answered a section yet (per their profile). */
+async function countMissingAnswers(
+  supabase: SupabaseServerClient,
+  sectionId: string,
+  userIds: string[],
+): Promise<number> {
+  const section = REGISTRATION_SECTIONS.find((s) => s.id === sectionId);
+  if (!section || userIds.length === 0) return 0;
+  const { data: profiles } = await supabase.from("profiles").select("*").in("id", userIds);
+  const byId = new Map((profiles ?? []).map((p) => [p.id as string, p]));
+  let missing = 0;
+  for (const userId of userIds) {
+    const profile = byId.get(userId);
+    const values: Record<string, string> = {};
+    for (const field of section.fields) {
+      values[field.key] = profileValueFromColumn(field, profile?.[field.key]);
+    }
+    if (!isSectionComplete(section, values)) missing++;
+  }
+  return missing;
+}
 
 /**
  * Saves an event edit. When the date, time, or location changes and the
@@ -288,9 +363,9 @@ export async function updateEventAction(
   eventId: number,
   input: EventEditInput,
   notifyAttendees: boolean | null,
-  /** The admin has confirmed a chapter change that switches the event to the
-   * other state's waiver (see WaiverChangeImpact). */
-  confirmWaiverChange = false,
+  /** The admin has confirmed the warnings returned by an earlier call (see
+   * EditWarning). Pass true on the follow-up call to actually save. */
+  confirmed = false,
 ): Promise<UpdateEventResult> {
   const supabase = await createClient();
   const adminCheck = await requireAdmin(supabase);
@@ -304,10 +379,18 @@ export async function updateEventAction(
   if (!input.date || !input.time) return { ok: false, error: "Date and time are required" };
   if (!input.timezone) return { ok: false, error: "Time zone is required" };
 
-  const capacityTrimmed = input.capacity.trim();
-  const capacity = capacityTrimmed === "" ? null : Number(capacityTrimmed);
-  if (capacity != null && (!Number.isFinite(capacity) || capacity < 0)) {
-    return { ok: false, error: "Capacity must be a positive number" };
+  // One rule with the create wizard: blank = unlimited, otherwise at least 1.
+  const capacityProblem = capacityError(input.capacity);
+  if (capacityProblem) return { ok: false, error: capacityProblem };
+  const capacity = parseCapacity(input.capacity);
+
+  // Event type: from the list, or unchanged (an older event may carry a value
+  // that isn't in it).
+  if (
+    !EVENT_TYPES.includes(input.eventType as (typeof EVENT_TYPES)[number]) &&
+    input.eventType !== before.event_type
+  ) {
+    return { ok: false, error: "Choose an event type" };
   }
 
   const validSectionIds = new Set(
@@ -341,6 +424,7 @@ export async function updateEventAction(
   const after: EventRow = {
     ...before,
     name,
+    event_type: input.eventType,
     chapter: input.chapter,
     description: input.description.trim() || null,
     location: keepLegacyLocation ? before.location : composeLocation(input),
@@ -369,13 +453,79 @@ export async function updateEventAction(
     (before.location ?? null) !== (after.location ?? null) ||
     chapterChanged;
 
-  // Moving to a chapter in the other state (CO <-> GA) swaps the waiver:
-  // registered people signed the old state's, so they'll need to sign the new
-  // one. Warn and require confirmation before writing anything. Within the
-  // same state (Denver -> CO Springs) nothing changes for them, so no warning.
-  if (before.waiver_state !== after.waiver_state && !confirmWaiverChange) {
-    const impact = await waiverChangeImpact(supabase, before, after);
-    if (impact) return { ok: true, needsWaiverConfirm: true, ...impact };
+  // Anything the admin should confirm first — nothing is written until they do.
+  if (!confirmed) {
+    const warnings: EditWarning[] = [];
+    const registrants = await loadRegistrants(supabase, eventId);
+
+    // Moving to a chapter in the other state (CO <-> GA) swaps the waiver:
+    // registered people signed the old state's, so they'll need to sign the new
+    // one. Within the same state (Denver -> CO Springs) nothing changes for them.
+    if (before.waiver_state !== after.waiver_state) {
+      const impact = await waiverChangeImpact(supabase, before, after);
+      if (impact) warnings.push({ kind: "waiver", severity: "warning", ...impact });
+    }
+
+    // Lowering capacity: nobody is removed, but confirmed people can end up over
+    // the new limit, and open waitlist offers that no longer fit get expired.
+    if (after.capacity != null && after.capacity !== before.capacity) {
+      const overBy = Math.max(registrants.confirmedCount - after.capacity, 0);
+      const room = Math.max(after.capacity - registrants.confirmedCount, 0);
+      const offersDisplaced = Math.max(registrants.offeredCount - room, 0);
+      if (overBy > 0 || offersDisplaced > 0) {
+        warnings.push({
+          kind: "capacity",
+          severity: offersDisplaced > 0 ? "strong" : "warning",
+          newCapacity: after.capacity,
+          confirmedCount: registrants.confirmedCount,
+          overBy,
+          openOffers: registrants.offeredCount,
+          offersDisplaced,
+        });
+      }
+    }
+
+    // Moving the start into the past for an event people have signed up for.
+    if (
+      before.starts_at !== after.starts_at &&
+      new Date(after.starts_at).getTime() < Date.now() &&
+      registrants.userIds.length > 0
+    ) {
+      warnings.push({
+        kind: "past_date",
+        severity: "warning",
+        registeredCount: registrants.userIds.length,
+      });
+    }
+
+    // Registration sections: removing stops collecting them; adding leaves
+    // people who already registered without an answer.
+    const beforeSections = new Set(before.registration_sections ?? []);
+    const afterSections = new Set(after.registration_sections ?? []);
+    const removed = [...beforeSections].filter((id) => !afterSections.has(id));
+    const added = [...afterSections].filter((id) => !beforeSections.has(id));
+    if (removed.length > 0) {
+      warnings.push({
+        kind: "sections_removed",
+        severity: "warning",
+        titles: removed.map(sectionTitleById),
+      });
+    }
+    if (added.length > 0 && registrants.userIds.length > 0) {
+      warnings.push({
+        kind: "sections_added",
+        severity: "warning",
+        registeredCount: registrants.userIds.length,
+        sections: await Promise.all(
+          added.map(async (id) => ({
+            title: sectionTitleById(id),
+            missingCount: await countMissingAnswers(supabase, id, registrants.userIds),
+          })),
+        ),
+      });
+    }
+
+    if (warnings.length > 0) return { ok: true, needsConfirm: true, warnings };
   }
 
   if (dateTimeOrLocationChanged && notifyAttendees === null) {
@@ -392,6 +542,7 @@ export async function updateEventAction(
     .from("events")
     .update({
       name: after.name,
+      event_type: after.event_type,
       chapter: after.chapter,
       description: after.description,
       location: after.location,
@@ -414,6 +565,12 @@ export async function updateEventAction(
     })
     .eq("id", eventId);
   if (updateError) return { ok: false, error: updateError.message };
+
+  // Less room than before: expire any open offers that no longer fit and send
+  // those people the usual "offer lapsed" email.
+  if (after.capacity != null && after.capacity !== before.capacity) {
+    await expireExcessOffers(eventId);
+  }
 
   // More room than before: spots that just opened go to the waitlist, same
   // as if someone had cancelled.

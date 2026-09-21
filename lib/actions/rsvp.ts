@@ -100,6 +100,41 @@ export async function confirmRsvpAction(
 }
 
 /**
+ * "Update my registration": saves answers for an RSVP the caller already
+ * holds (dietary note on the RSVP row; the profile part is saved by the form
+ * the same way a fresh RSVP does). Goes through update_rsvp_answers, which can
+ * only touch an existing active RSVP — it never creates one, changes status,
+ * or takes capacity — and sends no confirmation email. `updateDietary` says
+ * whether this event collects the dietary answer; if not, the existing note is
+ * left alone.
+ */
+export async function updateRegistrationAction(
+  eventId: number,
+  dietaryNotes: string | null,
+  updateDietary: boolean,
+): Promise<RsvpActionResult> {
+  const supabase = await createClient();
+  const { data: claims, error: authError } = await supabase.auth.getClaims();
+  if (authError || !claims?.claims) {
+    return { ok: false, error: "Not authenticated" };
+  }
+
+  const { data, error } = await supabase.rpc("update_rsvp_answers", {
+    p_event_id: eventId,
+    p_dietary: dietaryNotes,
+    p_update_dietary: updateDietary,
+  });
+  if (error) {
+    console.error(`[update-registration] event ${eventId}: update_rsvp_answers failed:`, error);
+    return { ok: false, error: error.message };
+  }
+  if (typeof data !== "string" || !data) {
+    return { ok: false, error: "You don't have an active RSVP for this event to update." };
+  }
+  return { ok: true, status: data };
+}
+
+/**
  * Cancels the caller's RSVP via the cancel_rsvp RPC — which, in the same
  * transaction, offers a freed confirmed spot (or a declined offer) to the
  * next person on the waitlist — then sends the emails: the cancellation to

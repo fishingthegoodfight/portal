@@ -26,12 +26,18 @@ import { Label } from "@/components/ui/label";
 import { RegistrationFieldInput } from "@/components/registration-fields";
 import { formatPhoneNumber } from "@/lib/phone";
 import {
+  dietaryDisplay,
   firstIncompleteSection,
   REGISTRATION_SECTIONS,
   sectionsForEvent,
 } from "@/lib/registration-sections";
 import { cn } from "@/lib/utils";
-import type { RosterPerson, RosterWaiver, WaitlistPerson } from "@/lib/admin/roster";
+import type {
+  RosterDietary,
+  RosterPerson,
+  RosterWaiver,
+  WaitlistPerson,
+} from "@/lib/admin/roster";
 
 const DIRECTORY_FIELD = REGISTRATION_SECTIONS.find((s) => s.id === "directory")!.fields[0];
 
@@ -63,6 +69,7 @@ export function EventRoster({
   initialRoster,
   initialWaitlist,
   waiver,
+  dietary,
   registrationSectionIds,
 }: {
   eventId: number;
@@ -72,6 +79,7 @@ export function EventRoster({
   initialRoster: RosterPerson[];
   initialWaitlist: WaitlistPerson[];
   waiver: RosterWaiver;
+  dietary: RosterDietary;
   /** The event's registration_sections ids — the walk-up form collects the
    * same sections the RSVP form would. */
   registrationSectionIds: string[];
@@ -409,6 +417,22 @@ export function EventRoster({
         )}
       </div>
 
+      {dietary.collected && (
+        <div
+          className={cn(
+            "rounded-md border p-3 text-sm",
+            dietary.notAnsweredCount > 0
+              ? "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+              : "border-green-600/40 bg-green-600/10",
+          )}
+        >
+          <span className="font-semibold">Dietary</span> —{" "}
+          {dietary.notAnsweredCount > 0
+            ? `${dietary.notAnsweredCount} of ${roster.length} on the roster haven't answered`
+            : "everyone on the roster has answered"}
+        </div>
+      )}
+
       {checkInError && <p className="text-sm text-red-500">{checkInError}</p>}
 
       {waitlistError && (
@@ -456,6 +480,7 @@ export function EventRoster({
                 <RosterRow
                   key={person.rsvpId}
                   person={person}
+                  collectsDietary={dietary.collected}
                   onToggleCheckIn={toggleCheckIn}
                   onRemove={(p) =>
                     removePerson(
@@ -745,11 +770,13 @@ function WaitlistRow({
 
 function RosterRow({
   person,
+  collectsDietary,
   onToggleCheckIn,
   onRemove,
   removing,
 }: {
   person: RosterPerson;
+  collectsDietary: boolean;
   onToggleCheckIn: (person: RosterPerson) => void;
   onRemove: (person: RosterPerson) => void;
   removing: boolean;
@@ -774,9 +801,7 @@ function RosterRow({
             WAIVER NOT SIGNED
           </span>
         )}
-        {person.dietaryNotes && (
-          <span className="text-sm text-muted-foreground">Dietary: {person.dietaryNotes}</span>
-        )}
+        <DietaryLine note={person.dietaryNotes} collected={collectsDietary} />
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <Button
@@ -802,5 +827,23 @@ function RosterRow({
         </button>
       </div>
     </li>
+  );
+}
+
+/** One person's dietary answer: the restrictions, "No restrictions", or — when
+ * the event collects it and they haven't answered — a clear marker. */
+function DietaryLine({ note, collected }: { note: string | null; collected: boolean }) {
+  const display = dietaryDisplay(note);
+  if (display.kind === "restrictions") {
+    return <span className="text-sm text-muted-foreground">Dietary: {display.text}</span>;
+  }
+  if (!collected) return null;
+  if (display.kind === "none") {
+    return <span className="text-sm text-muted-foreground">Dietary: No restrictions</span>;
+  }
+  return (
+    <span className="w-fit rounded bg-amber-500 px-2 py-0.5 text-xs font-bold tracking-wide text-black">
+      DIETARY NOT ANSWERED
+    </span>
   );
 }

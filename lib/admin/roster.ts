@@ -67,8 +67,16 @@ export type RosterWaiver = {
   problem: string | null;
 };
 
+/** Whether the event collects a dietary answer, and how many on the roster
+ * haven't given one (a "No" counts as answered). */
+export type RosterDietary = {
+  collected: boolean;
+  notAnsweredCount: number;
+};
+
 export type EventRoster = {
   event: AdminEventSummary;
+  dietary: RosterDietary;
   waiver: RosterWaiver;
   /** Confirmed attendees only, sorted by last name. */
   roster: RosterPerson[];
@@ -208,8 +216,15 @@ export async function loadEventRoster(
     };
   });
 
+  const collectsDietary =
+    (event.registration_sections as string[] | null)?.includes("dietary") ?? false;
+
   return {
     event: event as AdminEventSummary,
+    dietary: {
+      collected: collectsDietary,
+      notAnsweredCount: collectsDietary ? roster.filter((p) => !p.dietaryNotes?.trim()).length : 0,
+    },
     waiver: { heading: waiverHeadingText, problem: waiverProblem },
     roster,
     waitlist,

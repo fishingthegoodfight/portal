@@ -471,8 +471,19 @@ export function waitlistOfferEmail(info: RsvpEmailEventInfo, expiresLabel: strin
   return { subject, html, text };
 }
 
-/** Sent when a waitlist offer lapses unclaimed. */
-export function waitlistOfferExpiredEmail(info: RsvpEmailEventInfo): RenderedEmail {
+/**
+ * Sent when a waitlist offer lapses unclaimed (the hourly cron), or — with
+ * `reason: "capacity"` — when an admin lowered the event's capacity and the
+ * offered spot no longer exists. The capacity variant doesn't claim the spot
+ * went to the next person (it didn't; there is no spot) and tells them
+ * they're back on the waitlist in their original place.
+ */
+export function waitlistOfferExpiredEmail(
+  info: RsvpEmailEventInfo,
+  options: { reason?: "capacity" } = {},
+): RenderedEmail {
+  if (options.reason === "capacity") return waitlistSpotRemovedEmail(info);
+
   const name = escapeHtml(info.name);
   const subject = `Your spot offer lapsed: ${info.name}`;
 
@@ -490,6 +501,32 @@ export function waitlistOfferExpiredEmail(info: RsvpEmailEventInfo): RenderedEma
     `The spot we were holding for you at ${info.name} (${info.dateRange}) wasn't claimed in time, so it's been offered to the next person on the waitlist. You're no longer on the waitlist.`,
     "",
     `Still want to come? Join the waitlist again (you'll go to the back of the line): ${info.eventUrl}`,
+  ].join("\n");
+
+  return { subject, html, text };
+}
+
+function waitlistSpotRemovedEmail(info: RsvpEmailEventInfo): RenderedEmail {
+  const name = escapeHtml(info.name);
+  const subject = `Your spot is no longer available: ${info.name}`;
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">Your spot is no longer available</p>`,
+      `<p style="margin:0 0 16px;">The capacity for <strong>${name}</strong> (${escapeHtml(info.dateRange)}) was reduced, so the spot we were holding for you is no longer available.</p>`,
+      `<p style="margin:0 0 16px;">You're back on the waitlist, in your original place, and we'll email you if a spot opens up.</p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Don't want to stay on the waitlist? Open the <a href="${info.eventUrl}" style="color:#166534;">event page</a> and click "Leave waitlist."</p>`,
+    ].join("\n"),
+  );
+
+  const text = [
+    "Your spot is no longer available",
+    "",
+    `The capacity for ${info.name} (${info.dateRange}) was reduced, so the spot we were holding for you is no longer available.`,
+    "",
+    "You're back on the waitlist, in your original place, and we'll email you if a spot opens up.",
+    "",
+    `Don't want to stay on the waitlist? Open the event page and click "Leave waitlist": ${info.eventUrl}`,
   ].join("\n");
 
   return { subject, html, text };

@@ -18,7 +18,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, name, description, location, venue_name, street_address, city, state, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, starts_at, ends_at, timezone, chapter, status, waiver_state",
+      "id, name, event_type, series_id, description, location, venue_name, street_address, city, state, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, starts_at, ends_at, timezone, chapter, status, waiver_state",
     )
     .eq("id", eventId)
     .maybeSingle();
@@ -39,6 +39,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
     <EventEditForm
       eventId={event.id}
       isCancelled={event.status === "cancelled"}
+      isPartOfSeries={Boolean(event.series_id)}
       legacyLocation={
         !event.venue_name && !event.street_address && !event.city && !event.state
           ? event.location
@@ -52,6 +53,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
       }
       initial={{
         name: event.name,
+        eventType: event.event_type ?? "",
         chapter: event.chapter ?? "",
         description: event.description ?? "",
         venueName: event.venue_name ?? "",

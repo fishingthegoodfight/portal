@@ -26,7 +26,7 @@ import {
  *   /api/dev/test-email?to=you@example.com&event_id=1&kind=event-restore
  *   /api/dev/test-email?event_id=1&kind=admin-notify  (uses ADMIN_NOTIFICATION_EMAILS, ignores ?to=)
  *   /api/dev/test-email?to=you@example.com&event_id=1&kind=waitlist-offer
- *   /api/dev/test-email?to=you@example.com&event_id=1&kind=waitlist-expired
+ *   /api/dev/test-email?to=you@example.com&event_id=1&kind=waitlist-expired[&reason=capacity]
  *   /api/dev/test-email?event_id=1&kind=lead-cancel[&offered=1]  (goes to the event's lead_email, ignores ?to=)
  */
 export async function GET(request: NextRequest) {
@@ -83,7 +83,11 @@ export async function GET(request: NextRequest) {
         });
         break;
       case "waitlist-expired":
-        await sendWaitlistOfferExpiredEmail({ event, toEmail: to! });
+        await sendWaitlistOfferExpiredEmail({
+          event,
+          toEmail: to!,
+          reason: searchParams.get("reason") === "capacity" ? "capacity" : undefined,
+        });
         break;
       case "lead-cancel":
         if (!event.lead_email) {

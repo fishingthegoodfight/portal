@@ -18,8 +18,8 @@ import { TIMEZONE_OPTIONS } from "@/lib/chapters";
  *   chapter and shows it as plain text with an "Override" link that reveals
  *   the select (edit always shows the select directly, since there's no
  *   "derive from" step there).
- * - `requireEndTime`: create requires an end time; edit allows leaving it
- *   blank for an open-ended event.
+ * End time is optional on both forms: blank means an open-ended event
+ * (`ends_at` stays null).
  */
 export function DateTimeFields({
   idPrefix,
@@ -32,7 +32,6 @@ export function DateTimeFields({
   onChangeEndTime,
   onChangeTimezone,
   timezoneDerived = false,
-  requireEndTime = false,
   onOverrideTimezone,
 }: {
   idPrefix: string;
@@ -45,7 +44,6 @@ export function DateTimeFields({
   onChangeEndTime: (value: string) => void;
   onChangeTimezone: (value: string) => void;
   timezoneDerived?: boolean;
-  requireEndTime?: boolean;
   /** Fires once, the moment the admin clicks "Override" — lets a caller
    * that was auto-deriving `timezone` from something else (the create
    * wizard, from the chosen chapter) know to stop clobbering it. */
@@ -118,16 +116,11 @@ export function DateTimeFields({
         <Input
           id={`${idPrefix}_end_time`}
           type="time"
-          required={requireEndTime}
-          placeholder={requireEndTime ? undefined : "Optional"}
+          placeholder="Optional"
           value={endTime}
           onChange={(e) => onChangeEndTime(e.target.value)}
         />
-        {!requireEndTime && (
-          <span className="text-xs text-muted-foreground">
-            Leave blank for an open-ended event.
-          </span>
-        )}
+        <span className="text-xs text-muted-foreground">Leave blank for an open-ended event.</span>
       </div>
     </div>
   );

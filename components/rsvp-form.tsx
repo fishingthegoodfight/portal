@@ -1,11 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/client";
-import { confirmRsvpAction, cancelRsvpAction, claimOfferedSpotAction } from "@/lib/actions/rsvp";
+import {
+  confirmRsvpAction,
+  cancelRsvpAction,
+  claimOfferedSpotAction,
+  updateRegistrationAction,
+} from "@/lib/actions/rsvp";
 import { signWaiverAction } from "@/lib/actions/waiver";
 import { Button } from "@/components/ui/button";
 import {
@@ -28,9 +33,11 @@ import type { WaiverInfo } from "@/lib/waivers";
 import {
   collectSectionUpdates,
   columnValuesFromProfile,
-  DIETARY_NONE,
+  dietaryNoteForRsvp,
   firstIncompleteSection,
+  isSectionComplete,
   sectionsForEvent,
+  type RegistrationSection,
 } from "@/lib/registration-sections";
 
 type EventSummary = {
@@ -108,10 +115,34 @@ export function RsvpForm({
   const [isCancelling, setIsCancelling] = useState(false);
   const [isClaiming, setIsClaiming] = useState(false);
   const [isSigning, setIsSigning] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false);
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+  // Sections the person chose to change even though they're already complete
+  // on file ("Update my registration" — only offered once an RSVP exists).
+  const [editingSectionIds, setEditingSectionIds] = useState<Set<string>>(() => new Set());
   const [waiverSign, setWaiverSign] = useState<WaiverSignState>(EMPTY_WAIVER_SIGN);
   const [error, setError] = useState<string | null>(null);
 
   const activeSections = sectionsForEvent(event.registration_sections);
+
+  // This form keeps its own copy of the answers, seeded once from the profile.
+  // If the profile changes while it's alive (edited on the profile page, or by
+  // "Update my registration"), pull the fresh on-file values back in for any
+  // section that's complete on file and not being edited — otherwise the form
+  // would keep showing, and later saving, the old answer.
+  useEffect(() => {
+    setFieldValues((prev) => {
+      const next = { ...prev };
+      for (const section of sectionsForEvent(event.registration_sections)) {
+        if (editingSectionIds.has(section.id) || !isSectionComplete(section, profileFields)) {
+          continue;
+        }
+        for (const field of section.fields) next[field.key] = profileFields[field.key] ?? "";
+      }
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only when the server's profile values change
+  }, [profileFields]);
 
   const status = initialRsvp?.status ?? null;
   const hasActiveRsvp = Boolean(status) && status !== "cancelled";
@@ -137,6 +168,77 @@ export function RsvpForm({
   const editProfileHref = `/protected/profile?return_to=${encodeURIComponent(
     `/protected/events/${event.id}/rsvp`,
   )}`;
+
+  // What "Update my registration" would save: newly-answered sections plus any
+  // the person opened up to change. Same collection rule as a fresh RSVP.
+  const pendingUpdates = collectSectionUpdates(activeSections, profileFields, fieldValues, {
+    include: editingSectionIds,
+  });
+  const hasRegistrationChanges =
+    Object.keys(pendingUpdates).length > 0 &&
+    (editingSectionIds.size > 0 || Object.values(pendingUpdates).some(Boolean));
+
+  const startEditingSection = (sectionId: string) => {
+    setUpdateMessage(null);
+    setEditingSectionIds((prev) => new Set(prev).add(sectionId));
+  };
+
+  const stopEditingSection = (section: RegistrationSection) => {
+    // Back to what's on file, so a half-typed change doesn't linger.
+    setFieldValues((prev) => {
+      const next = { ...prev };
+      for (const field of section.fields) next[field.key] = profileFields[field.key] ?? "";
+      return next;
+    });
+    setEditingSectionIds((prev) => {
+      const next = new Set(prev);
+      next.delete(section.id);
+      return next;
+    });
+  };
+
+  // Saves answers for an RSVP that already exists, without touching its status
+  // or the event's capacity (update_rsvp_answers can't create or move an RSVP).
+  const handleUpdateRegistration = async () => {
+    setError(null);
+    setUpdateMessage(null);
+    if (incompleteRequiredSection) {
+      setError(`Complete "${incompleteRequiredSection.title}" first.`);
+      return;
+    }
+    setIsUpdating(true);
+    try {
+      const dietaryActive = activeSections.some((s) => s.id === "dietary");
+
+      // The RSVP row first: if the RSVP is gone (cancelled elsewhere) this fails
+      // before anything is written to the profile. The dietary copy comes from
+      // what's being saved or what the profile has on file — not `fieldValues`,
+      // which can be stale if the profile changed elsewhere.
+      const result = await updateRegistrationAction(
+        event.id,
+        dietaryNoteForRsvp(activeSections, profileFields, pendingUpdates),
+        dietaryActive,
+      );
+      if (!result.ok) throw new Error(result.error);
+
+      if (Object.keys(pendingUpdates).length > 0) {
+        const { error: profileError } = await createClient()
+          .from("profiles")
+          .update(columnValuesFromProfile(pendingUpdates))
+          .eq("id", userId);
+        if (profileError) throw profileError;
+      }
+
+      setEditingSectionIds(new Set());
+      setUpdateMessage("Registration updated.");
+      router.refresh();
+    } catch (err: unknown) {
+      console.error("Update registration failed:", err);
+      setError(extractErrorMessage(err));
+    } finally {
+      setIsUpdating(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -170,12 +272,11 @@ export function RsvpForm({
         if (profileError) throw profileError;
       }
 
-      const effectiveValues = { ...fieldValues, ...profileUpdates };
-      const dietaryActive = activeSections.some((s) => s.id === "dietary");
-      // The rsvp row's dietary_notes is free text for organizers — an explicit
-      // "No" (the DIETARY_NONE sentinel we keep on the profile) is just absence
-      // of notes here.
-      const dietaryNotes = effectiveValues.dietary_notes;
+      // The rsvp row's dietary_notes: the restrictions text, or the DIETARY_NONE
+      // sentinel for an explicit "No" (kept, so the roster can tell "answered
+      // No" from "never answered"). Taken from what's being saved or the
+      // profile's own value, never the form's state (see dietaryNoteForRsvp).
+      const dietaryNotes = dietaryNoteForRsvp(activeSections, profileFields, profileUpdates);
 
       // Sign the waiver first (it's stored against the exact waiver row the
       // server resolves for this event); confirmRsvpAction re-checks it.
@@ -184,12 +285,7 @@ export function RsvpForm({
         if (!signed.ok) throw new Error(signed.error);
       }
 
-      const result = await confirmRsvpAction(
-        event.id,
-        dietaryActive && dietaryNotes && dietaryNotes !== DIETARY_NONE
-          ? dietaryNotes
-          : null,
-      );
+      const result = await confirmRsvpAction(event.id, dietaryNotes);
       if (!result.ok) throw new Error(result.error);
 
       const rsvpStatus = result.status === "waitlisted" ? "waitlisted" : "confirmed";
@@ -326,6 +422,9 @@ export function RsvpForm({
                   fieldValues={fieldValues}
                   onChange={updateField}
                   editProfileHref={editProfileHref}
+                  editing={editingSectionIds.has(section.id)}
+                  onStartEditing={hasActiveRsvp ? () => startEditingSection(section.id) : undefined}
+                  onStopEditing={() => stopEditingSection(section)}
                 />
               ),
             )}
@@ -363,11 +462,25 @@ export function RsvpForm({
                 spot opens up.
               </p>
             )}
+            {updateMessage && <p className="text-sm text-green-600">{updateMessage}</p>}
             {error && <p className="text-sm text-red-500">{error}</p>}
           </CardContent>
           <CardFooter className="flex gap-2">
             {hasActiveRsvp ? (
               <>
+                <Button
+                  type="button"
+                  onClick={handleUpdateRegistration}
+                  disabled={
+                    isUpdating ||
+                    !hasRegistrationChanges ||
+                    Boolean(incompleteRequiredSection) ||
+                    isCancelling ||
+                    isClaiming
+                  }
+                >
+                  {isUpdating ? "Updating..." : "Update my registration"}
+                </Button>
                 {needsWaiverSignature && (
                   <Button
                     type="button"

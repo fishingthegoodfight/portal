@@ -5,6 +5,16 @@ import { createClient } from "@/lib/supabase/server";
 import { loadEventRoster } from "@/lib/admin/roster";
 import { formatEventDateRange } from "@/lib/format-date";
 import { PrintButton } from "@/components/admin/print-button";
+import { dietaryDisplay } from "@/lib/registration-sections";
+
+/** Restrictions text, "No restrictions", or a bold marker for no answer. */
+function DietaryCell({ note, collected }: { note: string | null; collected: boolean }) {
+  const display = dietaryDisplay(note);
+  if (display.kind === "restrictions") return <>{display.text}</>;
+  if (!collected) return <>—</>;
+  if (display.kind === "none") return <>No restrictions</>;
+  return <strong>NOT ANSWERED</strong>;
+}
 
 async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -18,7 +28,7 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
   if (!data) {
     notFound();
   }
-  const { event, roster } = data;
+  const { event, roster, dietary } = data;
 
   return (
     <div className="flex-1 w-full flex flex-col gap-6 print:gap-4">
@@ -29,7 +39,12 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
             {formatEventDateRange(event.starts_at, event.ends_at, event.timezone)}
             {event.location ? ` · ${event.location}` : ""}
           </p>
-          <p className="text-sm text-muted-foreground">{roster.length} on roster</p>
+          <p className="text-sm text-muted-foreground">
+            {roster.length} on roster
+            {dietary.collected && dietary.notAnsweredCount > 0
+              ? ` · ${dietary.notAnsweredCount} haven't answered dietary`
+              : ""}
+          </p>
         </div>
         <PrintButton />
       </div>
@@ -57,7 +72,9 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
                 </td>
                 <td className="py-2 pr-3">{person.phone || "—"}</td>
                 <td className="py-2 pr-3">{emergency || "—"}</td>
-                <td className="py-2 pr-3">{person.dietaryNotes || "—"}</td>
+                <td className="py-2 pr-3">
+                  <DietaryCell note={person.dietaryNotes} collected={dietary.collected} />
+                </td>
                 <td className="py-2 pr-3">
                   {person.waiverSignedOn ? person.waiverSignedOn : <strong>NOT SIGNED</strong>}
                 </td>

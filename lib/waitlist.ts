@@ -92,29 +92,52 @@ export async function emailWaitlistOffers(eventId: number, offers: OfferedSpot[]
 
 /** Emails "your offer lapsed" — skipped for an event that was cancelled or
  * has already started (nothing left to rejoin). `now` is the cron's clock,
- * which is faked in dev. */
+ * which is faked in dev. Every outcome is logged (sent, failed, or skipped and
+ * why) so a missing email can be traced in the server output. Returns how many
+ * went out. */
 export async function emailLapsedOffers(
   eventId: number,
   userIds: string[],
   now: Date,
+  /** "capacity": the offers went away because capacity was lowered (different
+   * wording — see waitlistOfferExpiredEmail). Omit for the cron's lapse. */
+  reason?: "capacity",
 ): Promise<number> {
   if (userIds.length === 0) return 0;
   let sent = 0;
   try {
     const admin = createAdminClient();
     const event = await loadEmailEvent(admin, eventId);
-    if (!event || event.status !== "scheduled" || new Date(event.starts_at) <= now) return 0;
+    if (!event) {
+      console.warn(`[waitlist] event ${eventId}: lapse emails skipped — event not found`);
+      return 0;
+    }
+    if (event.status !== "scheduled" || new Date(event.starts_at) <= now) {
+      console.log(
+        `[waitlist] event ${eventId}: lapse emails skipped (${userIds.length}) — event is ${
+          event.status !== "scheduled" ? event.status : "already started"
+        }`,
+      );
+      return 0;
+    }
     const profiles = await loadProfilesById(admin, userIds);
     for (const userId of userIds) {
       const toEmail = profiles.get(userId)?.email;
-      if (!toEmail) continue;
+      if (!toEmail) {
+        console.warn(
+          `[waitlist] event ${eventId}: no email on file for user ${userId} — lapse email not sent`,
+        );
+        continue;
+      }
       try {
-        await sendWaitlistOfferExpiredEmail({ event, toEmail });
+        await sendWaitlistOfferExpiredEmail({ event, toEmail, reason });
         sent++;
+        console.log(`[waitlist] event ${eventId}: lapse email sent to ${toEmail}`);
       } catch (err) {
-        console.error(`[waitlist] event ${eventId}: lapse email to ${toEmail} failed:`, err);
+        console.error(`[waitlist] event ${eventId}: lapse email to ${toEmail} FAILED:`, err);
       }
     }
+    console.log(`[waitlist] event ${eventId}: lapse emails sent ${sent} of ${userIds.length}`);
   } catch (err) {
     console.error(`[waitlist] event ${eventId}: failed to send lapse emails:`, err);
   }
@@ -163,5 +186,33 @@ export async function offeredLabels(offers: OfferedSpot[]): Promise<string[]> {
     return offers.map((o) => profiles.get(o.user_id)?.label ?? "someone on the waitlist");
   } catch {
     return offers.map(() => "someone on the waitlist");
+  }
+}
+
+/** After an admin lowers an event's capacity: withdraws the open offers that
+ * no longer fit (latest waitlist joiners first — see expire_excess_offers),
+ * returns those people to the waitlist in their original place, and emails
+ * them the capacity variant of the "offer lapsed" message. The database
+ * function never offers a spot to anyone, so nobody new is offered anything:
+ * if offers were displaced there is no room. Everything is logged, including
+ * "nothing needed withdrawing". */
+export async function expireExcessOffers(eventId: number): Promise<void> {
+  try {
+    const admin = createAdminClient();
+    const { data, error } = await admin.rpc("expire_excess_offers", { p_event_id: eventId });
+    if (error) throw error;
+    const userIds = ((data ?? []) as { o_user_id: string }[]).map((row) => row.o_user_id);
+    if (userIds.length === 0) {
+      console.log(
+        `[waitlist] event ${eventId}: capacity change — no open offers needed withdrawing`,
+      );
+      return;
+    }
+    console.log(
+      `[waitlist] event ${eventId}: capacity change withdrew ${userIds.length} open offer(s), returned to the waitlist: ${userIds.join(", ")}`,
+    );
+    await emailLapsedOffers(eventId, userIds, new Date(), "capacity");
+  } catch (err) {
+    console.error(`[waitlist] event ${eventId}: failed to withdraw excess offers:`, err);
   }
 }

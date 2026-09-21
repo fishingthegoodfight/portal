@@ -7,7 +7,7 @@ import { waiverInfoForUser } from "@/lib/waivers";
 import {
   collectSectionUpdates,
   columnValuesFromProfile,
-  DIETARY_NONE,
+  dietaryNoteForRsvp,
   firstIncompleteSection,
   isSectionComplete,
   profileValueFromColumn,
@@ -284,11 +284,11 @@ export async function addWalkupRsvpAction(input: {
   // The RSVP row carries the free-text dietary note organizers see on the
   // roster — same rule as the RSVP form: an explicit "No" is just no note.
   if (eventSections.some((section) => section.id === "dietary")) {
-    const dietary = (sectionUpdates.dietary_notes ?? onFile.dietary_notes ?? "").trim();
+    const dietary = dietaryNoteForRsvp(eventSections, onFile, sectionUpdates);
     try {
       const { error: dietaryError } = await createAdminClient()
         .from("rsvps")
-        .update({ dietary_notes: dietary && dietary !== DIETARY_NONE ? dietary : null })
+        .update({ dietary_notes: dietary })
         .eq("event_id", input.eventId)
         .eq("user_id", profileId);
       if (dietaryError) throw dietaryError;

@@ -410,11 +410,15 @@ export async function sendWaitlistOfferEmail({
 export async function sendWaitlistOfferExpiredEmail({
   event,
   toEmail,
+  reason,
 }: {
   event: RsvpEmailEvent;
   toEmail: string;
+  /** "capacity" when the offer went away because an admin lowered capacity
+   * (default: it simply lapsed, as the cron reports). */
+  reason?: "capacity";
 }): Promise<void> {
-  const { subject, html, text } = waitlistOfferExpiredEmail(buildEventInfo(event));
+  const { subject, html, text } = waitlistOfferExpiredEmail(buildEventInfo(event), { reason });
   await deliverEmail({ to: toEmail, subject, html, text });
 }
 
