@@ -74,3 +74,13 @@ export function formatEventInstant(instant: string, timeZone: string): string {
   const at = new Date(instant);
   return `${date.format(at)} · ${timeWithZone.format(at)}`;
 }
+
+/** Just the calendar date of an instant in a timezone, e.g. "Sep 21, 2026". */
+export function formatDateInZone(instant: string, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    timeZone,
+  }).format(new Date(instant));
+}

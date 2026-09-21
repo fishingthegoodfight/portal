@@ -9,7 +9,10 @@ import {
   type VolunteerRoleInput,
 } from "@/lib/actions/admin-create-event";
 import { generateRecurrenceDates, type RecurrenceFrequency } from "@/lib/admin/recurrence";
-import { CHAPTERS, timezoneForChapter } from "@/lib/chapters";
+import { timezoneForChapter } from "@/lib/chapters";
+import { ChapterField } from "@/components/admin/fields/chapter-field";
+import { LocationFields } from "@/components/admin/fields/location-fields";
+import { locationErrors } from "@/lib/event-location";
 import { defaultRegistrationSectionsFor, EVENT_TYPES } from "@/lib/event-types";
 import { formatEventDateRange } from "@/lib/format-date";
 import { formatPhoneNumber } from "@/lib/phone";
@@ -91,10 +94,7 @@ function step1Errors(form: CreateEventInput): string[] {
 
 function step2Errors(form: CreateEventInput): string[] {
   const errors: string[] = [];
-  if (!form.venueName.trim()) errors.push("Venue name is required");
-  if (!form.streetAddress.trim()) errors.push("Street address is required");
-  if (!form.city.trim()) errors.push("City is required");
-  if (!form.state.trim()) errors.push("State is required");
+  errors.push(...locationErrors(form));
   const capacity = Number(form.capacity.trim());
   if (!form.capacity.trim() || !Number.isFinite(capacity) || capacity < 1) {
     errors.push("Capacity must be at least 1");
@@ -169,7 +169,7 @@ export function EventCreateWizard({ adminPrefill }: { adminPrefill: AdminPrefill
         step: number;
         timezoneOverridden: boolean;
       };
-      setForm(draft.form);
+      setForm((prev) => ({ ...prev, ...draft.form }));
       setStep(draft.step);
       setTimezoneOverridden(draft.timezoneOverridden);
     } catch {
@@ -348,22 +348,7 @@ export function EventCreateWizard({ adminPrefill }: { adminPrefill: AdminPrefill
         {step === 1 && (
           <div className="flex flex-col gap-4">
             <div className="grid grid-cols-2 gap-4">
-              <div className="grid gap-2">
-                <Label htmlFor="create_chapter">Chapter</Label>
-                <Select
-                  id="create_chapter"
-                  required
-                  value={form.chapter}
-                  onChange={(e) => updateChapter(e.target.value)}
-                >
-                  <option value="">Select a chapter</option>
-                  {CHAPTERS.map((c) => (
-                    <option key={c.name} value={c.name}>
-                      {c.name}, {c.state}
-                    </option>
-                  ))}
-                </Select>
-              </div>
+              <ChapterField idPrefix="create" value={form.chapter} onChange={updateChapter} />
               <div className="grid gap-2">
                 <Label htmlFor="create_event_type">Event type</Label>
                 <Select
@@ -415,47 +400,11 @@ export function EventCreateWizard({ adminPrefill }: { adminPrefill: AdminPrefill
 
         {step === 2 && (
           <div className="flex flex-col gap-4">
-            <div className="grid grid-cols-2 gap-4 rounded-md border p-3">
-              <div className="col-span-2 text-sm font-medium">Location</div>
-              <div className="grid gap-2 col-span-2">
-                <Label htmlFor="create_venue">Venue name</Label>
-                <Input
-                  id="create_venue"
-                  required
-                  value={form.venueName}
-                  onChange={(e) => setField("venueName")(e.target.value)}
-                />
-              </div>
-              <div className="grid gap-2 col-span-2">
-                <Label htmlFor="create_street">Street address</Label>
-                <Input
-                  id="create_street"
-                  required
-                  value={form.streetAddress}
-                  onChange={(e) => setField("streetAddress")(e.target.value)}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="create_city">City</Label>
-                <Input
-                  id="create_city"
-                  required
-                  value={form.city}
-                  onChange={(e) => setField("city")(e.target.value)}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="create_state">State</Label>
-                <Input
-                  id="create_state"
-                  required
-                  maxLength={2}
-                  placeholder="CO"
-                  value={form.state}
-                  onChange={(e) => setField("state")(e.target.value.toUpperCase())}
-                />
-              </div>
-            </div>
+            <LocationFields
+              idPrefix="create"
+              value={form}
+              onChange={(field, value) => setField(field)(value)}
+            />
 
             <div className="grid gap-2">
               <Label htmlFor="create_description">Public description</Label>
@@ -494,6 +443,7 @@ export function EventCreateWizard({ adminPrefill }: { adminPrefill: AdminPrefill
               selected={form.registrationSections}
               onToggle={toggleSection}
             />
+
           </div>
         )}
 

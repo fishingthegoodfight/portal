@@ -17,7 +17,13 @@ export type RegistrationFieldType =
   | "tel"
   | "textarea"
   | "yesno"
-  | "checkbox";
+  | "checkbox"
+  /** A dropdown of `options`; stored as text, NULL until chosen. */
+  | "select"
+  /** A required-able Yes/No backed by a nullable boolean column — held as
+   * "true" / "false" / "" (unanswered) in form state. Unlike "checkbox",
+   * "not answered" is a real state. */
+  | "yesno_bool";
 
 export type RegistrationField = {
   /** Also the `profiles` column name that stores this field's value. */
@@ -36,6 +42,14 @@ export type RegistrationField = {
   required?: boolean;
   /** Normalizes input as the user types, e.g. the phone mask. */
   format?: (value: string) => string;
+  /** Choices for a "select" field. */
+  options?: { value: string; label: string }[];
+  /**
+   * Only shown — and only required, if `required` — while another field in
+   * the same section holds this value (e.g. boot size once "needs boots" is
+   * Yes). A hidden field's stored value is cleared on save.
+   */
+  showWhen?: { key: string; equals: string };
 };
 
 /**
@@ -58,10 +72,33 @@ export type RegistrationSection = {
    * on every RSVP that includes it.
    */
   alwaysEditable?: boolean;
+  /** "stack" lays fields out in one column (for sections with conditional
+   * fields, where a two-column grid would leave holes). */
+  layout?: "stack";
+  /**
+   * The liability waiver isn't profile-backed: a signature is stored per
+   * (user, waiver) in `waiver_signatures` and can never be edited, so this
+   * section has no `fields`, never appears on the profile page, and is
+   * rendered by its own component on the RSVP and walk-up forms.
+   */
+  kind?: "waiver";
+  /**
+   * A standing preference that lives on the profile (and the sign-up flow),
+   * never a per-event choice: excluded from `sectionsForEvent` and from the
+   * admin event forms' section pickers. (Participant directory.)
+   */
+  profileOnly?: boolean;
   fields: RegistrationField[];
   /** One-line "On file" summary shown once the section is already complete. */
   summary: (profileFields: Record<string, string>) => string;
 };
+
+export const FLY_FISHING_EXPERIENCE = ["None", "Beginner", "Intermediate", "Advanced"] as const;
+export const WADER_SIZES = ["S", "M", "L", "XL", "XXL"] as const;
+/** US men's 6 through 15, including half sizes. */
+export const BOOT_SIZES: string[] = Array.from({ length: 19 }, (_, i) =>
+  String(6 + i * 0.5),
+);
 
 function truncate(value: string, max = 60): string {
   const trimmed = value.trim();
@@ -111,35 +148,80 @@ export const REGISTRATION_SECTIONS: RegistrationSection[] = [
     },
   },
   {
-    id: "sizing",
-    title: "Sizing",
+    id: "fly_fishing_sizing",
+    title: "Fly fishing experience & gear sizing",
+    layout: "stack",
     fields: [
       {
-        key: "sizing_notes",
-        label: "What size do you need? (shirt, waders, etc.)",
-        type: "text",
+        key: "fly_fishing_experience",
+        label: "Fly fishing experience",
+        type: "select",
+        required: true,
+        options: FLY_FISHING_EXPERIENCE.map((v) => ({ value: v, label: v })),
+      },
+      {
+        key: "needs_boots",
+        label: "Do you need to borrow boots?",
+        type: "yesno_bool",
+        required: true,
+      },
+      {
+        key: "boot_size",
+        label: "Boot size (US men's)",
+        type: "select",
+        required: true,
+        options: BOOT_SIZES.map((v) => ({ value: v, label: v })),
+        showWhen: { key: "needs_boots", equals: "true" },
+      },
+      {
+        key: "needs_waders",
+        label: "Do you need to borrow waders?",
+        type: "yesno_bool",
+        required: true,
+      },
+      {
+        key: "wader_size",
+        label: "Wader size",
+        type: "select",
+        required: true,
+        options: WADER_SIZES.map((v) => ({ value: v, label: v })),
+        showWhen: { key: "needs_waders", equals: "true" },
+      },
+      {
+        key: "needs_rod_reel",
+        label: "Do you need to borrow a rod and reel?",
+        type: "yesno_bool",
         required: true,
       },
     ],
-    summary: (profileFields) => truncate(profileFields.sizing_notes ?? ""),
+    summary: (p) => {
+      const gear = (needs: string, label: string, size: string) =>
+        needs === "true" ? `${label} ${size || "?"}` : null;
+      return [
+        p.fly_fishing_experience,
+        gear(p.needs_boots, "boots", p.boot_size),
+        gear(p.needs_waders, "waders", p.wader_size),
+        p.needs_rod_reel === "true" ? "rod & reel" : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+    },
   },
   {
     id: "waiver",
     title: "Liability waiver",
-    fields: [
-      {
-        key: "waiver_signature",
-        label: "Type your full name to sign the liability waiver",
-        type: "text",
-        required: true,
-      },
-    ],
-    summary: (profileFields) => profileFields.waiver_signature ?? "",
+    // Required for every event, like the emergency contact: a valid
+    // signature on the active waiver for the event's state and year.
+    alwaysRequired: true,
+    kind: "waiver",
+    fields: [],
+    summary: () => "",
   },
   {
     id: "directory",
     title: "Participant directory",
     alwaysEditable: true,
+    profileOnly: true,
     fields: [
       {
         // Boolean column, held as "true"/"false" strings in form state like
@@ -164,25 +246,62 @@ export function profileValueFromColumn(
   raw: unknown,
 ): string {
   if (field.type === "checkbox") return raw === true ? "true" : "false";
+  if (field.type === "yesno_bool") {
+    return raw === true ? "true" : raw === false ? "false" : "";
+  }
   const value = (raw as string | null | undefined) ?? "";
   return field.format ? field.format(value) : value;
 }
 
-/** Converts form-state strings back to column values (checkbox → boolean). */
+/**
+ * Converts form-state strings back to column values: checkbox → boolean,
+ * yesno_bool → true / false / null (unanswered), select → text or null.
+ */
 export function columnValuesFromProfile(
   values: Record<string, string>,
-): Record<string, string | boolean> {
-  const checkboxKeys = new Set(
-    REGISTRATION_SECTIONS.flatMap((s) => s.fields)
-      .filter((f) => f.type === "checkbox")
-      .map((f) => f.key),
+): Record<string, string | boolean | null> {
+  const fieldsByKey = new Map(
+    REGISTRATION_SECTIONS.flatMap((s) => s.fields).map((f) => [f.key, f]),
   );
   return Object.fromEntries(
-    Object.entries(values).map(([k, v]) => [
-      k,
-      checkboxKeys.has(k) ? v === "true" : v,
-    ]),
+    Object.entries(values).map(([k, v]) => {
+      const type = fieldsByKey.get(k)?.type;
+      if (type === "checkbox") return [k, v === "true"];
+      if (type === "yesno_bool") return [k, v === "true" ? true : v === "false" ? false : null];
+      if (type === "select") return [k, v || null];
+      return [k, v];
+    }),
   );
+}
+
+/** Whether a field currently applies, given the section's other values. */
+export function isFieldVisible(
+  field: RegistrationField,
+  values: Record<string, string>,
+): boolean {
+  return !field.showWhen || values[field.showWhen.key] === field.showWhen.equals;
+}
+
+/** The fields of a section that currently apply (conditional ones hidden). */
+export function visibleFields(
+  section: RegistrationSection,
+  values: Record<string, string>,
+): RegistrationField[] {
+  return section.fields.filter((field) => isFieldVisible(field, values));
+}
+
+/** Blanks every hidden conditional field (e.g. boot size once "needs boots"
+ * is No) so a stale answer is never saved. */
+export function withHiddenFieldsCleared(
+  values: Record<string, string>,
+): Record<string, string> {
+  const next = { ...values };
+  for (const section of REGISTRATION_SECTIONS) {
+    for (const field of section.fields) {
+      if (!isFieldVisible(field, next)) next[field.key] = "";
+    }
+  }
+  return next;
 }
 
 /** Every profile column any section might read or write, deduped. */
@@ -214,7 +333,10 @@ export function isSectionComplete(
   profileFields: Record<string, string>,
 ): boolean {
   return section.fields.every(
-    (field) => !field.required || Boolean(profileFields[field.key]?.trim()),
+    (field) =>
+      !field.required ||
+      !isFieldVisible(field, profileFields) ||
+      Boolean(profileFields[field.key]?.trim()),
   );
 }
 
@@ -225,6 +347,55 @@ export function sectionsForEvent(
 ): RegistrationSection[] {
   const active = new Set(registrationSections ?? []);
   return REGISTRATION_SECTIONS.filter(
-    (section) => section.alwaysRequired || active.has(section.id),
+    (section) => !section.profileOnly && (section.alwaysRequired || active.has(section.id)),
   );
+}
+
+/** Sections an admin can turn on for an event: optional and event-level. */
+export const EVENT_LEVEL_OPTIONAL_SECTIONS = REGISTRATION_SECTIONS.filter(
+  (section) => !section.alwaysRequired && !section.profileOnly,
+);
+
+/**
+ * The first section that still needs an answer: not complete under `values`
+ * and missing a required, currently-visible field. The waiver is handled
+ * separately (it isn't profile-backed). One rule shared by the RSVP form and
+ * the admin walk-up form (client) and the walk-up action (server).
+ */
+export function firstIncompleteSection(
+  sections: RegistrationSection[],
+  values: Record<string, string>,
+): RegistrationSection | undefined {
+  return sections.find((section) => {
+    if (section.kind === "waiver") return false;
+    if (isSectionComplete(section, values)) return false;
+    return visibleFields(section, values).some(
+      (field) => field.required && !(values[field.key] ?? "").trim(),
+    );
+  });
+}
+
+/**
+ * The profile values to save after collecting `sections`. Sections already
+ * complete on file are left alone (unless alwaysEditable); a hidden
+ * conditional field is saved empty so a stale answer doesn't linger. One
+ * rule shared by the RSVP form and the walk-up action, so both save the same
+ * way. `onFile` is the profile's current values (empty for a new profile).
+ */
+export function collectSectionUpdates(
+  sections: RegistrationSection[],
+  onFile: Record<string, string>,
+  values: Record<string, string>,
+): Record<string, string> {
+  const cleared = withHiddenFieldsCleared(values);
+  const updates: Record<string, string> = {};
+  for (const section of sections) {
+    if (section.kind === "waiver") continue;
+    if (!section.alwaysEditable && isSectionComplete(section, onFile)) continue;
+    for (const field of section.fields) {
+      const value = (cleared[field.key] ?? "").trim();
+      if (value || !isFieldVisible(field, cleared)) updates[field.key] = value;
+    }
+  }
+  return updates;
 }

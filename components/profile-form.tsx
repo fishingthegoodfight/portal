@@ -23,6 +23,8 @@ import {
   columnValuesFromProfile,
   isSectionAnswered,
   REGISTRATION_SECTIONS,
+  visibleFields,
+  withHiddenFieldsCleared,
   type RegistrationSection,
 } from "@/lib/registration-sections";
 import { US_STATES } from "@/lib/us-states";
@@ -97,13 +99,15 @@ export function ProfileForm({
   // values as loaded so editing a field can't make its own card disappear
   // mid-edit.
   const alwaysOpenSections = REGISTRATION_SECTIONS.filter(
-    (section) => section.alwaysRequired || section.alwaysEditable,
+    (section) =>
+      (section.alwaysRequired || section.alwaysEditable) && section.kind !== "waiver",
   );
   const [collapsibleSections] = useState(() =>
     REGISTRATION_SECTIONS.filter(
       (section) =>
         !section.alwaysRequired &&
         !section.alwaysEditable &&
+        section.kind !== "waiver" &&
         isSectionAnswered(section, initialRegistrationFields),
     ),
   );
@@ -209,7 +213,7 @@ export function ProfileForm({
         .from("profiles")
         .update({
           ...profile,
-          ...columnValuesFromProfile(registrationFields),
+          ...columnValuesFromProfile(withHiddenFieldsCleared(registrationFields)),
         })
         .eq("id", userId)
         .select()
@@ -446,13 +450,16 @@ function SectionFields({
   values: Record<string, string>;
   onChange: (key: string, value: string) => void;
 }) {
+  const fields = visibleFields(section, values);
   return (
     <div
       className={
-        section.fields.length > 1 ? "grid grid-cols-2 gap-4" : "grid gap-2"
+        fields.length > 1 && section.layout !== "stack"
+          ? "grid grid-cols-2 gap-4"
+          : "grid gap-3"
       }
     >
-      {section.fields.map((field) => (
+      {fields.map((field) => (
         <RegistrationFieldInput
           key={field.key}
           field={field}

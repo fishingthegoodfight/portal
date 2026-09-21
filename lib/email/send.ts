@@ -268,12 +268,16 @@ export async function sendEventCancellationEmail({
 export async function sendEventUpdateEmail({
   event,
   toEmail,
+  newWaiverStateName,
 }: {
   event: RsvpEmailEvent;
   toEmail: string;
+  /** Set when the update switched the event to another state's waiver and
+   * this attendee still has to sign it — the email then says so. */
+  newWaiverStateName?: string;
 }): Promise<void> {
   const info = buildEventInfo(event);
-  const { subject, html, text } = eventUpdateEmail(info);
+  const { subject, html, text } = eventUpdateEmail(info, { newWaiverStateName });
 
   await deliverEmail({
     to: toEmail,

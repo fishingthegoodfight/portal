@@ -201,20 +201,44 @@ export function eventCancellationEmail(
  * lib/email/ics.ts) so the attendee's existing calendar entry updates in
  * place instead of duplicating.
  */
-export function eventUpdateEmail(info: RsvpEmailEventInfo): RenderedEmail {
+export function eventUpdateEmail(
+  info: RsvpEmailEventInfo,
+  options: {
+    /** Set (e.g. "Georgia") when the update moved the event to a different
+     * state's liability waiver and this attendee hasn't signed the new one. */
+    newWaiverStateName?: string;
+  } = {},
+): RenderedEmail {
   const name = escapeHtml(info.name);
   const subject = `Updated: ${info.name}`;
+  const waiverState = options.newWaiverStateName;
+
+  const introHtml = waiverState
+    ? `Details changed for <strong>${name}</strong>, including which liability waiver applies. Updated details below — please review.`
+    : `The date, time, or location changed for <strong>${name}</strong>. Updated details below — please review.`;
+  const introText = waiverState
+    ? `Details changed for ${info.name}, including which liability waiver applies. Updated details below — please review.`
+    : `The date, time, or location changed for ${info.name}. Updated details below — please review.`;
+
+  const waiverHtml = waiverState
+    ? `<p style="margin:0 0 16px;padding:12px;border:1px solid #f59e0b;border-radius:6px;background:#fffbeb;"><strong>Action needed: sign a new waiver.</strong> This event is now under the ${escapeHtml(waiverState)} liability waiver, so you need to sign the ${escapeHtml(waiverState)} waiver before the event. Your spot is still yours — open the event page, read the waiver, and sign it.</p>`
+    : "";
+  const waiverText = waiverState
+    ? `ACTION NEEDED: sign a new waiver. This event is now under the ${waiverState} liability waiver, so you need to sign the ${waiverState} waiver before the event. Your spot is still yours — open the event page, read the waiver, and sign it: ${info.eventUrl}`
+    : "";
+  const buttonLabel = waiverState ? "Sign the waiver" : "View event";
 
   const html = wrapHtml(
     [
       `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">This event has been updated</p>`,
-      `<p style="margin:0 0 16px;">The date, time, or location changed for <strong>${name}</strong>. Updated details below — please review.</p>`,
+      `<p style="margin:0 0 16px;">${introHtml}</p>`,
+      waiverHtml,
       `<p style="margin:0 0 4px;"><strong>When:</strong> ${escapeHtml(info.dateRange)}</p>`,
       info.location
         ? `<p style="margin:0 0 16px;"><strong>Where:</strong> ${escapeHtml(info.location)}</p>`
         : "",
       leadSectionHtml(info),
-      `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">View event</a></p>`,
+      `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
       `<p style="margin:8px 0 16px;font-size:13px;"><a href="${info.googleCalendarUrl}" style="color:#166534;">Add to Google Calendar</a></p>`,
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">A calendar update is attached so your existing invite refreshes instead of duplicating.</p>`,
     ]
@@ -225,8 +249,9 @@ export function eventUpdateEmail(info: RsvpEmailEventInfo): RenderedEmail {
   const text = [
     "This event has been updated",
     "",
-    `The date, time, or location changed for ${info.name}. Updated details below — please review.`,
+    introText,
     "",
+    waiverText,
     `When: ${info.dateRange}`,
     info.location ? `Where: ${info.location}` : "",
     leadSectionText(info),

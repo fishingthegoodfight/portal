@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
-import { formatEventInstant } from "@/lib/format-date";
+import { formatDateInZone, formatEventInstant } from "@/lib/format-date";
+import { resolveEventWaiver, waiverHeading } from "@/lib/waivers";
 
 export type AdminEventSummary = {
   id: number;
@@ -16,6 +17,8 @@ export type AdminEventSummary = {
   lead_name: string | null;
   lead_phone: string | null;
   custom_email_note: string | null;
+  registration_sections: string[] | null;
+  waiver_state: string | null;
   status: string;
   cancellation_reason: string | null;
 };
@@ -34,6 +37,8 @@ export type RosterPerson = {
   phone: string;
   emergencyContact: string;
   emergencyPhone: string;
+  /** Pre-formatted date they signed this event's waiver, or null if they haven't. */
+  waiverSignedOn: string | null;
 };
 
 export type WaitlistPerson = {
@@ -54,8 +59,17 @@ export type WaitlistPerson = {
   phone: string;
 };
 
+/** Which waiver applies to the event (every event has one). */
+export type RosterWaiver = {
+  /** e.g. "2026 Colorado waiver"; null when required but none is published. */
+  heading: string | null;
+  /** Set when required but no waiver could be found for the event. */
+  problem: string | null;
+};
+
 export type EventRoster = {
   event: AdminEventSummary;
+  waiver: RosterWaiver;
   /** Confirmed attendees only, sorted by last name. */
   roster: RosterPerson[];
   /** Everyone waiting or holding/lost an offer, in join order (lapsed
@@ -79,7 +93,7 @@ export async function loadEventRoster(
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken, lead_name, lead_phone, custom_email_note, status, cancellation_reason",
+      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken, lead_name, lead_phone, custom_email_note, registration_sections, waiver_state, status, cancellation_reason",
     )
     .eq("id", eventId)
     .maybeSingle();
@@ -104,6 +118,35 @@ export async function loadEventRoster(
 
   const profileById = new Map((profileRows ?? []).map((p) => [p.id as string, p]));
 
+  // Waiver status for each person — every event has a waiver.
+  let waiverHeadingText: string | null = null;
+  let waiverProblem: string | null = null;
+  const signedAtByUser = new Map<string, string>();
+  const requirement = await resolveEventWaiver(supabase, {
+    chapter: event.chapter as string | null,
+    waiver_state: event.waiver_state as string | null,
+    starts_at: event.starts_at as string,
+    timezone: event.timezone as string,
+  });
+  if (requirement.kind === "ok") {
+    waiverHeadingText = waiverHeading(requirement.state, requirement.year);
+    if (userIds.length > 0) {
+      const { data: signatures } = await supabase
+        .from("waiver_signatures")
+        .select("user_id, signed_at")
+        .eq("waiver_id", requirement.waiver.id)
+        .in("user_id", userIds);
+      for (const sig of signatures ?? []) {
+        signedAtByUser.set(sig.user_id as string, sig.signed_at as string);
+      }
+    }
+  } else {
+    waiverProblem =
+      requirement.kind === "no_state"
+        ? "No waiver state is set for this event."
+        : `No ${requirement.year} ${requirement.state} waiver has been published.`;
+  }
+
   const isWaiting = (status: string) =>
     status === "waitlisted" || status === "offered" || status === "expired";
 
@@ -123,6 +166,9 @@ export async function loadEventRoster(
         phone: (profile?.phone as string | null) ?? "",
         emergencyContact: (profile?.emergency_contact as string | null) ?? "",
         emergencyPhone: (profile?.emergency_phone as string | null) ?? "",
+        waiverSignedOn: signedAtByUser.has(r.user_id as string)
+          ? formatDateInZone(signedAtByUser.get(r.user_id as string)!, event.timezone as string)
+          : null,
       };
     });
 
@@ -162,5 +208,10 @@ export async function loadEventRoster(
     };
   });
 
-  return { event: event as AdminEventSummary, roster, waitlist };
+  return {
+    event: event as AdminEventSummary,
+    waiver: { heading: waiverHeadingText, problem: waiverProblem },
+    roster,
+    waitlist,
+  };
 }

@@ -7,6 +7,7 @@ import {
   sendRsvpConfirmationEmail,
   type RsvpEmailEvent,
 } from "@/lib/email/send";
+import { waiverInfoForUser } from "@/lib/waivers";
 import { emailWaitlistOffers, offeredLabels, type OfferedSpot } from "@/lib/waitlist";
 
 export type RsvpActionResult = { ok: true; status: string } | { ok: false; error: string };
@@ -51,6 +52,26 @@ export async function confirmRsvpAction(
     return { ok: false, error: "Not authenticated" };
   }
   const userId = claims.claims.sub as string;
+
+  // Server-side backstop for the waiver: the form gates on it, but a
+  // hand-rolled request shouldn't be able to RSVP without one.
+  const { data: waiverEvent } = await supabase
+    .from("events")
+    .select("chapter, waiver_state, starts_at, timezone")
+    .eq("id", eventId)
+    .maybeSingle();
+  if (waiverEvent) {
+    const waiver = await waiverInfoForUser(supabase, waiverEvent, userId);
+    if (waiver.status !== "signed") {
+      return {
+        ok: false,
+        error:
+          waiver.status === "unavailable"
+            ? waiver.message
+            : "Please read and sign the waiver before RSVPing.",
+      };
+    }
+  }
 
   const { data, error } = await supabase.rpc("rsvp_to_event", {
     p_event_id: eventId,

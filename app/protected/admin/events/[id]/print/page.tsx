@@ -41,6 +41,7 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
             <th className="py-2 pr-3 font-semibold">Phone</th>
             <th className="py-2 pr-3 font-semibold">Emergency contact</th>
             <th className="py-2 pr-3 font-semibold">Dietary</th>
+            <th className="py-2 pr-3 font-semibold">Waiver</th>
             <th className="w-10 py-2 font-semibold">✓</th>
           </tr>
         </thead>
@@ -57,6 +58,9 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
                 <td className="py-2 pr-3">{person.phone || "—"}</td>
                 <td className="py-2 pr-3">{emergency || "—"}</td>
                 <td className="py-2 pr-3">{person.dietaryNotes || "—"}</td>
+                <td className="py-2 pr-3">
+                  {person.waiverSignedOn ? person.waiverSignedOn : <strong>NOT SIGNED</strong>}
+                </td>
                 <td className="py-2">
                   <span className="inline-block h-4 w-4 border border-black" aria-hidden />
                 </td>
@@ -66,18 +70,12 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
         </tbody>
       </table>
 
-      {roster.length === 0 && (
-        <p className="text-sm text-muted-foreground">No RSVPs yet.</p>
-      )}
+      {roster.length === 0 && <p className="text-sm text-muted-foreground">No RSVPs yet.</p>}
     </div>
   );
 }
 
-export default function PrintRosterPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+export default function PrintRosterPage({ params }: { params: Promise<{ id: string }> }) {
   return (
     <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>
       <PrintRosterLoader params={params} />

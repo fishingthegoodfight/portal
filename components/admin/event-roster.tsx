@@ -6,6 +6,15 @@ import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/client";
 import { addWalkupRsvpAction } from "@/lib/actions/admin-walkup";
+import { walkupLookupAction } from "@/lib/actions/waiver";
+import { RegistrationSectionField } from "@/components/registration-section-field";
+import {
+  EMPTY_WAIVER_SIGN,
+  WaiverSigning,
+  waiverNeedsInput,
+  type WaiverSignState,
+} from "@/components/waiver-signing";
+import type { WaiverInfo } from "@/lib/waivers";
 import { adminOfferSpotAction, adminRemoveRsvpAction } from "@/lib/actions/admin-waitlist";
 import { CancelEventDialog } from "@/components/admin/cancel-event-dialog";
 import { RestoreEventDialog } from "@/components/admin/restore-event-dialog";
@@ -16,9 +25,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RegistrationFieldInput } from "@/components/registration-fields";
 import { formatPhoneNumber } from "@/lib/phone";
-import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
+import {
+  firstIncompleteSection,
+  REGISTRATION_SECTIONS,
+  sectionsForEvent,
+} from "@/lib/registration-sections";
 import { cn } from "@/lib/utils";
-import type { RosterPerson, WaitlistPerson } from "@/lib/admin/roster";
+import type { RosterPerson, RosterWaiver, WaitlistPerson } from "@/lib/admin/roster";
 
 const DIRECTORY_FIELD = REGISTRATION_SECTIONS.find((s) => s.id === "directory")!.fields[0];
 
@@ -49,6 +62,8 @@ export function EventRoster({
   cancellationReason,
   initialRoster,
   initialWaitlist,
+  waiver,
+  registrationSectionIds,
 }: {
   eventId: number;
   eventCard: EventCardEvent;
@@ -56,6 +71,10 @@ export function EventRoster({
   cancellationReason: string | null;
   initialRoster: RosterPerson[];
   initialWaitlist: WaitlistPerson[];
+  waiver: RosterWaiver;
+  /** The event's registration_sections ids — the walk-up form collects the
+   * same sections the RSVP form would. */
+  registrationSectionIds: string[];
 }) {
   const router = useRouter();
   const isCancelled = status === "cancelled";
@@ -136,9 +155,66 @@ export function EventRoster({
   const [walkupError, setWalkupError] = useState<string | null>(null);
   const [isSubmittingWalkup, setIsSubmittingWalkup] = useState(false);
   const [capacityConfirmPending, setCapacityConfirmPending] = useState(false);
+  // The event's own sections the walk-up form collects — the same catalog-
+  // driven sections the RSVP form shows. The emergency contact and directory
+  // choice have their own fields above; the waiver has its own block below.
+  const walkupSections = useMemo(
+    () =>
+      sectionsForEvent(registrationSectionIds).filter(
+        (section) => !section.alwaysRequired && section.kind !== "waiver",
+      ),
+    [registrationSectionIds],
+  );
+
+  // What we know about the person, looked up by email: their waiver situation
+  // (nothing to do, already signed, or the waiver to sign at the check-in
+  // table) and what their profile already has for the sections above.
+  const [walkupLookup, setWalkupLookup] = useState<{
+    info: WaiverInfo;
+    profileFields: Record<string, string> | null;
+  } | null>(null);
+  const [walkupSign, setWalkupSign] = useState<WaiverSignState>(EMPTY_WAIVER_SIGN);
+  const [walkupSectionValues, setWalkupSectionValues] = useState<Record<string, string>>({});
+  // Bumped whenever the section inputs are re-seeded, so stateful inputs
+  // (e.g. the dietary Yes/No) remount and pick up the new values.
+  const [walkupSectionsKey, setWalkupSectionsKey] = useState(0);
+
+  // Every event has a waiver, so the lookup is always needed.
+
+  /** Seeds values from the profile for anything they haven't typed yet. */
+  const withProfileValues = (
+    typed: Record<string, string>,
+    profileFields: Record<string, string> | null,
+  ) => {
+    const merged = { ...typed };
+    for (const [key, value] of Object.entries(profileFields ?? {})) {
+      if (value && !merged[key]) merged[key] = value;
+    }
+    return merged;
+  };
+
+  const lookUpWalkup = async (
+    email: string,
+  ): Promise<{
+    info: WaiverInfo;
+    profileFields: Record<string, string> | null;
+  } | null> => {
+    if (!email.trim()) return null;
+    const result = await walkupLookupAction(eventId, email);
+    if (!result.ok) {
+      setWalkupError(result.error);
+      return null;
+    }
+    const lookup = { info: result.info, profileFields: result.profileFields };
+    setWalkupLookup(lookup);
+    setWalkupSectionValues((prev) => withProfileValues(prev, result.profileFields));
+    setWalkupSectionsKey((k) => k + 1);
+    return lookup;
+  };
 
   const confirmedCount = roster.filter((p) => p.status === "confirmed").length;
   const checkedInCount = roster.filter((p) => p.checkedInAt).length;
+  const unsignedCount = roster.filter((p) => !p.waiverSignedOn).length;
 
   const filteredRoster = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -179,6 +255,10 @@ export function EventRoster({
     setWalkupForm(EMPTY_WALKUP_FORM);
     setWalkupError(null);
     setCapacityConfirmPending(false);
+    setWalkupLookup(null);
+    setWalkupSign(EMPTY_WAIVER_SIGN);
+    setWalkupSectionValues({});
+    setWalkupSectionsKey((k) => k + 1);
     setShowWalkupForm(true);
   };
 
@@ -203,6 +283,30 @@ export function EventRoster({
     setIsSubmittingWalkup(true);
     setWalkupError(null);
 
+    // Make sure we know who they are even if the email field was never
+    // blurred (e.g. submitted with Enter): their waiver status and which
+    // sections their profile already covers.
+    let lookup = walkupLookup;
+    if (!lookup) lookup = await lookUpWalkup(walkupForm.email);
+    const sectionValues = withProfileValues(walkupSectionValues, lookup?.profileFields ?? null);
+
+    const info = lookup?.info ?? null;
+    if (info && waiverNeedsInput(info, walkupSign)) {
+      setIsSubmittingWalkup(false);
+      setWalkupError(
+        info.status === "unavailable"
+          ? info.message
+          : "Have them read and agree to the waiver below, and type their full name.",
+      );
+      return;
+    }
+    const incomplete = firstIncompleteSection(walkupSections, sectionValues);
+    if (incomplete) {
+      setIsSubmittingWalkup(false);
+      setWalkupError(`Complete "${incomplete.title}" below.`);
+      return;
+    }
+
     const result = await addWalkupRsvpAction({
       eventId,
       firstName: walkupForm.firstName,
@@ -212,6 +316,9 @@ export function EventRoster({
       emergencyContactName: walkupForm.emergencyContactName,
       emergencyContactPhone: walkupForm.emergencyContactPhone,
       directoryOptIn: walkupForm.directoryOptIn,
+      waiverName: walkupSign.name,
+      waiverAgreed: walkupSign.agreed,
+      sections: sectionValues,
       force: capacityConfirmPending,
     });
 
@@ -280,6 +387,26 @@ export function EventRoster({
             />
           )}
         </div>
+      </div>
+
+      <div
+        className={cn(
+          "rounded-md border p-3 text-sm",
+          waiver.problem || unsignedCount > 0
+            ? "border-red-500/50 bg-red-500/10 text-red-700 dark:text-red-400"
+            : "border-green-600/40 bg-green-600/10",
+        )}
+      >
+        {waiver.problem ? (
+          <p className="font-semibold">Waiver: {waiver.problem}</p>
+        ) : (
+          <p>
+            <span className="font-semibold">{waiver.heading}</span> —{" "}
+            {unsignedCount > 0
+              ? `${unsignedCount} of ${roster.length} on the roster NOT SIGNED`
+              : "everyone on the roster has signed"}
+          </p>
+        )}
       </div>
 
       {checkInError && <p className="text-sm text-red-500">{checkInError}</p>}
@@ -377,7 +504,7 @@ export function EventRoster({
 
       {showWalkupForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <Card className="w-full max-w-sm">
+          <Card className="max-h-[90vh] w-full max-w-sm overflow-y-auto sm:max-w-md">
             <form onSubmit={submitWalkup}>
               <CardHeader>
                 <CardTitle>Add walk-up</CardTitle>
@@ -415,7 +542,18 @@ export function EventRoster({
                     autoComplete="email"
                     required
                     value={walkupForm.email}
-                    onChange={updateWalkupField("email")}
+                    onChange={(e) => {
+                      updateWalkupField("email")(e);
+                      // A different email is a different person: drop their
+                      // lookup, and any answers that were pre-filled from the
+                      // previous person's profile so they can't carry over.
+                      if (walkupLookup?.profileFields) {
+                        setWalkupSectionValues({});
+                        setWalkupSectionsKey((k) => k + 1);
+                      }
+                      setWalkupLookup(null);
+                    }}
+                    onBlur={(e) => void lookUpWalkup(e.target.value)}
                   />
                 </div>
                 <div className="grid gap-2">
@@ -466,6 +604,33 @@ export function EventRoster({
                     }))
                   }
                 />
+                {walkupSections.map((section) => (
+                  <RegistrationSectionField
+                    key={`${section.id}-${walkupSectionsKey}`}
+                    section={section}
+                    profileFields={walkupLookup?.profileFields ?? {}}
+                    fieldValues={walkupSectionValues}
+                    onChange={(key, value) =>
+                      setWalkupSectionValues((prev) => ({ ...prev, [key]: value }))
+                    }
+                    requiredNote="Required — none on file yet."
+                  />
+                ))}
+                <div className="grid gap-1 rounded-md border p-3">
+                  <span className="text-sm font-medium">Liability waiver</span>
+                  {walkupLookup ? (
+                    <WaiverSigning
+                      info={walkupLookup.info}
+                      value={walkupSign}
+                      onChange={setWalkupSign}
+                      idPrefix="walkup"
+                    />
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      Enter their email to check whether they&apos;ve already signed.
+                    </p>
+                  )}
+                </div>
                 {capacityConfirmPending && (
                   <p className="text-sm text-amber-600">
                     This event is at capacity. Add {walkupForm.firstName || "them"} anyway?
@@ -600,6 +765,15 @@ function RosterRow({
         </span>
         <span className="text-sm text-muted-foreground">{contact || "—"}</span>
         <span className="text-sm text-muted-foreground">Emergency: {emergency || "—"}</span>
+        {person.waiverSignedOn ? (
+          <span className="text-sm text-muted-foreground">
+            Waiver signed {person.waiverSignedOn}
+          </span>
+        ) : (
+          <span className="w-fit rounded bg-red-600 px-2 py-0.5 text-xs font-bold tracking-wide text-white">
+            WAIVER NOT SIGNED
+          </span>
+        )}
         {person.dietaryNotes && (
           <span className="text-sm text-muted-foreground">Dietary: {person.dietaryNotes}</span>
         )}

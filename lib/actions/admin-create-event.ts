@@ -12,6 +12,8 @@ import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 import { sendAdminChangeNotificationEmail } from "@/lib/email/send";
 import type { EventChangeDiffEntry } from "@/lib/email/templates";
 import { zonedDateTimeToUtc } from "@/lib/timezone";
+import { composeLocation, locationErrors } from "@/lib/event-location";
+import { waiverStateForChapter } from "@/lib/waivers";
 
 export type VolunteerRoleInput = {
   title: string;
@@ -61,14 +63,6 @@ export type CreateEventResult =
   | { ok: true; eventIds: number[]; seriesId: string | null }
   | { ok: false; error: string };
 
-function composeLocation(input: CreateEventInput): string | null {
-  const venue = input.venueName.trim();
-  const street = input.streetAddress.trim();
-  const cityState = [input.city.trim(), input.state.trim()].filter(Boolean).join(", ");
-  const parts = [venue, street, cityState].filter(Boolean);
-  return parts.length > 0 ? parts.join(", ") : null;
-}
-
 /**
  * Creates one event, or (for a repeating choice) up to
  * MAX_RECURRENCE_OCCURRENCES event rows sharing a fresh series_id — each a
@@ -113,17 +107,18 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
   const streetAddress = input.streetAddress.trim();
   const city = input.city.trim();
   const state = input.state.trim();
-  if (!venueName || !streetAddress || !city || !state) {
-    return { ok: false, error: "Venue name, street address, city, and state are required" };
-  }
+  const locationProblems = locationErrors(input);
+  if (locationProblems.length > 0) return { ok: false, error: locationProblems.join("; ") };
   const capacity = Number(input.capacity.trim());
   if (!Number.isFinite(capacity) || capacity < 1) {
     return { ok: false, error: "Capacity must be at least 1" };
   }
   const validSectionIds = new Set(
-    REGISTRATION_SECTIONS.filter((s) => !s.alwaysRequired).map((s) => s.id),
+    REGISTRATION_SECTIONS.filter((s) => !s.alwaysRequired && !s.profileOnly).map((s) => s.id),
   );
   const registrationSections = input.registrationSections.filter((id) => validSectionIds.has(id));
+  // Never a choice: the waiver state always follows the chapter.
+  const waiverState = waiverStateForChapter(input.chapter);
   const location = composeLocation(input);
 
   // --- Step 3: Volunteers ---
@@ -186,6 +181,7 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
         lead_email: input.leadEmail.trim() || null,
         lead_phone: input.leadPhone.trim() || null,
         registration_sections: registrationSections,
+        waiver_state: waiverState,
         starts_at: startsAt.toISOString(),
         ends_at: endsAt.toISOString(),
         timezone,

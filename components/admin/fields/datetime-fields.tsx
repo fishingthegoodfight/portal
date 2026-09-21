@@ -55,10 +55,14 @@ export function DateTimeFields({
   const showSelect = !timezoneDerived || overriding;
   const timezoneLabel = TIMEZONE_OPTIONS.find((tz) => tz.value === timezone)?.label ?? timezone;
 
+  // Each cell is `content-start`: the end-time cell is taller (it carries a
+  // helper line), and grid items stretch to the row height, so without it the
+  // start-time cell's rows would spread apart and drop its input below the
+  // end-time input.
   return (
     <div className="grid grid-cols-2 gap-4 rounded-md border p-3">
       <div className="col-span-2 text-sm font-medium">When</div>
-      <div className="grid gap-2">
+      <div className="grid content-start gap-2">
         <Label htmlFor={`${idPrefix}_date`}>Date</Label>
         <Input
           id={`${idPrefix}_date`}
@@ -68,7 +72,7 @@ export function DateTimeFields({
           onChange={(e) => onChangeDate(e.target.value)}
         />
       </div>
-      <div className="grid gap-2">
+      <div className="grid content-start gap-2">
         <Label htmlFor={`${idPrefix}_timezone`}>Time zone</Label>
         {showSelect ? (
           <Select
@@ -99,7 +103,7 @@ export function DateTimeFields({
           </div>
         )}
       </div>
-      <div className="grid gap-2">
+      <div className="grid content-start gap-2">
         <Label htmlFor={`${idPrefix}_time`}>Start time</Label>
         <Input
           id={`${idPrefix}_time`}
@@ -109,7 +113,7 @@ export function DateTimeFields({
           onChange={(e) => onChangeTime(e.target.value)}
         />
       </div>
-      <div className="grid gap-2">
+      <div className="grid content-start gap-2">
         <Label htmlFor={`${idPrefix}_end_time`}>End time</Label>
         <Input
           id={`${idPrefix}_end_time`}

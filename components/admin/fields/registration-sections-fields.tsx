@@ -1,13 +1,12 @@
 "use client";
 
 import { Checkbox } from "@/components/ui/checkbox";
-import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
+import { EVENT_LEVEL_OPTIONAL_SECTIONS } from "@/lib/registration-sections";
 
 // Always-required sections (e.g. emergency contact) apply to every event
-// regardless — only optional ones are worth exposing as a per-event choice.
-export const OPTIONAL_REGISTRATION_SECTIONS = REGISTRATION_SECTIONS.filter(
-  (s) => !s.alwaysRequired,
-);
+// regardless, and profile-only ones (participant directory) are standing
+// preferences — only optional event-level ones are a per-event choice.
+export const OPTIONAL_REGISTRATION_SECTIONS = EVENT_LEVEL_OPTIONAL_SECTIONS;
 
 /**
  * The optional-registration-sections checkbox list, shared by the admin

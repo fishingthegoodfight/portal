@@ -1524,3 +1524,209 @@ update public.events e
   ) c
  where e.id = c.id
    and e.spots_taken is distinct from c.n;
+
+-- =============================================================================
+-- 2026-09-21 — Fly fishing sizing + liability waivers (per state, per year)
+-- =============================================================================
+
+-- ---- Fly fishing sizing (registration section "fly_fishing_sizing") ---------
+-- Profile-backed like the other sections: asked once, then pre-filled. The
+-- needs_* booleans are NULL until answered (that's how the form tells "not
+-- answered yet" from "No"). boot_size / wader_size only apply when the
+-- matching needs_* is true, and the app clears them when it flips to false.
+-- Replaces the old free-text "sizing" section (profiles.sizing_notes stays in
+-- place, untouched, just no longer collected).
+alter table public.profiles
+  add column if not exists fly_fishing_experience text
+    check (fly_fishing_experience in ('None', 'Beginner', 'Intermediate', 'Advanced')),
+  add column if not exists needs_boots boolean,
+  add column if not exists boot_size text,
+  add column if not exists needs_waders boolean,
+  add column if not exists wader_size text
+    check (wader_size in ('S', 'M', 'L', 'XL', 'XXL')),
+  add column if not exists needs_rod_reel boolean;
+
+-- Events that had the old "sizing" section now get the new one.
+update public.events
+   set registration_sections = array_replace(registration_sections, 'sizing', 'fly_fishing_sizing')
+ where 'sizing' = any(registration_sections);
+
+-- ---- Waivers ------------------------------------------------------------
+create table public.waivers (
+  id bigserial primary key,
+  state text not null,              -- 'CO' or 'GA'
+  year int not null,
+  version int not null,
+  title text not null,
+  body_markdown text not null,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  unique (state, version)
+);
+
+create table public.waiver_signatures (
+  id bigserial primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  waiver_id bigint not null references public.waivers(id),
+  signed_name text not null,
+  signed_at timestamptz not null default now(),
+  unique (user_id, waiver_id)
+);
+
+-- "The active waiver" for a state + year is the highest-version row with
+-- is_active = true. Adding a version never edits or deactivates an older row
+-- (people have signed it) — the newer version simply supersedes it, and
+-- everyone re-signs at their next RSVP.
+create index waivers_state_year_idx
+  on public.waivers (state, year, version desc)
+  where is_active;
+
+create index waiver_signatures_waiver_idx
+  on public.waiver_signatures (waiver_id);
+
+alter table public.waivers enable row level security;
+alter table public.waiver_signatures enable row level security;
+
+-- Anyone signed in can read active waivers; admins can also see inactive ones
+-- and are the only ones who can add a version.
+create policy waivers_read_active on public.waivers
+  for select to authenticated
+  using (is_active);
+
+create policy waivers_admin_read_all on public.waivers
+  for select to authenticated
+  using (public.is_admin());
+
+create policy waivers_admin_insert on public.waivers
+  for insert to authenticated
+  with check (public.is_admin());
+
+-- A user reads and inserts only their own signatures; admins read all.
+create policy waiver_signatures_read_own on public.waiver_signatures
+  for select to authenticated
+  using (user_id = auth.uid());
+
+create policy waiver_signatures_admin_read_all on public.waiver_signatures
+  for select to authenticated
+  using (public.is_admin());
+
+create policy waiver_signatures_insert_own on public.waiver_signatures
+  for insert to authenticated
+  with check (user_id = auth.uid() and length(btrim(signed_name)) > 0);
+
+-- Immutability: no UPDATE or DELETE policies exist, and the privileges are
+-- revoked too so a future permissive policy can't reopen it by accident.
+-- (Deleting an auth user still cascades to their signatures, by design.)
+revoke all on public.waivers, public.waiver_signatures from anon;
+revoke update, delete, truncate on public.waivers, public.waiver_signatures from authenticated;
+grant select, insert on public.waivers, public.waiver_signatures to authenticated;
+grant usage, select on sequence public.waivers_id_seq, public.waiver_signatures_id_seq to authenticated;
+grant all on public.waivers, public.waiver_signatures to service_role;
+grant usage, select on sequence public.waivers_id_seq, public.waiver_signatures_id_seq to service_role;
+
+-- ---- Which waiver an event uses ---------------------------------------------
+-- 'CO' or 'GA', defaulted from the chapter and overridable on the event forms.
+alter table public.events
+  add column if not exists waiver_state text
+    check (waiver_state in ('CO', 'GA'));
+
+create or replace function public.default_event_waiver_state()
+returns trigger
+language plpgsql
+as $function$
+begin
+  if new.waiver_state is null then
+    new.waiver_state := case
+      when new.chapter in ('Denver', 'CO Springs', 'Colorado Springs') then 'CO'
+      when new.chapter in ('Atlanta', 'Rome') then 'GA'
+    end;
+  end if;
+  return new;
+end $function$;
+
+create trigger events_default_waiver_state
+  before insert or update on public.events
+  for each row execute function public.default_event_waiver_state();
+
+-- Backfill existing events (the trigger only covers writes from now on).
+update public.events
+   set waiver_state = case
+     when chapter in ('Denver', 'CO Springs', 'Colorado Springs') then 'CO'
+     when chapter in ('Atlanta', 'Rome') then 'GA'
+   end
+ where waiver_state is null;
+
+-- =============================================================================
+-- 2026-09-21 — Waiver state always follows the chapter; directory is not an event section
+-- =============================================================================
+-- Waiver state is no longer a per-event choice. The trigger now derives it
+-- from the chapter on every insert and update (Denver, CO Springs → CO;
+-- Atlanta, Rome → GA), overriding whatever was passed. A chapter it doesn't
+-- recognise leaves the column as it was.
+create or replace function public.default_event_waiver_state()
+returns trigger
+language plpgsql
+as $function$
+declare
+  v_state text;
+begin
+  v_state := case
+    when new.chapter in ('Denver', 'CO Springs', 'Colorado Springs') then 'CO'
+    when new.chapter in ('Atlanta', 'Rome') then 'GA'
+  end;
+  if v_state is not null then
+    new.waiver_state := v_state;
+  end if;
+  return new;
+end $function$;
+
+-- Correct any event where an earlier per-event override no longer matches.
+update public.events
+   set waiver_state = case
+     when chapter in ('Denver', 'CO Springs', 'Colorado Springs') then 'CO'
+     when chapter in ('Atlanta', 'Rome') then 'GA'
+   end
+ where chapter in ('Denver', 'CO Springs', 'Colorado Springs', 'Atlanta', 'Rome')
+   and waiver_state is distinct from case
+     when chapter in ('Denver', 'CO Springs', 'Colorado Springs') then 'CO'
+     when chapter in ('Atlanta', 'Rome') then 'GA'
+   end;
+
+-- Participant directory opt-in is a standing preference on the profile and
+-- sign-up flow (profiles.directory_opt_in, untouched), not something an event
+-- asks for. Remove it from every event's registration_sections.
+update public.events
+   set registration_sections = array_remove(registration_sections, 'directory')
+ where 'directory' = any(registration_sections);
+
+-- =============================================================================
+-- 2026-09-21 — Waiver is universal: every event requires it
+-- =============================================================================
+-- The waiver is no longer a per-event registration section (like the
+-- emergency contact, it applies to every event), so remove the id from every
+-- event's registration_sections.
+update public.events
+   set registration_sections = array_remove(registration_sections, 'waiver')
+ where 'waiver' = any(registration_sections);
+
+-- Since every event needs a waiver, waiver_state can never be blank. The
+-- trigger from the previous entry fills it from the chapter on every write
+-- (BEFORE triggers run ahead of NOT NULL checks), so this only rejects an
+-- event whose chapter isn't one of Denver, CO Springs, Atlanta, Rome. If any
+-- existing event is still NULL this stops first and names them — fix their
+-- chapter (or set waiver_state by hand) and re-run.
+do $$
+declare
+  v_ids text;
+begin
+  select string_agg(id::text, ', ' order by id)
+    into v_ids
+    from public.events
+   where waiver_state is null;
+  if v_ids is not null then
+    raise exception 'events with no waiver_state (unrecognised chapter?): %', v_ids;
+  end if;
+end $$;
+
+alter table public.events
+  alter column waiver_state set not null;

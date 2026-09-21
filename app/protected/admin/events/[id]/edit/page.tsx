@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/supabase/server";
 import { toZonedDateTimeInputs } from "@/lib/timezone";
 import { timezoneForChapter } from "@/lib/chapters";
+import { WAIVER_STATES, waiverStateForChapter } from "@/lib/waivers";
 import { EventEditForm } from "@/components/admin/event-edit-form";
 
 async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) {
@@ -17,7 +18,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, name, description, location, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, starts_at, ends_at, timezone, chapter, status",
+      "id, name, description, location, venue_name, street_address, city, state, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, starts_at, ends_at, timezone, chapter, status, waiver_state",
     )
     .eq("id", eventId)
     .maybeSingle();
@@ -38,10 +39,25 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
     <EventEditForm
       eventId={event.id}
       isCancelled={event.status === "cancelled"}
+      legacyLocation={
+        !event.venue_name && !event.street_address && !event.city && !event.state
+          ? event.location
+          : null
+      }
+      waiverLabel={
+        (() => {
+          const state = waiverStateForChapter(event.chapter);
+          return state ? WAIVER_STATES[state] : null;
+        })()
+      }
       initial={{
         name: event.name,
+        chapter: event.chapter ?? "",
         description: event.description ?? "",
-        location: event.location ?? "",
+        venueName: event.venue_name ?? "",
+        streetAddress: event.street_address ?? "",
+        city: event.city ?? "",
+        state: event.state ?? "",
         capacity: event.capacity != null ? String(event.capacity) : "",
         leadName: event.lead_name ?? "",
         leadPhone: event.lead_phone ?? "",

@@ -6,6 +6,7 @@ import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/client";
 import { confirmRsvpAction, cancelRsvpAction, claimOfferedSpotAction } from "@/lib/actions/rsvp";
+import { signWaiverAction } from "@/lib/actions/waiver";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -16,13 +17,20 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { EventCard } from "@/components/event-card";
-import { RegistrationFieldInput } from "@/components/registration-fields";
+import { RegistrationSectionField } from "@/components/registration-section-field";
 import {
+  EMPTY_WAIVER_SIGN,
+  WaiverSigning,
+  waiverNeedsInput,
+  type WaiverSignState,
+} from "@/components/waiver-signing";
+import type { WaiverInfo } from "@/lib/waivers";
+import {
+  collectSectionUpdates,
   columnValuesFromProfile,
   DIETARY_NONE,
-  isSectionComplete,
+  firstIncompleteSection,
   sectionsForEvent,
-  type RegistrationSection,
 } from "@/lib/registration-sections";
 
 type EventSummary = {
@@ -73,6 +81,7 @@ export function RsvpForm({
   waitlistPosition,
   offerExpiresLabel,
   offerLapsed,
+  waiver,
 }: {
   userId: string;
   event: EventSummary;
@@ -87,6 +96,8 @@ export function RsvpForm({
   offerExpiresLabel: string | null;
   /** The caller had an offer that ran out unclaimed. */
   offerLapsed: boolean;
+  /** Where this person stands on the event's waiver (every event has one). */
+  waiver: WaiverInfo;
 }) {
   const router = useRouter();
   // Seeded from the profile so a partially-complete section (e.g. a name but
@@ -96,6 +107,8 @@ export function RsvpForm({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isClaiming, setIsClaiming] = useState(false);
+  const [isSigning, setIsSigning] = useState(false);
+  const [waiverSign, setWaiverSign] = useState<WaiverSignState>(EMPTY_WAIVER_SIGN);
   const [error, setError] = useState<string | null>(null);
 
   const activeSections = sectionsForEvent(event.registration_sections);
@@ -117,13 +130,9 @@ export function RsvpForm({
   const updateField = (key: string, value: string) =>
     setFieldValues((prev) => ({ ...prev, [key]: value }));
 
-  const incompleteRequiredSection = activeSections.find((section) => {
-    if (isSectionComplete(section, fieldValues)) return false;
-    return section.fields.some(
-      (field) => field.required && !(fieldValues[field.key] ?? "").trim(),
-    );
-  });
-  const hasMissingRequired = Boolean(incompleteRequiredSection);
+  const incompleteRequiredSection = firstIncompleteSection(activeSections, fieldValues);
+  const waiverBlocked = waiverNeedsInput(waiver, waiverSign);
+  const hasMissingRequired = Boolean(incompleteRequiredSection) || waiverBlocked;
 
   const editProfileHref = `/protected/profile?return_to=${encodeURIComponent(
     `/protected/events/${event.id}/rsvp`,
@@ -152,16 +161,7 @@ export function RsvpForm({
       // Save any newly-entered values to the profile so these sections are
       // never asked again on a future RSVP. Sections already complete are
       // left untouched.
-      const profileUpdates: Record<string, string> = {};
-      for (const section of activeSections) {
-        if (!section.alwaysEditable && isSectionComplete(section, profileFields)) {
-          continue;
-        }
-        for (const field of section.fields) {
-          const value = (fieldValues[field.key] ?? "").trim();
-          if (value) profileUpdates[field.key] = value;
-        }
-      }
+      const profileUpdates = collectSectionUpdates(activeSections, profileFields, fieldValues);
       if (Object.keys(profileUpdates).length > 0) {
         const { error: profileError } = await supabase
           .from("profiles")
@@ -176,6 +176,13 @@ export function RsvpForm({
       // "No" (the DIETARY_NONE sentinel we keep on the profile) is just absence
       // of notes here.
       const dietaryNotes = effectiveValues.dietary_notes;
+
+      // Sign the waiver first (it's stored against the exact waiver row the
+      // server resolves for this event); confirmRsvpAction re-checks it.
+      if (waiver.status === "unsigned") {
+        const signed = await signWaiverAction(event.id, waiverSign.name, waiverSign.agreed);
+        if (!signed.ok) throw new Error(signed.error);
+      }
 
       const result = await confirmRsvpAction(
         event.id,
@@ -199,6 +206,27 @@ export function RsvpForm({
       // restore of this page (browser back after the redirect) shows a stuck,
       // disabled "Submitting...".
       setIsSubmitting(false);
+    }
+  };
+
+  // Someone already registered who still owes a signature — e.g. the event
+  // moved to a chapter in the other state, which switches its waiver. They
+  // have no submit button (their RSVP stands), so signing has its own action.
+  const needsWaiverSignature = hasActiveRsvp && waiver.status === "unsigned";
+
+  const handleSignWaiver = async () => {
+    setIsSigning(true);
+    setError(null);
+    try {
+      const result = await signWaiverAction(event.id, waiverSign.name, waiverSign.agreed);
+      if (!result.ok) throw new Error(result.error);
+      setWaiverSign(EMPTY_WAIVER_SIGN);
+      router.refresh();
+    } catch (err: unknown) {
+      console.error("Sign waiver failed:", err);
+      setError(extractErrorMessage(err));
+    } finally {
+      setIsSigning(false);
     }
   };
 
@@ -273,16 +301,34 @@ export function RsvpForm({
                 RSVP, but consider completing it first.
               </p>
             )}
-            {activeSections.map((section) => (
-              <RegistrationSectionField
-                key={section.id}
-                section={section}
-                profileFields={profileFields}
-                fieldValues={fieldValues}
-                onChange={updateField}
-                editProfileHref={editProfileHref}
-              />
-            ))}
+            {needsWaiverSignature && waiver.status === "unsigned" && (
+              <p className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400">
+                <span className="font-medium">Action needed:</span> please read and sign the{" "}
+                {waiver.heading} below before the event. Your spot is still yours.
+              </p>
+            )}
+            {activeSections.map((section) =>
+              section.kind === "waiver" ? (
+                <div key={section.id} className="grid gap-1 rounded-md border p-3">
+                  <span className="text-sm font-medium">{section.title}</span>
+                  <WaiverSigning
+                    info={waiver}
+                    value={waiverSign}
+                    onChange={setWaiverSign}
+                    idPrefix="rsvp"
+                  />
+                </div>
+              ) : (
+                <RegistrationSectionField
+                  key={section.id}
+                  section={section}
+                  profileFields={profileFields}
+                  fieldValues={fieldValues}
+                  onChange={updateField}
+                  editProfileHref={editProfileHref}
+                />
+              ),
+            )}
             {isOffered && (
               <p className="rounded-md border border-green-600/40 bg-green-600/10 p-3 text-sm">
                 <span className="font-medium">A spot opened up for you!</span> It&apos;s held
@@ -322,6 +368,15 @@ export function RsvpForm({
           <CardFooter className="flex gap-2">
             {hasActiveRsvp ? (
               <>
+                {needsWaiverSignature && (
+                  <Button
+                    type="button"
+                    onClick={handleSignWaiver}
+                    disabled={isSigning || waiverNeedsInput(waiver, waiverSign)}
+                  >
+                    {isSigning ? "Signing..." : "Sign waiver"}
+                  </Button>
+                )}
                 {isOffered && (
                   <Button
                     type="button"
@@ -367,70 +422,6 @@ export function RsvpForm({
           </CardFooter>
         </form>
       </Card>
-    </div>
-  );
-}
-
-function RegistrationSectionField({
-  section,
-  profileFields,
-  fieldValues,
-  onChange,
-  editProfileHref,
-}: {
-  section: RegistrationSection;
-  profileFields: Record<string, string>;
-  fieldValues: Record<string, string>;
-  onChange: (key: string, value: string) => void;
-  editProfileHref: string;
-}) {
-  // "On file" is based on the profile as loaded, not live edits — otherwise
-  // finishing the last field of a section would make it flip to the
-  // read-only summary mid-fill.
-  const complete =
-    !section.alwaysEditable && isSectionComplete(section, profileFields);
-  const hasRequiredField = section.fields.some((field) => field.required);
-
-  return (
-    <div className="grid gap-1 rounded-md border p-3">
-      <span className="text-sm font-medium">{section.title}</span>
-      {complete ? (
-        <span className="text-sm text-muted-foreground">
-          On file: {section.summary(profileFields)}.{" "}
-          <Link
-            // Deep-link straight to this section's card on the profile page,
-            // which opens it (see profile-form.tsx).
-            href={`${editProfileHref}#${section.id}`}
-            className="underline underline-offset-4"
-          >
-            Edit on profile
-          </Link>
-        </span>
-      ) : (
-        <>
-          {hasRequiredField && (
-            <span className="text-sm text-amber-600 mb-1">
-              Required to RSVP — none on file yet.
-            </span>
-          )}
-          <div
-            className={
-              section.fields.length > 1
-                ? "grid grid-cols-2 gap-4"
-                : "grid gap-2"
-            }
-          >
-            {section.fields.map((field) => (
-              <RegistrationFieldInput
-                key={field.key}
-                field={field}
-                value={fieldValues[field.key] ?? ""}
-                onChange={onChange}
-              />
-            ))}
-          </div>
-        </>
-      )}
     </div>
   );
 }

@@ -14,7 +14,7 @@ export type EventType = (typeof EVENT_TYPES)[number];
 // the "New event" form prefills for a given event type — still fully
 // editable on the form itself, this is only a starting point.
 const DEFAULT_REGISTRATION_SECTIONS_BY_EVENT_TYPE: Partial<Record<EventType, string[]>> = {
-  "Fish A-Long": ["sizing", "waiver"],
+  "Fish A-Long": ["fly_fishing_sizing"],
   "Social Event": ["dietary"],
 };
 

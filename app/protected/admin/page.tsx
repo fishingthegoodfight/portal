@@ -70,9 +70,14 @@ export default function AdminEventsIndexPage() {
             Every event, including cancelled and past ones.
           </p>
         </div>
-        <Button asChild>
-          <Link href="/protected/admin/events/new">New event</Link>
-        </Button>
+        <div className="flex gap-2">
+          <Button asChild variant="outline">
+            <Link href="/protected/admin/waivers">Waivers</Link>
+          </Button>
+          <Button asChild>
+            <Link href="/protected/admin/events/new">New event</Link>
+          </Button>
+        </div>
       </div>
       <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>
         <AdminEventsLoader />

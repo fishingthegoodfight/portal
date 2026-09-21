@@ -7,6 +7,7 @@ import { RsvpForm } from "@/components/rsvp-form";
 import { EventCard } from "@/components/event-card";
 import { Button } from "@/components/ui/button";
 import { formatEventDateRange, formatEventInstant } from "@/lib/format-date";
+import { waiverInfoForUser } from "@/lib/waivers";
 import {
   profileValueFromColumn,
   REGISTRATION_SECTIONS,
@@ -35,7 +36,7 @@ async function RsvpLoader({
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken, is_published, registration_sections, status, cancellation_reason",
+      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken, is_published, registration_sections, status, cancellation_reason, waiver_state",
     )
     .eq("id", eventId)
     .maybeSingle();
@@ -110,6 +111,10 @@ async function RsvpLoader({
   const offeredCount =
     ((offeredCounts ?? []) as { event_id: number; offered_count: number }[])[0]?.offered_count ?? 0;
 
+  // The waiver isn't profile-backed: the server works out which one applies
+  // to this event (state + year) and whether this user has signed it.
+  const waiver = await waiverInfoForUser(supabase, event, userId);
+
   // Every registration field's current value, keyed by its profile column —
   // formatted (e.g. the phone mask) in case a stored value predates that
   // formatting, same as the profile page does for its own initial values.
@@ -161,6 +166,7 @@ async function RsvpLoader({
           : null
       }
       offerLapsed={offerLapsed}
+      waiver={waiver}
     />
   );
 }

@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { DIETARY_NONE, type RegistrationField } from "@/lib/registration-sections";
 
@@ -24,6 +25,49 @@ export function RegistrationFieldInput({
 }) {
   if (field.type === "yesno") {
     return <YesNoNotesField field={field} value={value} onChange={onChange} />;
+  }
+
+  if (field.type === "select") {
+    return (
+      <div className="grid gap-2">
+        <Label htmlFor={field.key}>{field.label}</Label>
+        <Select
+          id={field.key}
+          required={field.required}
+          value={value}
+          onChange={(e) => onChange(field.key, e.target.value)}
+        >
+          <option value="">Select…</option>
+          {(field.options ?? []).map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </Select>
+      </div>
+    );
+  }
+
+  if (field.type === "yesno_bool") {
+    return (
+      <fieldset className="grid gap-2">
+        <legend className="text-sm font-medium">{field.label}</legend>
+        <div className="flex gap-6 text-sm">
+          {(["true", "false"] as const).map((choice) => (
+            <label key={choice} className="flex items-center gap-2">
+              <input
+                type="radio"
+                name={field.key}
+                required={field.required}
+                checked={value === choice}
+                onChange={() => onChange(field.key, choice)}
+              />
+              {choice === "true" ? "Yes" : "No"}
+            </label>
+          ))}
+        </div>
+      </fieldset>
+    );
   }
 
   if (field.type === "checkbox") {

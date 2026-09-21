@@ -15,6 +15,14 @@ import {
 } from "@/lib/email/send";
 import type { EventChangeDiffEntry } from "@/lib/email/templates";
 import { offerFreeSpots } from "@/lib/waitlist";
+import { composeLocation, isLocationEmpty, locationErrors } from "@/lib/event-location";
+import { CHAPTERS } from "@/lib/chapters";
+import {
+  isWaiverState,
+  resolveEventWaiver,
+  waiverStateForChapter,
+  WAIVER_STATES,
+} from "@/lib/waivers";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -23,12 +31,18 @@ type EventRow = {
   name: string;
   description: string | null;
   location: string | null;
+  venue_name: string | null;
+  street_address: string | null;
+  city: string | null;
+  state: string | null;
   capacity: number | null;
   lead_name: string | null;
   lead_phone: string | null;
   lead_email: string | null;
   custom_email_note: string | null;
   registration_sections: string[] | null;
+  chapter: string | null;
+  waiver_state: string | null;
   starts_at: string;
   ends_at: string | null;
   timezone: string;
@@ -38,7 +52,7 @@ type EventRow = {
 };
 
 const EVENT_COLUMNS =
-  "id, name, description, location, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason";
+  "id, name, description, location, venue_name, street_address, city, state, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason";
 
 async function loadEvent(
   supabase: SupabaseServerClient,
@@ -68,6 +82,76 @@ async function confirmedRsvpEmails(
   return (profiles ?? [])
     .map((p) => p.email as string | null)
     .filter((email): email is string => Boolean(email));
+}
+
+async function countSignatures(
+  supabase: SupabaseServerClient,
+  waiverId: number | null,
+  userIds: string[],
+): Promise<number> {
+  if (waiverId == null || userIds.length === 0) return 0;
+  const { count } = await supabase
+    .from("waiver_signatures")
+    .select("*", { count: "exact", head: true })
+    .eq("waiver_id", waiverId)
+    .in("user_id", userIds);
+  return count ?? 0;
+}
+
+/** Who is affected when the event's waiver state changes, or null when
+ * nobody is registered. Read before anything is written. */
+async function waiverChangeImpact(
+  supabase: SupabaseServerClient,
+  before: EventRow,
+  after: EventRow,
+): Promise<WaiverChangeImpact | null> {
+  const { data: rsvps } = await supabase
+    .from("rsvps")
+    .select("user_id")
+    .eq("event_id", before.id)
+    .in("status", ["confirmed", "waitlisted", "offered"]);
+  const userIds = (rsvps ?? []).map((r) => r.user_id as string);
+  if (userIds.length === 0) return null;
+
+  const oldRequirement = await resolveEventWaiver(supabase, before);
+  const newRequirement = await resolveEventWaiver(supabase, after);
+  const oldState = waiverStateForChapter(before.chapter) ?? before.waiver_state;
+  const newState = after.waiver_state;
+
+  return {
+    oldStateName: isWaiverState(oldState) ? WAIVER_STATES[oldState] : "previous",
+    newStateName: isWaiverState(newState) ? WAIVER_STATES[newState] : "new",
+    registeredCount: userIds.length,
+    signedOldCount: await countSignatures(
+      supabase,
+      oldRequirement.kind === "ok" ? oldRequirement.waiver.id : null,
+      userIds,
+    ),
+    alreadySignedNewCount: await countSignatures(
+      supabase,
+      newRequirement.kind === "ok" ? newRequirement.waiver.id : null,
+      userIds,
+    ),
+    newWaiverMissing: newRequirement.kind !== "ok",
+  };
+}
+
+async function confirmedAttendees(
+  supabase: SupabaseServerClient,
+  eventId: number,
+): Promise<{ userId: string; email: string }[]> {
+  const { data: rsvps } = await supabase
+    .from("rsvps")
+    .select("user_id")
+    .eq("event_id", eventId)
+    .eq("status", "confirmed");
+  const userIds = (rsvps ?? []).map((r) => r.user_id as string);
+  if (userIds.length === 0) return [];
+
+  const { data: profiles } = await supabase.from("profiles").select("id, email").in("id", userIds);
+  return (profiles ?? [])
+    .filter((p) => Boolean(p.email))
+    .map((p) => ({ userId: p.id as string, email: p.email as string }));
 }
 
 async function countConfirmedRsvps(
@@ -115,6 +199,7 @@ function buildDiff(before: EventRow, after: EventRow): EventChangeDiffEntry[] {
   };
 
   push("Title", before.name, after.name);
+  push("Chapter", before.chapter ?? "", after.chapter ?? "");
   push("Description", before.description ?? "", after.description ?? "");
   push("Location", before.location ?? "", after.location ?? "");
   push("Capacity", capacityLabel(before.capacity), capacityLabel(after.capacity));
@@ -127,6 +212,9 @@ function buildDiff(before: EventRow, after: EventRow): EventChangeDiffEntry[] {
     sectionsLabel(before.registration_sections),
     sectionsLabel(after.registration_sections),
   );
+  const stateLabel = (code: string | null) =>
+    isWaiverState(code) ? WAIVER_STATES[code] : "";
+  push("Waiver state", stateLabel(before.waiver_state), stateLabel(after.waiver_state));
   push(
     "When",
     formatEventDateRange(before.starts_at, before.ends_at, before.timezone),
@@ -138,8 +226,15 @@ function buildDiff(before: EventRow, after: EventRow): EventChangeDiffEntry[] {
 
 export type EventEditInput = {
   name: string;
+  /** Must be one of lib/chapters.ts — also decides which state's waiver applies. */
+  chapter: string;
   description: string;
-  location: string;
+  // Structured location — same fields as the create wizard. Composed into
+  // events.location on save (see lib/event-location.ts).
+  venueName: string;
+  streetAddress: string;
+  city: string;
+  state: string;
   /** Raw form text — "" means unlimited. */
   capacity: string;
   leadName: string;
@@ -159,7 +254,24 @@ export type EventEditInput = {
   timezone: string;
 };
 
+/** What moving an event to a chapter in a different state does to the people
+ * already registered: they signed the old state's waiver, not the new one's. */
+export type WaiverChangeImpact = {
+  oldStateName: string;
+  newStateName: string;
+  /** Confirmed, waitlisted, or offered — everyone holding or awaiting a spot. */
+  registeredCount: number;
+  /** How many of them have a valid signature on the old state's waiver. */
+  signedOldCount: number;
+  /** How many already have a valid signature on the new state's waiver (so
+   * won't be asked again). */
+  alreadySignedNewCount: number;
+  /** True when no waiver has been published yet for the new state + year. */
+  newWaiverMissing: boolean;
+};
+
 export type UpdateEventResult =
+  | ({ ok: true; needsWaiverConfirm: true } & WaiverChangeImpact)
   | { ok: true; needsNotifyDecision: true; confirmedCount: number }
   | { ok: true; needsNotifyDecision: false }
   | { ok: false; error: string };
@@ -176,6 +288,9 @@ export async function updateEventAction(
   eventId: number,
   input: EventEditInput,
   notifyAttendees: boolean | null,
+  /** The admin has confirmed a chapter change that switches the event to the
+   * other state's waiver (see WaiverChangeImpact). */
+  confirmWaiverChange = false,
 ): Promise<UpdateEventResult> {
   const supabase = await createClient();
   const adminCheck = await requireAdmin(supabase);
@@ -196,9 +311,22 @@ export async function updateEventAction(
   }
 
   const validSectionIds = new Set(
-    REGISTRATION_SECTIONS.filter((s) => !s.alwaysRequired).map((s) => s.id),
+    REGISTRATION_SECTIONS.filter((s) => !s.alwaysRequired && !s.profileOnly).map((s) => s.id),
   );
   const registrationSections = input.registrationSections.filter((id) => validSectionIds.has(id));
+
+  // The chapter also decides the waiver: its state is never a separate
+  // choice, it always follows the chapter.
+  if (!CHAPTERS.some((c) => c.name === input.chapter)) {
+    return { ok: false, error: "Choose a chapter" };
+  }
+  const waiverState = waiverStateForChapter(input.chapter);
+
+  // Same four fields and rule as the create wizard. An older event that only
+  // has free text keeps it if the admin leaves all four blank.
+  const locationProblems = locationErrors(input, { allowLegacyEmpty: true });
+  if (locationProblems.length > 0) return { ok: false, error: locationProblems.join("; ") };
+  const keepLegacyLocation = isLocationEmpty(input);
 
   const newStarts = zonedDateTimeToUtc(input.date, input.time, input.timezone);
 
@@ -213,23 +341,42 @@ export async function updateEventAction(
   const after: EventRow = {
     ...before,
     name,
+    chapter: input.chapter,
     description: input.description.trim() || null,
-    location: input.location.trim() || null,
+    location: keepLegacyLocation ? before.location : composeLocation(input),
+    venue_name: keepLegacyLocation ? before.venue_name : input.venueName.trim(),
+    street_address: keepLegacyLocation ? before.street_address : input.streetAddress.trim(),
+    city: keepLegacyLocation ? before.city : input.city.trim(),
+    state: keepLegacyLocation ? before.state : input.state.trim(),
     capacity,
     lead_name: input.leadName.trim() || null,
     lead_phone: input.leadPhone.trim() || null,
     lead_email: input.leadEmail.trim() || null,
     custom_email_note: input.customEmailNote.trim() || null,
     registration_sections: registrationSections,
+    waiver_state: waiverState,
     starts_at: newStarts.toISOString(),
     ends_at: newEnds ? newEnds.toISOString() : null,
     timezone: input.timezone,
   };
 
+  // A chapter change counts like a location change: attendees are offered the
+  // "notify" choice for it too.
+  const chapterChanged = (before.chapter ?? null) !== (after.chapter ?? null);
   const dateTimeOrLocationChanged =
     before.starts_at !== after.starts_at ||
     (before.ends_at ?? null) !== (after.ends_at ?? null) ||
-    (before.location ?? null) !== (after.location ?? null);
+    (before.location ?? null) !== (after.location ?? null) ||
+    chapterChanged;
+
+  // Moving to a chapter in the other state (CO <-> GA) swaps the waiver:
+  // registered people signed the old state's, so they'll need to sign the new
+  // one. Warn and require confirmation before writing anything. Within the
+  // same state (Denver -> CO Springs) nothing changes for them, so no warning.
+  if (before.waiver_state !== after.waiver_state && !confirmWaiverChange) {
+    const impact = await waiverChangeImpact(supabase, before, after);
+    if (impact) return { ok: true, needsWaiverConfirm: true, ...impact };
+  }
 
   if (dateTimeOrLocationChanged && notifyAttendees === null) {
     const confirmedCount = await countConfirmedRsvps(supabase, eventId);
@@ -245,14 +392,20 @@ export async function updateEventAction(
     .from("events")
     .update({
       name: after.name,
+      chapter: after.chapter,
       description: after.description,
       location: after.location,
+      venue_name: after.venue_name,
+      street_address: after.street_address,
+      city: after.city,
+      state: after.state,
       capacity: after.capacity,
       lead_name: after.lead_name,
       lead_phone: after.lead_phone,
       lead_email: after.lead_email,
       custom_email_note: after.custom_email_note,
       registration_sections: after.registration_sections,
+      waiver_state: after.waiver_state,
       starts_at: after.starts_at,
       ends_at: after.ends_at,
       timezone: after.timezone,
@@ -272,11 +425,40 @@ export async function updateEventAction(
 
   if (notifyAttendees === true && dateTimeOrLocationChanged) {
     try {
-      const emails = await confirmedRsvpEmails(supabase, eventId);
+      const attendees = await confirmedAttendees(supabase, eventId);
       const emailEvent = toEmailEvent(after, newSequence);
-      for (const toEmail of emails) {
+
+      // When the update moved the event to the other state's waiver, tell the
+      // attendees who still have to sign it (anyone who already signed the new
+      // state's waiver for this year gets the usual wording).
+      let signedNewWaiver = new Set<string>();
+      const waiverStateChanged = before.waiver_state !== after.waiver_state;
+      if (waiverStateChanged) {
+        const requirement = await resolveEventWaiver(supabase, after);
+        if (requirement.kind === "ok" && attendees.length > 0) {
+          const { data: signatures } = await supabase
+            .from("waiver_signatures")
+            .select("user_id")
+            .eq("waiver_id", requirement.waiver.id)
+            .in(
+              "user_id",
+              attendees.map((a) => a.userId),
+            );
+          signedNewWaiver = new Set((signatures ?? []).map((s) => s.user_id as string));
+        }
+      }
+      const newWaiverStateName =
+        waiverStateChanged && isWaiverState(after.waiver_state)
+          ? WAIVER_STATES[after.waiver_state]
+          : undefined;
+
+      for (const { userId, email: toEmail } of attendees) {
         try {
-          await sendEventUpdateEmail({ event: emailEvent, toEmail });
+          await sendEventUpdateEmail({
+            event: emailEvent,
+            toEmail,
+            newWaiverStateName: signedNewWaiver.has(userId) ? undefined : newWaiverStateName,
+          });
         } catch (err) {
           console.error(
             `Failed to send event-update email to ${toEmail} for event ${eventId}:`,
