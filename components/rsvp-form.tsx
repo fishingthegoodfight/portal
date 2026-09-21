@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/client";
-import { confirmRsvpAction, cancelRsvpAction } from "@/lib/actions/rsvp";
+import { confirmRsvpAction, cancelRsvpAction, claimOfferedSpotAction } from "@/lib/actions/rsvp";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -70,6 +70,9 @@ export function RsvpForm({
   profile,
   profileFields,
   initialRsvp,
+  waitlistPosition,
+  offerExpiresLabel,
+  offerLapsed,
 }: {
   userId: string;
   event: EventSummary;
@@ -77,6 +80,13 @@ export function RsvpForm({
   /** Every registration field's current profile value, keyed by column. */
   profileFields: Record<string, string>;
   initialRsvp: InitialRsvp;
+  /** 1-based place in line when waitlisted, else null. */
+  waitlistPosition: number | null;
+  /** When an open offer expires, formatted in the event's timezone — done
+   * server-side for the same hydration reason as `dateRange`. */
+  offerExpiresLabel: string | null;
+  /** The caller had an offer that ran out unclaimed. */
+  offerLapsed: boolean;
 }) {
   const router = useRouter();
   // Seeded from the profile so a partially-complete section (e.g. a name but
@@ -85,12 +95,15 @@ export function RsvpForm({
     useState<Record<string, string>>(profileFields);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isClaiming, setIsClaiming] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const activeSections = sectionsForEvent(event.registration_sections);
 
   const status = initialRsvp?.status ?? null;
   const hasActiveRsvp = Boolean(status) && status !== "cancelled";
+  const isOffered = status === "offered";
+  const isWaitlisted = status === "waitlisted";
   const spotsLeft =
     event.capacity != null && event.spots_taken != null
       ? event.capacity - event.spots_taken
@@ -118,7 +131,7 @@ export function RsvpForm({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    // A confirmed/waitlisted RSVP shows no submit button — this only fires if
+    // A confirmed/waitlisted/offered RSVP shows no submit button — this only fires if
     // the form is submitted another way (e.g. Enter). Cancel is the only
     // action available from that state.
     if (hasActiveRsvp) return;
@@ -189,6 +202,29 @@ export function RsvpForm({
     }
   };
 
+  const handleClaim = async () => {
+    setIsClaiming(true);
+    setError(null);
+
+    try {
+      const result = await claimOfferedSpotAction(event.id);
+      if (!result.ok) {
+        // Offer expired / spot gone: show why, and refresh so the page
+        // reflects the real state instead of a stale Claim button.
+        setError(result.error);
+        router.refresh();
+        return;
+      }
+      const params = new URLSearchParams({ rsvp: "confirmed", event: event.name });
+      router.push(`/protected/events?${params.toString()}`);
+    } catch (err: unknown) {
+      console.error("Claim spot failed:", err);
+      setError(extractErrorMessage(err));
+    } finally {
+      setIsClaiming(false);
+    }
+  };
+
   const handleCancel = async () => {
     setIsCancelling(true);
     setError(null);
@@ -247,35 +283,85 @@ export function RsvpForm({
                 editProfileHref={editProfileHref}
               />
             ))}
-            {status && (
-              <p className="text-sm">
-                Current status: <span className="font-medium">{status}</span>
+            {isOffered && (
+              <p className="rounded-md border border-green-600/40 bg-green-600/10 p-3 text-sm">
+                <span className="font-medium">A spot opened up for you!</span> It&apos;s held
+                {offerExpiresLabel ? ` until ${offerExpiresLabel}` : " for 24 hours"}. Claim it
+                below, or decline so the next person can have it.
               </p>
             )}
-            {isFull && (
+            {isWaitlisted && (
+              <p className="text-sm">
+                <span className="font-medium">
+                  You&apos;re #{waitlistPosition ?? "?"} on the waitlist.
+                </span>{" "}
+                We&apos;ll email you if a spot opens up.
+              </p>
+            )}
+            {status === "confirmed" && (
+              <p className="text-sm">
+                Current status: <span className="font-medium">confirmed</span>
+              </p>
+            )}
+            {offerLapsed && !hasActiveRsvp && (
               <p className="text-sm text-amber-600">
-                This event shows no spots left as of the last page load — you
-                may be waitlisted.
+                Your earlier spot offer expired before it was claimed.
+                {isFull
+                  ? " You can join the waitlist again — you'll go to the back of the line."
+                  : " You can RSVP again below."}
+              </p>
+            )}
+            {isFull && !offerLapsed && (
+              <p className="text-sm text-amber-600">
+                This event is full. You can join the waitlist and we&apos;ll email you if a
+                spot opens up.
               </p>
             )}
             {error && <p className="text-sm text-red-500">{error}</p>}
           </CardContent>
           <CardFooter className="flex gap-2">
             {hasActiveRsvp ? (
-              <Button
-                type="button"
-                variant="outline"
-                onClick={handleCancel}
-                disabled={isCancelling}
-              >
-                {isCancelling ? "Cancelling..." : "Cancel RSVP"}
-              </Button>
+              <>
+                {isOffered && (
+                  <Button
+                    type="button"
+                    onClick={handleClaim}
+                    disabled={isClaiming || isCancelling}
+                  >
+                    {isClaiming ? "Claiming..." : "Claim your spot"}
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleCancel}
+                  disabled={isCancelling || isClaiming}
+                >
+                  {isCancelling
+                    ? isOffered
+                      ? "Declining..."
+                      : isWaitlisted
+                        ? "Leaving..."
+                        : "Cancelling..."
+                    : isOffered
+                      ? "Decline offer"
+                      : isWaitlisted
+                        ? "Leave waitlist"
+                        : "Cancel RSVP"}
+                </Button>
+              </>
             ) : (
               <Button
                 type="submit"
                 disabled={isSubmitting || hasMissingRequired}
               >
-                {isSubmitting ? "Submitting..." : "RSVP"}
+                {isSubmitting
+                  ? isFull
+                    ? "Joining..."
+                    : "Submitting..."
+                  : isFull
+                    ? "Join waitlist"
+                    : "RSVP"}
               </Button>
             )}
           </CardFooter>

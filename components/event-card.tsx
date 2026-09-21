@@ -47,6 +47,7 @@ export function EventCard({
 }) {
   const hasActiveRsvp = rsvpStatus != null && rsvpStatus !== "cancelled";
   const waitlisted = rsvpStatus === "waitlisted";
+  const offered = rsvpStatus === "offered";
   const spotsLeft =
     event.capacity != null && event.spots_taken != null
       ? event.capacity - event.spots_taken
@@ -58,7 +59,9 @@ export function EventCard({
     : hasActiveRsvp
       ? waitlisted
         ? { label: "Waitlisted", tone: "bg-amber-500/15 text-amber-700 dark:text-amber-400" }
-        : { label: "Going", tone: "bg-green-600/15 text-green-700 dark:text-green-500" }
+        : offered
+          ? { label: "Spot offered", tone: "bg-blue-600/15 text-blue-700 dark:text-blue-400" }
+          : { label: "Going", tone: "bg-green-600/15 text-green-700 dark:text-green-500" }
       : isFull
         ? { label: "Full", tone: "bg-muted text-muted-foreground" }
         : null;
@@ -67,7 +70,7 @@ export function EventCard({
   // already "Going" (handy for nudging others). Hidden for waitlisted, since
   // spots_taken >= capacity there would read "0 spots left".
   const spotsLeftLabel =
-    !waitlisted && spotsLeft != null && spotsLeft > 0
+    !waitlisted && !offered && spotsLeft != null && spotsLeft > 0
       ? `${spotsLeft} spot${spotsLeft === 1 ? "" : "s"} left`
       : null;
 
@@ -77,7 +80,9 @@ export function EventCard({
         hasActiveRsvp &&
           (waitlisted
             ? "border-l-4 border-l-amber-500"
-            : "border-l-4 border-l-green-600"),
+            : offered
+              ? "border-l-4 border-l-blue-600"
+              : "border-l-4 border-l-green-600"),
       )}
     >
       <CardHeader>

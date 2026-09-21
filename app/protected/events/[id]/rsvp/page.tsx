@@ -6,7 +6,7 @@ import { createClient } from "@/lib/supabase/server";
 import { RsvpForm } from "@/components/rsvp-form";
 import { EventCard } from "@/components/event-card";
 import { Button } from "@/components/ui/button";
-import { formatEventDateRange } from "@/lib/format-date";
+import { formatEventDateRange, formatEventInstant } from "@/lib/format-date";
 import {
   profileValueFromColumn,
   REGISTRATION_SECTIONS,
@@ -87,9 +87,28 @@ async function RsvpLoader({
 
   const { data: existingRsvp } = await supabase
     .from("rsvps")
-    .select("status, dietary_notes")
+    .select("status, dietary_notes, offer_expires_at")
     .eq("event_id", eventId)
+    // Explicit user filter: admins can read every RSVP (admin_select_all_rsvps),
+    // so RLS alone would hand them someone else's row here.
+    .eq("user_id", userId)
     .maybeSingle();
+
+  // A lapsed offer isn't an active RSVP: the person can rejoin (at the back
+  // of the line), so the form treats it as no RSVP plus a notice.
+  const offerLapsed = existingRsvp?.status === "expired";
+  const activeRsvp = existingRsvp && !offerLapsed ? existingRsvp : null;
+
+  // Open offers hold a spot, so they count as taken for "is it full?" —
+  // spots_taken alone only counts confirmed people.
+  const [{ data: offeredCounts }, { data: waitlistPosition }] = await Promise.all([
+    supabase.rpc("event_offered_counts", { p_event_ids: [eventId] }),
+    activeRsvp?.status === "waitlisted"
+      ? supabase.rpc("waitlist_position", { p_event_id: eventId })
+      : Promise.resolve({ data: null }),
+  ]);
+  const offeredCount =
+    ((offeredCounts ?? []) as { event_id: number; offered_count: number }[])[0]?.offered_count ?? 0;
 
   // Every registration field's current value, keyed by its profile column —
   // formatted (e.g. the phone mask) in case a stored value predates that
@@ -117,7 +136,7 @@ async function RsvpLoader({
         location: event.location,
         description: event.description,
         capacity: event.capacity,
-        spots_taken: event.spots_taken,
+        spots_taken: (event.spots_taken ?? 0) + offeredCount,
         registration_sections: event.registration_sections ?? [],
       }}
       profile={{
@@ -128,13 +147,20 @@ async function RsvpLoader({
       }}
       profileFields={profileFields}
       initialRsvp={
-        existingRsvp
+        activeRsvp
           ? {
-              status: existingRsvp.status,
-              dietaryNotes: existingRsvp.dietary_notes ?? "",
+              status: activeRsvp.status,
+              dietaryNotes: activeRsvp.dietary_notes ?? "",
             }
           : null
       }
+      waitlistPosition={typeof waitlistPosition === "number" ? waitlistPosition : null}
+      offerExpiresLabel={
+        activeRsvp?.status === "offered" && activeRsvp.offer_expires_at
+          ? formatEventInstant(activeRsvp.offer_expires_at, event.timezone)
+          : null
+      }
+      offerLapsed={offerLapsed}
     />
   );
 }

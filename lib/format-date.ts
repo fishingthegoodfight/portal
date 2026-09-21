@@ -62,3 +62,15 @@ export function formatEventDateRange(
   }
   return `${startDate} · ${time.format(start)} – ${date.format(end)} · ${timeWithZone.format(end)}`;
 }
+
+/**
+ * A single instant (e.g. when a waitlist offer expires) in a venue timezone,
+ * e.g. "Wed, Sep 3 · 6:00 PM MDT". Same fixed-zone rule as
+ * formatEventDateRange, so it's safe to compute on the server and hand to a
+ * client component as a string.
+ */
+export function formatEventInstant(instant: string, timeZone: string): string {
+  const { date, timeWithZone } = buildFormatters(timeZone);
+  const at = new Date(instant);
+  return `${date.format(at)} · ${timeWithZone.format(at)}`;
+}

@@ -402,3 +402,123 @@ export function reminderEmail(info: RsvpEmailEventInfo, kind: ReminderKind): Ren
 
   return { subject, html, text };
 }
+
+/**
+ * Sent to the next waitlisted person when a spot opens. The button goes to
+ * the event page, where a logged-in "Claim your spot" button confirms them —
+ * the offer holds the spot until `expiresLabel` (pre-formatted in the
+ * event's timezone).
+ */
+export function waitlistOfferEmail(info: RsvpEmailEventInfo, expiresLabel: string): RenderedEmail {
+  const name = escapeHtml(info.name);
+  const subject = `A spot opened up: ${info.name}`;
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">A spot opened up!</p>`,
+      `<p style="margin:0 0 16px;">A spot just opened for <strong>${name}</strong>, and you're next on the waitlist. It's being held for you until <strong>${escapeHtml(expiresLabel)}</strong>.</p>`,
+      `<p style="margin:0 0 4px;"><strong>When:</strong> ${escapeHtml(info.dateRange)}</p>`,
+      info.location
+        ? `<p style="margin:0 0 16px;"><strong>Where:</strong> ${escapeHtml(info.location)}</p>`
+        : "",
+      `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">Claim your spot</a></p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Log in, open the event page, and click "Claim your spot" to confirm. If you don't claim it by ${escapeHtml(expiresLabel)}, it goes to the next person on the waitlist. Can't make it? Click "Decline offer" on the same page so someone else can have it.</p>`,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+
+  const text = [
+    "A spot opened up!",
+    "",
+    `A spot just opened for ${info.name}, and you're next on the waitlist. It's being held for you until ${expiresLabel}.`,
+    "",
+    `When: ${info.dateRange}`,
+    info.location ? `Where: ${info.location}` : "",
+    "",
+    `Claim your spot: ${info.eventUrl}`,
+    "",
+    `Log in, open the event page, and click "Claim your spot" to confirm. If you don't claim it by ${expiresLabel}, it goes to the next person on the waitlist. Can't make it? Click "Decline offer" on the same page so someone else can have it.`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return { subject, html, text };
+}
+
+/** Sent when a waitlist offer lapses unclaimed. */
+export function waitlistOfferExpiredEmail(info: RsvpEmailEventInfo): RenderedEmail {
+  const name = escapeHtml(info.name);
+  const subject = `Your spot offer lapsed: ${info.name}`;
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">Your spot offer has lapsed</p>`,
+      `<p style="margin:0 0 16px;">The spot we were holding for you at <strong>${name}</strong> (${escapeHtml(info.dateRange)}) wasn't claimed in time, so it's been offered to the next person on the waitlist. You're no longer on the waitlist.</p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Still want to come? You can <a href="${info.eventUrl}" style="color:#166534;">join the waitlist again</a> — you'll go to the back of the line.</p>`,
+    ].join("\n"),
+  );
+
+  const text = [
+    "Your spot offer has lapsed",
+    "",
+    `The spot we were holding for you at ${info.name} (${info.dateRange}) wasn't claimed in time, so it's been offered to the next person on the waitlist. You're no longer on the waitlist.`,
+    "",
+    `Still want to come? Join the waitlist again (you'll go to the back of the line): ${info.eventUrl}`,
+  ].join("\n");
+
+  return { subject, html, text };
+}
+
+/**
+ * Internal heads-up to an event's lead (lead_email) when a participant
+ * cancels their confirmed RSVP: who cancelled, and whether the freed spot
+ * went to someone on the waitlist.
+ */
+export function leadParticipantCancelledEmail({
+  eventName,
+  dateRange,
+  eventAdminUrl,
+  cancelledBy,
+  offeredTo,
+}: {
+  eventName: string;
+  dateRange: string;
+  eventAdminUrl: string;
+  /** "First Last <email>" — see actorLabel in lib/admin/require-admin.ts. */
+  cancelledBy: string;
+  /** Labels of the people the freed spot was offered to (empty = nobody was
+   * waiting, so it's simply open). */
+  offeredTo: string[];
+}): RenderedEmail {
+  const subject = `RSVP cancelled: ${eventName}`;
+  const spotHtml =
+    offeredTo.length > 0
+      ? `The freed spot was <strong>offered to ${offeredTo.map(escapeHtml).join(", ")}</strong> from the waitlist (24 hours to claim).`
+      : `The spot was <strong>not offered to anyone</strong> — nobody was waiting, so it's open.`;
+  const spotText =
+    offeredTo.length > 0
+      ? `The freed spot was offered to ${offeredTo.join(", ")} from the waitlist (24 hours to claim).`
+      : "The spot was not offered to anyone — nobody was waiting, so it's open.";
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">A participant cancelled</p>`,
+      `<p style="margin:0 0 16px;"><strong>${escapeHtml(cancelledBy)}</strong> cancelled their RSVP for <strong>${escapeHtml(eventName)}</strong> (${escapeHtml(dateRange)}).</p>`,
+      `<p style="margin:0 0 16px;">${spotHtml}</p>`,
+      `<p style="margin:16px 0 0;font-size:13px;"><a href="${eventAdminUrl}" style="color:#166534;">View roster and waitlist</a></p>`,
+    ].join("\n"),
+  );
+
+  const text = [
+    "A participant cancelled",
+    "",
+    `${cancelledBy} cancelled their RSVP for ${eventName} (${dateRange}).`,
+    "",
+    spotText,
+    "",
+    `View roster and waitlist: ${eventAdminUrl}`,
+  ].join("\n");
+
+  return { subject, html, text };
+}

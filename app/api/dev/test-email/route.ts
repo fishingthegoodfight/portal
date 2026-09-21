@@ -8,6 +8,9 @@ import {
   sendEventUpdateEmail,
   sendRsvpCancellationEmail,
   sendRsvpConfirmationEmail,
+  sendLeadParticipantCancelledEmail,
+  sendWaitlistOfferEmail,
+  sendWaitlistOfferExpiredEmail,
 } from "@/lib/email/send";
 
 /**
@@ -22,6 +25,9 @@ import {
  *   /api/dev/test-email?to=you@example.com&event_id=1&kind=event-update
  *   /api/dev/test-email?to=you@example.com&event_id=1&kind=event-restore
  *   /api/dev/test-email?event_id=1&kind=admin-notify  (uses ADMIN_NOTIFICATION_EMAILS, ignores ?to=)
+ *   /api/dev/test-email?to=you@example.com&event_id=1&kind=waitlist-offer
+ *   /api/dev/test-email?to=you@example.com&event_id=1&kind=waitlist-expired
+ *   /api/dev/test-email?event_id=1&kind=lead-cancel[&offered=1]  (goes to the event's lead_email, ignores ?to=)
  */
 export async function GET(request: NextRequest) {
   if (process.env.NODE_ENV !== "development") {
@@ -38,7 +44,7 @@ export async function GET(request: NextRequest) {
   if (!Number.isFinite(eventId)) {
     return NextResponse.json({ error: "Missing or invalid ?event_id=<id>" }, { status: 400 });
   }
-  if (kind !== "admin-notify" && !to) {
+  if (kind !== "admin-notify" && kind !== "lead-cancel" && !to) {
     return NextResponse.json({ error: "Missing ?to=<email>" }, { status: 400 });
   }
 
@@ -68,6 +74,26 @@ export async function GET(request: NextRequest) {
         break;
       case "event-restore":
         await sendEventRestoredEmail({ event, toEmail: to! });
+        break;
+      case "waitlist-offer":
+        await sendWaitlistOfferEmail({
+          event,
+          toEmail: to!,
+          expiresAt: new Date(Date.now() + 24 * 3_600_000).toISOString(),
+        });
+        break;
+      case "waitlist-expired":
+        await sendWaitlistOfferExpiredEmail({ event, toEmail: to! });
+        break;
+      case "lead-cancel":
+        if (!event.lead_email) {
+          return NextResponse.json({ error: "Event has no lead_email" }, { status: 400 });
+        }
+        await sendLeadParticipantCancelledEmail({
+          event,
+          cancelledBy: "Test Participant <test@example.com>",
+          offeredTo: searchParams.get("offered") ? ["Next Person"] : [],
+        });
         break;
       case "admin-notify":
         await sendAdminChangeNotificationEmail({

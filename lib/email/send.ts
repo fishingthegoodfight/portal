@@ -1,7 +1,7 @@
 import nodemailer from "nodemailer";
 import { Resend } from "resend";
 
-import { formatEventDateRange } from "@/lib/format-date";
+import { formatEventDateRange, formatEventInstant } from "@/lib/format-date";
 import { getSiteUrl } from "@/lib/site-url";
 import { buildEventIcs, buildGoogleCalendarLink } from "@/lib/email/ics";
 import {
@@ -11,7 +11,10 @@ import {
   eventCancellationEmail,
   eventRestoredEmail,
   eventUpdateEmail,
+  leadParticipantCancelledEmail,
   reminderEmail,
+  waitlistOfferEmail,
+  waitlistOfferExpiredEmail,
   type ReminderKind,
   type EventChangeDiffEntry,
   type EventChangeAction,
@@ -376,4 +379,62 @@ export async function sendReminderEmail({
     html,
     text,
   });
+}
+
+/**
+ * A spot opened up for a waitlisted person. `expiresAt` is the ISO timestamp
+ * stored on their rsvp; it's rendered in the event's own timezone. Throws on
+ * failure — callers log per recipient so one bad send doesn't stop the rest.
+ */
+export async function sendWaitlistOfferEmail({
+  event,
+  toEmail,
+  expiresAt,
+}: {
+  event: RsvpEmailEvent;
+  toEmail: string;
+  expiresAt: string;
+}): Promise<void> {
+  const { subject, html, text } = waitlistOfferEmail(
+    buildEventInfo(event),
+    formatEventInstant(expiresAt, event.timezone),
+  );
+  await deliverEmail({ to: toEmail, subject, html, text });
+}
+
+/** A waitlist offer lapsed unclaimed (sent by /api/cron/waitlist). */
+export async function sendWaitlistOfferExpiredEmail({
+  event,
+  toEmail,
+}: {
+  event: RsvpEmailEvent;
+  toEmail: string;
+}): Promise<void> {
+  const { subject, html, text } = waitlistOfferExpiredEmail(buildEventInfo(event));
+  await deliverEmail({ to: toEmail, subject, html, text });
+}
+
+/**
+ * Tells the event lead (events.lead_email) a participant cancelled and
+ * whether the spot went to someone on the waitlist. A no-op (not an error)
+ * when the event has no lead email.
+ */
+export async function sendLeadParticipantCancelledEmail({
+  event,
+  cancelledBy,
+  offeredTo,
+}: {
+  event: RsvpEmailEvent;
+  cancelledBy: string;
+  offeredTo: string[];
+}): Promise<void> {
+  if (!event.lead_email) return;
+  const { subject, html, text } = leadParticipantCancelledEmail({
+    eventName: event.name,
+    dateRange: formatEventDateRange(event.starts_at, event.ends_at, event.timezone),
+    eventAdminUrl: `${getSiteUrl()}/protected/admin/events/${event.id}`,
+    cancelledBy,
+    offeredTo,
+  });
+  await deliverEmail({ to: event.lead_email, subject, html, text });
 }

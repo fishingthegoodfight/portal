@@ -577,3 +577,950 @@ $$;
 alter table public.rsvps
   add column if not exists sent_1week_at timestamptz,
   add column if not exists sent_1day_at timestamptz;
+
+-- =============================================================================
+-- 2026-09-21 — Participant waitlist: ordering, 24-hour offers, expiry
+-- =============================================================================
+-- Status lifecycle for rsvps.status:
+--   waitlisted -> offered (spot opened; offer_expires_at = +24h)
+--   offered    -> confirmed (claim_offered_spot) | expired (lapsed, cron)
+--                 | row deleted (participant declines / admin removes)
+--   expired    -> waitlisted again only by re-joining via rsvp_to_event
+--
+-- Capacity model: events.spots_taken still counts CONFIRMED rsvps only. An
+-- open offer holds a spot without touching spots_taken; every capacity check
+-- (try_claim_event_spot, offer_waitlisted_spots) subtracts the number of
+-- rows in status 'offered'. Claiming an offer moves the row to 'confirmed'
+-- and bumps spots_taken through try_claim_event_spot, so it is the single
+-- capacity gate and can never overbook.
+--
+-- Concurrency rule used by every function below: lock the events row FIRST
+-- (a separate statement, so the next statement gets a fresh snapshot that
+-- sees other transactions' committed offers), and only then touch rsvps.
+-- Same lock order everywhere avoids deadlocks.
+
+alter table public.rsvps
+  add column if not exists joined_at timestamptz,
+  add column if not exists offer_expires_at timestamptz;
+
+-- Existing waitlisted rows: order by when they last changed, the best
+-- approximation available.
+update public.rsvps
+   set joined_at = coalesce(updated_at, now())
+ where status = 'waitlisted' and joined_at is null;
+
+-- Allow the two new statuses. Drops whatever CHECK on rsvps mentions
+-- "status" (its name isn't known here) and re-adds one with the full set.
+do $$
+declare
+  c record;
+begin
+  for c in
+    select conname from pg_constraint
+     where conrelid = 'public.rsvps'::regclass
+       and contype = 'c'
+       and pg_get_constraintdef(oid) ilike '%status%'
+  loop
+    execute format('alter table public.rsvps drop constraint %I', c.conname);
+  end loop;
+end $$;
+
+alter table public.rsvps
+  add constraint rsvps_status_check
+  check (status in ('confirmed', 'waitlisted', 'offered', 'expired', 'cancelled'));
+
+create index if not exists rsvps_waitlist_order_idx
+  on public.rsvps (event_id, joined_at, id)
+  where status in ('waitlisted', 'offered');
+
+create index if not exists rsvps_offer_expiry_idx
+  on public.rsvps (offer_expires_at)
+  where status = 'offered';
+
+-- The existing capacity function, now (a) locking the event row up front so
+-- it sees committed offers, and (b) subtracting open offers held by anyone
+-- other than p_holder. p_holder is the offered person claiming their own
+-- spot, whose offer must not count against themselves. Replaces the
+-- one-argument version (dropped first: a new default parameter would
+-- otherwise create an ambiguous overload).
+drop function if exists public.try_claim_event_spot(bigint);
+
+create or replace function public.try_claim_event_spot(
+  p_event_id bigint,
+  p_holder uuid default null
+)
+returns boolean
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  perform 1 from public.events where id = p_event_id for update;
+
+  update public.events e
+     set spots_taken = e.spots_taken + 1, updated_at = now()
+   where e.id = p_event_id
+     and e.is_published
+     and e.status = 'scheduled'
+     and e.spots_taken + (
+           select count(*)
+             from public.rsvps r
+            where r.event_id = e.id
+              and r.status = 'offered'
+              and r.user_id is distinct from p_holder
+         ) < e.capacity;
+  return found;
+end $function$;
+
+-- rsvp_to_event: 'offered' counts as an existing active RSVP (notes-only
+-- update — claiming goes through claim_offered_spot), waitlisting stamps
+-- joined_at, and re-joining after a lapsed offer resets it (back of the
+-- line) and clears the old expiry.
+create or replace function public.rsvp_to_event(p_event_id bigint, p_dietary text default null::text)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_status text;
+  v_existing_status text;
+begin
+  select status into v_existing_status
+    from public.rsvps
+   where event_id = p_event_id and user_id = auth.uid();
+
+  if v_existing_status in ('confirmed', 'waitlisted', 'offered') then
+    update public.rsvps
+       set dietary_notes = p_dietary, updated_at = now()
+     where event_id = p_event_id and user_id = auth.uid();
+    return v_existing_status;
+  end if;
+
+  v_status := case when public.try_claim_event_spot(p_event_id) then 'confirmed' else 'waitlisted' end;
+
+  insert into public.rsvps (event_id, user_id, status, dietary_notes, joined_at)
+  values (
+    p_event_id, auth.uid(), v_status, p_dietary,
+    case when v_status = 'waitlisted' then now() end
+  )
+  on conflict (event_id, user_id)
+  do update set status = excluded.status,
+                dietary_notes = excluded.dietary_notes,
+                joined_at = excluded.joined_at,
+                offer_expires_at = null,
+                updated_at = now();
+
+  return v_status;
+end $function$;
+
+-- Offers every open spot on an event to the next waitlisted people, oldest
+-- joined_at first. Returns who was offered and when it expires. Offers as
+-- many people as there are free spots (capacity - confirmed - open offers),
+-- so it is also safe to call after a capacity increase. Does nothing for an
+-- unpublished/cancelled/already-started event or one with no capacity limit.
+-- p_now exists so the expiry cron can be tested with a fake clock.
+--
+-- Internal: not callable from the client (see the grants below). Everything
+-- user-facing reaches it through cancel_rsvp / admin_remove_rsvp /
+-- process_waitlist_expiry, which decide when an offer is appropriate.
+create or replace function public.offer_waitlisted_spots(
+  p_event_id bigint,
+  p_now timestamptz default now()
+)
+returns table (o_user_id uuid, o_expires_at timestamptz)
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_event public.events%rowtype;
+  v_free integer;
+begin
+  perform 1 from public.events where id = p_event_id for update;
+  select * into v_event from public.events where id = p_event_id;
+
+  if not found
+     or not v_event.is_published
+     or v_event.status <> 'scheduled'
+     or v_event.capacity is null
+     or v_event.starts_at <= p_now then
+    return;
+  end if;
+
+  v_free := v_event.capacity - v_event.spots_taken - (
+    select count(*) from public.rsvps
+     where event_id = p_event_id and status = 'offered'
+  );
+  if v_free <= 0 then
+    return;
+  end if;
+
+  return query
+  with next_up as (
+    select r.id
+      from public.rsvps r
+     where r.event_id = p_event_id and r.status = 'waitlisted'
+     order by coalesce(r.joined_at, 'infinity'::timestamptz), r.id
+     limit v_free
+       for update
+  )
+  update public.rsvps r
+     set status = 'offered',
+         offer_expires_at = p_now + interval '24 hours',
+         updated_at = now()
+    from next_up
+   where r.id = next_up.id
+  returning r.user_id, r.offer_expires_at;
+end $function$;
+
+revoke all on function public.offer_waitlisted_spots(bigint, timestamptz)
+  from public, anon, authenticated;
+grant execute on function public.offer_waitlisted_spots(bigint, timestamptz) to service_role;
+
+-- cancel_rsvp: same behavior (delete the caller's row, give back a confirmed
+-- spot) plus: cancelling a confirmed RSVP or declining an offer immediately
+-- offers the freed spot to the next waitlisted person. Now returns jsonb
+-- (was void) so the server action knows who to email:
+--   { previous_status: text|null, offered: [{ user_id, expires_at }] }
+-- previous_status is null when the caller had no RSVP (nothing happened).
+drop function if exists public.cancel_rsvp(bigint);
+
+create or replace function public.cancel_rsvp(p_event_id bigint)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_status text;
+  v_offered jsonb := '[]'::jsonb;
+begin
+  perform 1 from public.events where id = p_event_id for update;
+
+  delete from public.rsvps
+   where event_id = p_event_id and user_id = auth.uid()
+  returning status into v_status;
+
+  if v_status is null then
+    return jsonb_build_object('previous_status', null, 'offered', v_offered);
+  end if;
+
+  if v_status = 'confirmed' then
+    update public.events
+       set spots_taken = greatest(spots_taken - 1, 0), updated_at = now()
+     where id = p_event_id;
+  end if;
+
+  if v_status in ('confirmed', 'offered') then
+    select coalesce(jsonb_agg(jsonb_build_object('user_id', o_user_id, 'expires_at', o_expires_at)), '[]'::jsonb)
+      into v_offered
+      from public.offer_waitlisted_spots(p_event_id);
+  end if;
+
+  return jsonb_build_object('previous_status', v_status, 'offered', v_offered);
+end $function$;
+
+-- The offered person's "Claim your spot" button. Goes through
+-- try_claim_event_spot (the one capacity gate), excluding their own offer
+-- from the count. Returns 'confirmed', 'not_offered', 'expired' (offer
+-- lapsed; the cron will process it) or 'capacity_exceeded' (e.g. the event
+-- was cancelled or its capacity lowered since the offer).
+create or replace function public.claim_offered_spot(p_event_id bigint)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  v_rsvp public.rsvps%rowtype;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  perform 1 from public.events where id = p_event_id for update;
+
+  select * into v_rsvp
+    from public.rsvps
+   where event_id = p_event_id and user_id = v_uid
+     for update;
+
+  if not found or v_rsvp.status <> 'offered' then
+    return 'not_offered';
+  end if;
+  if v_rsvp.offer_expires_at is null or v_rsvp.offer_expires_at <= now() then
+    return 'expired';
+  end if;
+
+  if not public.try_claim_event_spot(p_event_id, v_uid) then
+    return 'capacity_exceeded';
+  end if;
+
+  update public.rsvps
+     set status = 'confirmed', offer_expires_at = null, updated_at = now()
+   where id = v_rsvp.id;
+
+  return 'confirmed';
+end $function$;
+
+-- 1-based place in line among currently 'waitlisted' rsvps (offered people
+-- are ahead of the line, not in it), or null if the caller isn't waitlisted.
+-- SECURITY DEFINER because RLS only lets a participant see their own row.
+create or replace function public.waitlist_position(p_event_id bigint)
+returns integer
+language sql
+security definer
+stable
+set search_path to 'public'
+as $function$
+  select nullif(count(*), 0)::integer
+    from public.rsvps me
+    join public.rsvps r
+      on r.event_id = me.event_id
+     and r.status = 'waitlisted'
+     and (coalesce(r.joined_at, 'infinity'::timestamptz), r.id)
+         <= (coalesce(me.joined_at, 'infinity'::timestamptz), me.id)
+   where me.event_id = p_event_id
+     and me.user_id = auth.uid()
+     and me.status = 'waitlisted';
+$function$;
+
+-- Open offers per event, so pages can show "full" when confirmed + offered
+-- has reached capacity. SECURITY DEFINER for the same RLS reason.
+create or replace function public.event_offered_counts(p_event_ids bigint[])
+returns table (event_id bigint, offered_count integer)
+language sql
+security definer
+stable
+set search_path to 'public'
+as $function$
+  select r.event_id, count(*)::integer
+    from public.rsvps r
+   where r.event_id = any(p_event_ids) and r.status = 'offered'
+   group by r.event_id;
+$function$;
+
+-- Admin: offer a spot to one specific waitlisted (or lapsed) person right
+-- now, out of order if the admin chooses. Only when a spot is genuinely free
+-- (capacity - confirmed - open offers > 0) — otherwise the offer could never
+-- be claimed. Returns jsonb: { ok, reason?, event_id, user_id, expires_at }.
+create or replace function public.admin_offer_spot(p_rsvp_id bigint)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_event_id bigint;
+  v_rsvp public.rsvps%rowtype;
+  v_event public.events%rowtype;
+  v_free integer;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can offer spots';
+  end if;
+
+  select event_id into v_event_id from public.rsvps where id = p_rsvp_id;
+  if not found then
+    return jsonb_build_object('ok', false, 'reason', 'not_found');
+  end if;
+
+  perform 1 from public.events where id = v_event_id for update;
+  select * into v_event from public.events where id = v_event_id;
+  select * into v_rsvp from public.rsvps where id = p_rsvp_id for update;
+
+  if not found or v_rsvp.status not in ('waitlisted', 'expired') then
+    return jsonb_build_object('ok', false, 'reason', 'not_waitlisted');
+  end if;
+  if v_event.status <> 'scheduled' or not v_event.is_published or v_event.capacity is null then
+    return jsonb_build_object('ok', false, 'reason', 'event_unavailable');
+  end if;
+
+  v_free := v_event.capacity - v_event.spots_taken - (
+    select count(*) from public.rsvps where event_id = v_event_id and status = 'offered'
+  );
+  if v_free <= 0 then
+    return jsonb_build_object('ok', false, 'reason', 'no_capacity');
+  end if;
+
+  update public.rsvps
+     set status = 'offered',
+         offer_expires_at = now() + interval '24 hours',
+         updated_at = now()
+   where id = p_rsvp_id;
+
+  return jsonb_build_object(
+    'ok', true,
+    'event_id', v_event_id,
+    'user_id', v_rsvp.user_id,
+    'expires_at', now() + interval '24 hours'
+  );
+end $function$;
+
+-- Admin: remove anyone from an event, whatever their status. Frees a
+-- confirmed spot (and offers it to the next person, like a cancellation), and
+-- voids an open offer (same). Returns jsonb:
+--   { removed, previous_status, user_id, offered: [{ user_id, expires_at }] }
+create or replace function public.admin_remove_rsvp(p_rsvp_id bigint)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_event_id bigint;
+  v_user_id uuid;
+  v_status text;
+  v_offered jsonb := '[]'::jsonb;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can remove RSVPs';
+  end if;
+
+  select event_id into v_event_id from public.rsvps where id = p_rsvp_id;
+  if not found then
+    return jsonb_build_object('removed', false, 'offered', v_offered);
+  end if;
+
+  perform 1 from public.events where id = v_event_id for update;
+
+  delete from public.rsvps
+   where id = p_rsvp_id
+  returning status, user_id into v_status, v_user_id;
+
+  if v_status is null then
+    return jsonb_build_object('removed', false, 'offered', v_offered);
+  end if;
+
+  if v_status = 'confirmed' then
+    update public.events
+       set spots_taken = greatest(spots_taken - 1, 0), updated_at = now()
+     where id = v_event_id;
+  end if;
+
+  if v_status in ('confirmed', 'offered') then
+    select coalesce(jsonb_agg(jsonb_build_object('user_id', o_user_id, 'expires_at', o_expires_at)), '[]'::jsonb)
+      into v_offered
+      from public.offer_waitlisted_spots(v_event_id);
+  end if;
+
+  return jsonb_build_object(
+    'removed', true,
+    'previous_status', v_status,
+    'user_id', v_user_id,
+    'offered', v_offered
+  );
+end $function$;
+
+-- The hourly expiry job's workhorse (called by /api/cron/waitlist with the
+-- service-role key). For every event with a lapsed offer or a waiting line:
+-- lock the event, mark lapsed offers 'expired', then offer any free spots to
+-- the next waitlisted people. Idempotent: a second run finds nothing lapsed
+-- and (with the spots now held by open offers) nothing free, so it changes
+-- nothing and returns empty lists. Concurrent runs serialize on the event
+-- lock, and the loser re-reads committed state. Sweeping events that merely
+-- have a line + a free spot also self-heals anything that slipped past the
+-- immediate offer (e.g. a capacity increase). Returns jsonb:
+--   { expired: [{ event_id, user_id }], offered: [{ event_id, user_id, expires_at }] }
+-- p_now is the fake-clock hook for testing.
+create or replace function public.process_waitlist_expiry(p_now timestamptz default now())
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_event_id bigint;
+  v_expired jsonb := '[]'::jsonb;
+  v_offered jsonb := '[]'::jsonb;
+  v_chunk jsonb;
+begin
+  for v_event_id in
+    select event_id from public.rsvps
+     where status = 'offered' and offer_expires_at <= p_now
+    union
+    select event_id from public.rsvps
+     where status = 'waitlisted'
+    order by 1
+  loop
+    perform 1 from public.events where id = v_event_id for update;
+
+    with lapsed as (
+      update public.rsvps
+         set status = 'expired', updated_at = now()
+       where event_id = v_event_id
+         and status = 'offered'
+         and offer_expires_at <= p_now
+      returning user_id
+    )
+    select coalesce(jsonb_agg(jsonb_build_object('event_id', v_event_id, 'user_id', user_id)), '[]'::jsonb)
+      into v_chunk
+      from lapsed;
+    v_expired := v_expired || v_chunk;
+
+    select coalesce(jsonb_agg(jsonb_build_object('event_id', v_event_id, 'user_id', o_user_id, 'expires_at', o_expires_at)), '[]'::jsonb)
+      into v_chunk
+      from public.offer_waitlisted_spots(v_event_id, p_now);
+    v_offered := v_offered || v_chunk;
+  end loop;
+
+  return jsonb_build_object('expired', v_expired, 'offered', v_offered);
+end $function$;
+
+revoke all on function public.process_waitlist_expiry(timestamptz)
+  from public, anon, authenticated;
+grant execute on function public.process_waitlist_expiry(timestamptz) to service_role;
+
+-- Admin walk-up: a waitlisted or offered person walking up is confirmed and
+-- checked in, and now actually takes a spot. The previous version flipped
+-- their status to 'confirmed' WITHOUT incrementing spots_taken (only
+-- already-confirmed people should skip the capacity claim). Waitlisted/offered
+-- people now claim capacity (their own offer excluded), or need p_force to go
+-- over capacity, same as a brand-new walk-up.
+create or replace function public.admin_upsert_walkup_rsvp(
+  p_event_id bigint,
+  p_profile_id uuid,
+  p_force boolean default false
+)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_existing_status text;
+  v_claimed boolean;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can add walk-up RSVPs';
+  end if;
+
+  if not exists (
+    select 1 from public.events where id = p_event_id and status = 'scheduled'
+  ) then
+    raise exception 'Event is not scheduled';
+  end if;
+
+  select status into v_existing_status
+    from public.rsvps
+   where event_id = p_event_id and user_id = p_profile_id;
+
+  if v_existing_status = 'confirmed' then
+    update public.rsvps
+       set checked_in_at = now(), updated_at = now()
+     where event_id = p_event_id and user_id = p_profile_id;
+    return 'confirmed';
+  end if;
+
+  v_claimed := public.try_claim_event_spot(p_event_id, p_profile_id);
+
+  if not v_claimed and not p_force then
+    return 'capacity_exceeded';
+  end if;
+
+  if not v_claimed and p_force then
+    update public.events
+       set spots_taken = spots_taken + 1, updated_at = now()
+     where id = p_event_id;
+  end if;
+
+  insert into public.rsvps (event_id, user_id, status, checked_in_at)
+  values (p_event_id, p_profile_id, 'confirmed', now())
+  on conflict (event_id, user_id)
+  do update set status = excluded.status,
+                checked_in_at = excluded.checked_in_at,
+                offer_expires_at = null,
+                updated_at = now();
+
+  return 'confirmed';
+end $function$;
+
+-- -----------------------------------------------------------------------------
+-- Hourly expiry job: pg_cron + pg_net -> /api/cron/waitlist, secret in Vault
+-- -----------------------------------------------------------------------------
+-- Run these steps in order in the Supabase SQL editor.
+--
+-- Step 1 — enable the extensions (or Dashboard > Database > Extensions):
+create extension if not exists pg_cron;
+create extension if not exists pg_net;
+
+-- Step 2 — store the shared secret in Vault. It must be EXACTLY the same
+-- value as the CRON_SECRET env var in Vercel (Project > Settings >
+-- Environment Variables), which is what the route checks. Run this ONCE with
+-- the real value pasted in, and do not commit the real value anywhere:
+--
+--   select vault.create_secret(
+--     'PASTE-THE-CRON_SECRET-VALUE-HERE',
+--     'cron_secret',
+--     'Bearer secret for /api/cron/* routes'
+--   );
+--
+-- To rotate it later (after changing CRON_SECRET in Vercel and redeploying):
+--
+--   select vault.update_secret(
+--     (select id from vault.secrets where name = 'cron_secret'),
+--     'NEW-VALUE'
+--   );
+--
+-- Check it's stored (shows the name, never prints the value here):
+--
+--   select name, created_at from vault.secrets where name = 'cron_secret';
+
+-- Step 3 — schedule it hourly, on the hour. The secret is read from Vault at
+-- each run; nothing sensitive is stored in the job definition. Re-running
+-- this statement replaces the job of the same name rather than duplicating.
+select cron.schedule(
+  'waitlist-expiry-hourly',
+  '0 * * * *',
+  $$
+  select net.http_get(
+    url := 'https://portal-ftgf.vercel.app/api/cron/waitlist',
+    headers := jsonb_build_object(
+      'Authorization',
+      'Bearer ' || (
+        select decrypted_secret
+          from vault.decrypted_secrets
+         where name = 'cron_secret'
+      )
+    ),
+    timeout_milliseconds := 30000
+  );
+  $$
+);
+
+-- Verify (after the top of the next hour, or trigger one immediately with the
+-- select below):
+--   select * from cron.job where jobname = 'waitlist-expiry-hourly';
+--   select * from cron.job_run_details order by start_time desc limit 5;
+--   select id, status_code, content, created
+--     from net._http_response order by created desc limit 5;   -- expect 200
+--
+-- Run it once right now without waiting for the schedule:
+--   select net.http_get(
+--     url := 'https://portal-ftgf.vercel.app/api/cron/waitlist',
+--     headers := jsonb_build_object('Authorization', 'Bearer ' || (
+--       select decrypted_secret from vault.decrypted_secrets where name = 'cron_secret'))
+--   );
+--
+-- Turn it off:
+--   select cron.unschedule('waitlist-expiry-hourly');
+
+-- =============================================================================
+-- 2026-09-21 — Unlimited events (capacity null) never waitlist anyone
+-- =============================================================================
+-- try_claim_event_spot compared spots_taken + offers < capacity, which is
+-- NULL (not true) when capacity is null, so every RSVP to an "Unlimited"
+-- event was waitlisted. Null capacity now means no limit: a claim always
+-- succeeds (still counting spots_taken, still requiring a published,
+-- scheduled event). The offer functions treat null the same way, so any
+-- people already stuck on an unlimited event's waitlist are offered a spot on
+-- the next cron run (or immediately when an admin switches an event to
+-- unlimited).
+create or replace function public.try_claim_event_spot(
+  p_event_id bigint,
+  p_holder uuid default null
+)
+returns boolean
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  perform 1 from public.events where id = p_event_id for update;
+
+  update public.events e
+     set spots_taken = e.spots_taken + 1, updated_at = now()
+   where e.id = p_event_id
+     and e.is_published
+     and e.status = 'scheduled'
+     and (
+       e.capacity is null
+       or e.spots_taken + (
+            select count(*)
+              from public.rsvps r
+             where r.event_id = e.id
+               and r.status = 'offered'
+               and r.user_id is distinct from p_holder
+          ) < e.capacity
+     );
+  return found;
+end $function$;
+
+-- Same as before except null capacity = unlimited (v_free stays null, and
+-- LIMIT NULL means no limit, so everyone waiting is offered).
+create or replace function public.offer_waitlisted_spots(
+  p_event_id bigint,
+  p_now timestamptz default now()
+)
+returns table (o_user_id uuid, o_expires_at timestamptz)
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_event public.events%rowtype;
+  v_free integer;
+begin
+  perform 1 from public.events where id = p_event_id for update;
+  select * into v_event from public.events where id = p_event_id;
+
+  if not found
+     or not v_event.is_published
+     or v_event.status <> 'scheduled'
+     or v_event.starts_at <= p_now then
+    return;
+  end if;
+
+  if v_event.capacity is not null then
+    v_free := v_event.capacity - v_event.spots_taken - (
+      select count(*) from public.rsvps
+       where event_id = p_event_id and status = 'offered'
+    );
+    if v_free <= 0 then
+      return;
+    end if;
+  end if;
+
+  return query
+  with next_up as (
+    select r.id
+      from public.rsvps r
+     where r.event_id = p_event_id and r.status = 'waitlisted'
+     order by coalesce(r.joined_at, 'infinity'::timestamptz), r.id
+     limit v_free
+       for update
+  )
+  update public.rsvps r
+     set status = 'offered',
+         offer_expires_at = p_now + interval '24 hours',
+         updated_at = now()
+    from next_up
+   where r.id = next_up.id
+  returning r.user_id, r.offer_expires_at;
+end $function$;
+
+-- Same as before except an unlimited event always has a free spot to offer.
+create or replace function public.admin_offer_spot(p_rsvp_id bigint)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_event_id bigint;
+  v_rsvp public.rsvps%rowtype;
+  v_event public.events%rowtype;
+  v_free integer;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can offer spots';
+  end if;
+
+  select event_id into v_event_id from public.rsvps where id = p_rsvp_id;
+  if not found then
+    return jsonb_build_object('ok', false, 'reason', 'not_found');
+  end if;
+
+  perform 1 from public.events where id = v_event_id for update;
+  select * into v_event from public.events where id = v_event_id;
+  select * into v_rsvp from public.rsvps where id = p_rsvp_id for update;
+
+  if not found or v_rsvp.status not in ('waitlisted', 'expired') then
+    return jsonb_build_object('ok', false, 'reason', 'not_waitlisted');
+  end if;
+  if v_event.status <> 'scheduled' or not v_event.is_published then
+    return jsonb_build_object('ok', false, 'reason', 'event_unavailable');
+  end if;
+
+  if v_event.capacity is not null then
+    v_free := v_event.capacity - v_event.spots_taken - (
+      select count(*) from public.rsvps where event_id = v_event_id and status = 'offered'
+    );
+    if v_free <= 0 then
+      return jsonb_build_object('ok', false, 'reason', 'no_capacity');
+    end if;
+  end if;
+
+  update public.rsvps
+     set status = 'offered',
+         offer_expires_at = now() + interval '24 hours',
+         updated_at = now()
+   where id = p_rsvp_id;
+
+  return jsonb_build_object(
+    'ok', true,
+    'event_id', v_event_id,
+    'user_id', v_rsvp.user_id,
+    'expires_at', now() + interval '24 hours'
+  );
+end $function$;
+
+-- =============================================================================
+-- 2026-09-21 — Null-safe capacity checks + spots_taken reconciliation
+-- =============================================================================
+-- Events created by hand in the Table Editor (before the creation form) can
+-- carry NULL or stale values in the columns the waitlist functions check.
+-- SQL three-valued logic makes that dangerous in both directions: a NULL
+-- is_published/spots_taken made try_claim_event_spot's UPDATE match nothing
+-- (so everyone was waitlisted), while the same NULLs made offer_waitlisted_spots
+-- and admin_offer_spot's "unavailable" guards evaluate to NULL, i.e. NOT
+-- return — offering spots on an unpublished event. Every check below is now
+-- explicit: NULL is_published = unpublished, NULL status = 'scheduled', NULL
+-- spots_taken = 0, NULL starts_at = not started, NULL capacity = unlimited.
+
+create or replace function public.try_claim_event_spot(
+  p_event_id bigint,
+  p_holder uuid default null
+)
+returns boolean
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  perform 1 from public.events where id = p_event_id for update;
+
+  update public.events e
+     set spots_taken = coalesce(e.spots_taken, 0) + 1, updated_at = now()
+   where e.id = p_event_id
+     and coalesce(e.is_published, false)
+     and coalesce(e.status, 'scheduled') = 'scheduled'
+     and (
+       e.capacity is null
+       or coalesce(e.spots_taken, 0) + (
+            select count(*)
+              from public.rsvps r
+             where r.event_id = e.id
+               and r.status = 'offered'
+               and r.user_id is distinct from p_holder
+          ) < e.capacity
+     );
+  return found;
+end $function$;
+
+create or replace function public.offer_waitlisted_spots(
+  p_event_id bigint,
+  p_now timestamptz default now()
+)
+returns table (o_user_id uuid, o_expires_at timestamptz)
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_event public.events%rowtype;
+  v_free integer;
+begin
+  perform 1 from public.events where id = p_event_id for update;
+  select * into v_event from public.events where id = p_event_id;
+
+  if not found
+     or not coalesce(v_event.is_published, false)
+     or coalesce(v_event.status, 'scheduled') <> 'scheduled'
+     or not coalesce(v_event.starts_at > p_now, true) then
+    return;
+  end if;
+
+  if v_event.capacity is not null then
+    v_free := v_event.capacity - coalesce(v_event.spots_taken, 0) - (
+      select count(*) from public.rsvps
+       where event_id = p_event_id and status = 'offered'
+    );
+    if v_free <= 0 then
+      return;
+    end if;
+  end if;
+
+  return query
+  with next_up as (
+    select r.id
+      from public.rsvps r
+     where r.event_id = p_event_id and r.status = 'waitlisted'
+     order by coalesce(r.joined_at, 'infinity'::timestamptz), r.id
+     limit v_free
+       for update
+  )
+  update public.rsvps r
+     set status = 'offered',
+         offer_expires_at = p_now + interval '24 hours',
+         updated_at = now()
+    from next_up
+   where r.id = next_up.id
+  returning r.user_id, r.offer_expires_at;
+end $function$;
+
+create or replace function public.admin_offer_spot(p_rsvp_id bigint)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_event_id bigint;
+  v_rsvp public.rsvps%rowtype;
+  v_event public.events%rowtype;
+  v_free integer;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can offer spots';
+  end if;
+
+  select event_id into v_event_id from public.rsvps where id = p_rsvp_id;
+  if not found then
+    return jsonb_build_object('ok', false, 'reason', 'not_found');
+  end if;
+
+  perform 1 from public.events where id = v_event_id for update;
+  select * into v_event from public.events where id = v_event_id;
+  select * into v_rsvp from public.rsvps where id = p_rsvp_id for update;
+
+  if not found or v_rsvp.status not in ('waitlisted', 'expired') then
+    return jsonb_build_object('ok', false, 'reason', 'not_waitlisted');
+  end if;
+  if coalesce(v_event.status, 'scheduled') <> 'scheduled'
+     or not coalesce(v_event.is_published, false) then
+    return jsonb_build_object('ok', false, 'reason', 'event_unavailable');
+  end if;
+
+  if v_event.capacity is not null then
+    v_free := v_event.capacity - coalesce(v_event.spots_taken, 0) - (
+      select count(*) from public.rsvps where event_id = v_event_id and status = 'offered'
+    );
+    if v_free <= 0 then
+      return jsonb_build_object('ok', false, 'reason', 'no_capacity');
+    end if;
+  end if;
+
+  update public.rsvps
+     set status = 'offered',
+         offer_expires_at = now() + interval '24 hours',
+         updated_at = now()
+   where id = p_rsvp_id;
+
+  return jsonb_build_object(
+    'ok', true,
+    'event_id', v_event_id,
+    'user_id', v_rsvp.user_id,
+    'expires_at', now() + interval '24 hours'
+  );
+end $function$;
+
+-- One-time correction of the counter itself. spots_taken is meant to equal
+-- the number of 'confirmed' rsvps, but hand-made and older events drifted
+-- (e.g. one event showed capacity 1, spots_taken 3, with a single confirmed
+-- RSVP — from earlier forced walk-ups and the walk-up/waitlist bug fixed
+-- above). Recomputes it for every event where it's wrong or NULL; safe to
+-- re-run. Admin-forced walk-ups over capacity are still 'confirmed' rows, so
+-- they stay counted.
+update public.events e
+   set spots_taken = c.n
+  from (
+    select ev.id, count(r.id) filter (where r.status = 'confirmed')::integer as n
+      from public.events ev
+      left join public.rsvps r on r.event_id = ev.id
+     group by ev.id
+  ) c
+ where e.id = c.id
+   and e.spots_taken is distinct from c.n;

@@ -127,17 +127,34 @@ async function EventsListLoader({
       )
     : events;
 
-  // RLS scopes rsvps to the caller's own rows, so this is just "my RSVPs
-  // for the events on this page" without needing an explicit user_id filter.
+  // Filter by user_id explicitly: RLS alone isn't enough, because admins have
+  // a policy (admin_select_all_rsvps) that lets them read EVERYONE's rows —
+  // without this an admin sees other people's RSVPs as their own.
   const { data: rsvps } = await supabase
     .from("rsvps")
     .select("event_id, status")
+    .eq("user_id", userId)
     .in(
       "event_id",
       shownEvents.map((event) => event.id),
     );
+  // A lapsed offer ('expired') is no longer an active RSVP — treat it as none.
   const rsvpStatusByEvent = new Map(
-    (rsvps ?? []).map((rsvp) => [rsvp.event_id, rsvp.status]),
+    (rsvps ?? [])
+      .filter((rsvp) => rsvp.status !== "expired")
+      .map((rsvp) => [rsvp.event_id, rsvp.status]),
+  );
+
+  // Open offers hold a spot but aren't in events.spots_taken, so fold them
+  // in — otherwise an event whose last spot is on offer would look open.
+  const { data: offeredCounts } = await supabase.rpc("event_offered_counts", {
+    p_event_ids: shownEvents.map((event) => event.id),
+  });
+  const offeredByEvent = new Map(
+    ((offeredCounts ?? []) as { event_id: number; offered_count: number }[]).map((row) => [
+      row.event_id,
+      row.offered_count,
+    ]),
   );
 
   return (
@@ -153,10 +170,12 @@ async function EventsListLoader({
           const rsvpStatus = rsvpStatusByEvent.get(event.id) ?? null;
           const hasActiveRsvp =
             rsvpStatus != null && rsvpStatus !== "cancelled";
-          const spotsLeft =
-            event.capacity != null && event.spots_taken != null
-              ? event.capacity - event.spots_taken
+          const spotsTaken =
+            event.spots_taken != null
+              ? event.spots_taken + (offeredByEvent.get(event.id) ?? 0)
               : null;
+          const spotsLeft =
+            event.capacity != null && spotsTaken != null ? event.capacity - spotsTaken : null;
           const isFull = spotsLeft != null && spotsLeft <= 0 && !hasActiveRsvp;
 
           return (
@@ -174,7 +193,7 @@ async function EventsListLoader({
                   event.timezone,
                 ),
                 capacity: event.capacity,
-                spots_taken: event.spots_taken,
+                spots_taken: spotsTaken,
               }}
               rsvpStatus={rsvpStatus}
               action={
@@ -186,20 +205,22 @@ async function EventsListLoader({
                       </Link>
                     </Button>
                   )}
-                  {hasActiveRsvp ? (
+                  {rsvpStatus === "offered" ? (
+                    <Button asChild>
+                      <Link href={`/protected/events/${event.id}/rsvp`}>
+                        Claim your spot
+                      </Link>
+                    </Button>
+                  ) : hasActiveRsvp ? (
                     <Button asChild variant="outline">
                       <Link href={`/protected/events/${event.id}/rsvp`}>
                         View / Change RSVP
                       </Link>
                     </Button>
-                  ) : isFull ? (
-                    <Button disabled variant="secondary">
-                      Full
-                    </Button>
                   ) : (
                     <Button asChild>
                       <Link href={`/protected/events/${event.id}/rsvp`}>
-                        RSVP
+                        {isFull ? "Join waitlist" : "RSVP"}
                       </Link>
                     </Button>
                   )}

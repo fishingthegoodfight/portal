@@ -1,6 +1,6 @@
-import { timingSafeEqual } from "node:crypto";
 import { NextResponse, type NextRequest } from "next/server";
 
+import { isCronAuthorized } from "@/lib/cron-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendReminderEmail, type RsvpEmailEvent } from "@/lib/email/send";
 import type { ReminderKind } from "@/lib/email/templates";
@@ -24,15 +24,6 @@ import type { ReminderKind } from "@/lib/email/templates";
 
 type Outcome = { sent: number; skipped: number; failed: number };
 
-function isAuthorized(request: NextRequest): boolean {
-  if (process.env.NODE_ENV === "development") return true;
-  const secret = process.env.CRON_SECRET;
-  if (!secret) return false;
-  const given = Buffer.from(request.headers.get("authorization") ?? "");
-  const expected = Buffer.from(`Bearer ${secret}`);
-  return given.length === expected.length && timingSafeEqual(given, expected);
-}
-
 /** YYYY-MM-DD of an instant as seen in a timezone, as a UTC day number. */
 function localDayNumber(instant: Date, timeZone: string): number {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -49,7 +40,7 @@ const EVENT_COLUMNS =
   "id, name, starts_at, ends_at, timezone, location, lead_name, lead_phone, lead_email, custom_email_note, ics_sequence";
 
 export async function GET(request: NextRequest) {
-  if (!isAuthorized(request)) {
+  if (!isCronAuthorized(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

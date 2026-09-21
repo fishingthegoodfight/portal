@@ -14,6 +14,7 @@ import {
   type RsvpEmailEvent,
 } from "@/lib/email/send";
 import type { EventChangeDiffEntry } from "@/lib/email/templates";
+import { offerFreeSpots } from "@/lib/waitlist";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -260,6 +261,14 @@ export async function updateEventAction(
     })
     .eq("id", eventId);
   if (updateError) return { ok: false, error: updateError.message };
+
+  // More room than before: spots that just opened go to the waitlist, same
+  // as if someone had cancelled.
+  const capacityGrew =
+    before.capacity != null && (after.capacity == null || after.capacity > before.capacity);
+  if (capacityGrew) {
+    await offerFreeSpots(eventId);
+  }
 
   if (notifyAttendees === true && dateTimeOrLocationChanged) {
     try {

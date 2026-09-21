@@ -18,7 +18,8 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
   if (!data) {
     notFound();
   }
-  const { event, roster } = data;
+  const { event, roster, waitlist } = data;
+  const offeredCount = waitlist.filter((w) => w.status === "offered").length;
 
   return (
     <EventRoster
@@ -31,11 +32,13 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
         description: event.description,
         dateRange: formatEventDateRange(event.starts_at, event.ends_at, event.timezone),
         capacity: event.capacity,
-        spots_taken: event.spots_taken,
+        // Open offers hold a spot, so count them as taken on the card.
+        spots_taken: (event.spots_taken ?? 0) + offeredCount,
       }}
       status={event.status}
       cancellationReason={event.cancellation_reason}
       initialRoster={roster}
+      initialWaitlist={waitlist}
     />
   );
 }
@@ -50,7 +53,7 @@ export default function AdminEventPage({
       <div>
         <h1 className="font-bold text-2xl mb-1">Event roster</h1>
         <p className="text-sm text-muted-foreground">
-          Check people in, add walk-ups, and print a roster.
+          Check people in, add walk-ups, manage the waitlist, and print a roster.
         </p>
       </div>
       <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>

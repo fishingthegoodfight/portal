@@ -6,27 +6,21 @@ import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/client";
 import { addWalkupRsvpAction } from "@/lib/actions/admin-walkup";
+import { adminOfferSpotAction, adminRemoveRsvpAction } from "@/lib/actions/admin-waitlist";
 import { CancelEventDialog } from "@/components/admin/cancel-event-dialog";
 import { RestoreEventDialog } from "@/components/admin/restore-event-dialog";
 import { EventCard, type EventCardEvent } from "@/components/event-card";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RegistrationFieldInput } from "@/components/registration-fields";
 import { formatPhoneNumber } from "@/lib/phone";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 import { cn } from "@/lib/utils";
-import type { RosterPerson } from "@/lib/admin/roster";
+import type { RosterPerson, WaitlistPerson } from "@/lib/admin/roster";
 
-const DIRECTORY_FIELD = REGISTRATION_SECTIONS.find((s) => s.id === "directory")!
-  .fields[0];
+const DIRECTORY_FIELD = REGISTRATION_SECTIONS.find((s) => s.id === "directory")!.fields[0];
 
 type WalkupFormState = {
   firstName: string;
@@ -54,12 +48,14 @@ export function EventRoster({
   status,
   cancellationReason,
   initialRoster,
+  initialWaitlist,
 }: {
   eventId: number;
   eventCard: EventCardEvent;
   status: string;
   cancellationReason: string | null;
   initialRoster: RosterPerson[];
+  initialWaitlist: WaitlistPerson[];
 }) {
   const router = useRouter();
   const isCancelled = status === "cancelled";
@@ -71,6 +67,66 @@ export function EventRoster({
   useEffect(() => {
     setRoster(initialRoster);
   }, [initialRoster]);
+
+  const waitlist = initialWaitlist;
+  const [busyRsvpId, setBusyRsvpId] = useState<number | null>(null);
+  const [waitlistError, setWaitlistError] = useState<string | null>(null);
+
+  // eventCard.spots_taken already includes spots held by open offers, so
+  // this is what's genuinely free to offer right now.
+  const freeSpots =
+    eventCard.capacity != null
+      ? eventCard.capacity - (eventCard.spots_taken ?? 0)
+      : Number.POSITIVE_INFINITY; // unlimited
+
+  const runWaitlistAction = async (
+    rsvpId: number,
+    action: () => Promise<{ ok: true } | { ok: false; error: string }>,
+  ) => {
+    setBusyRsvpId(rsvpId);
+    setWaitlistError(null);
+    try {
+      const result = await action();
+      if (!result.ok) {
+        setWaitlistError(result.error);
+        return;
+      }
+      router.refresh();
+    } catch (err) {
+      console.error("Roster action failed:", err);
+      setWaitlistError(err instanceof Error ? err.message : "Something went wrong — try again.");
+    } finally {
+      setBusyRsvpId(null);
+    }
+  };
+
+  const offerSpot = (person: WaitlistPerson) =>
+    runWaitlistAction(person.rsvpId, () => adminOfferSpotAction(person.rsvpId));
+
+  // Two-step remove with an in-page confirmation. Not window.confirm: some
+  // embedded browsers (e.g. an editor's preview pane) block modal dialogs and
+  // return false without showing anything, which made Remove look dead.
+  const [pendingRemoval, setPendingRemoval] = useState<{
+    rsvpId: number;
+    name: string;
+    warning: string;
+  } | null>(null);
+
+  const removePerson = (
+    person: { rsvpId: number; firstName: string; lastName: string },
+    warning: string,
+  ) => {
+    const name = `${person.firstName} ${person.lastName}`.trim() || "this person";
+    setWaitlistError(null);
+    setPendingRemoval({ rsvpId: person.rsvpId, name, warning });
+  };
+
+  const confirmRemoval = async () => {
+    if (!pendingRemoval) return;
+    const { rsvpId } = pendingRemoval;
+    setPendingRemoval(null);
+    await runWaitlistAction(rsvpId, () => adminRemoveRsvpAction(rsvpId, eventId));
+  };
 
   const [search, setSearch] = useState("");
   const [checkInError, setCheckInError] = useState<string | null>(null);
@@ -137,7 +193,10 @@ export function EventRoster({
 
   const updateWalkupPhoneField =
     (field: "phone" | "emergencyContactPhone") => (e: React.ChangeEvent<HTMLInputElement>) =>
-      setWalkupForm((prev) => ({ ...prev, [field]: formatPhoneNumber(e.target.value) }));
+      setWalkupForm((prev) => ({
+        ...prev,
+        [field]: formatPhoneNumber(e.target.value),
+      }));
 
   const submitWalkup = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -182,10 +241,11 @@ export function EventRoster({
         </div>
       )}
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatTile label="Capacity" value={eventCard.capacity ?? "—"} />
         <StatTile label="Confirmed" value={confirmedCount} />
         <StatTile label="Checked in" value={checkedInCount} />
+        <StatTile label="Waitlist" value={waitlist.length} />
       </div>
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -224,6 +284,33 @@ export function EventRoster({
 
       {checkInError && <p className="text-sm text-red-500">{checkInError}</p>}
 
+      {waitlistError && (
+        <div
+          role="alert"
+          className="rounded-md border border-red-500/50 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-400"
+        >
+          {waitlistError}
+        </div>
+      )}
+
+      {pendingRemoval && (
+        <div
+          role="alertdialog"
+          className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm"
+        >
+          <p className="font-medium">Remove {pendingRemoval.name}?</p>
+          <p className="mt-1 text-muted-foreground">{pendingRemoval.warning}</p>
+          <div className="mt-3 flex gap-2">
+            <Button size="sm" onClick={confirmRemoval}>
+              Yes, remove
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => setPendingRemoval(null)}>
+              Keep
+            </Button>
+          </div>
+        </div>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>
@@ -239,7 +326,49 @@ export function EventRoster({
           ) : (
             <ul>
               {filteredRoster.map((person) => (
-                <RosterRow key={person.rsvpId} person={person} onToggleCheckIn={toggleCheckIn} />
+                <RosterRow
+                  key={person.rsvpId}
+                  person={person}
+                  onToggleCheckIn={toggleCheckIn}
+                  onRemove={(p) =>
+                    removePerson(
+                      p,
+                      "They'll be emailed that their RSVP was cancelled, and the spot goes to the next person on the waitlist.",
+                    )
+                  }
+                  removing={busyRsvpId === person.rsvpId}
+                />
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Waitlist ({waitlist.length})</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {waitlist.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No one is waiting.</p>
+          ) : (
+            <ul>
+              {waitlist.map((person) => (
+                <WaitlistRow
+                  key={person.rsvpId}
+                  person={person}
+                  canOffer={!isCancelled && freeSpots > 0}
+                  busy={busyRsvpId === person.rsvpId}
+                  onOffer={offerSpot}
+                  onRemove={(p) =>
+                    removePerson(
+                      p,
+                      p.status === "offered"
+                        ? "Their open offer is voided and the spot goes to the next person."
+                        : "They'll be taken off the waitlist.",
+                    )
+                  }
+                />
               ))}
             </ul>
           )}
@@ -331,7 +460,10 @@ export function EventRoster({
                   field={DIRECTORY_FIELD}
                   value={walkupForm.directoryOptIn ? "true" : "false"}
                   onChange={(_key, value) =>
-                    setWalkupForm((prev) => ({ ...prev, directoryOptIn: value === "true" }))
+                    setWalkupForm((prev) => ({
+                      ...prev,
+                      directoryOptIn: value === "true",
+                    }))
                   }
                 />
                 {capacityConfirmPending && (
@@ -377,12 +509,85 @@ function StatTile({ label, value }: { label: string; value: number | string }) {
   );
 }
 
+function WaitlistRow({
+  person,
+  canOffer,
+  busy,
+  onOffer,
+  onRemove,
+}: {
+  person: WaitlistPerson;
+  canOffer: boolean;
+  busy: boolean;
+  onOffer: (person: WaitlistPerson) => void;
+  onRemove: (person: WaitlistPerson) => void;
+}) {
+  const contact = [person.phone, person.email].filter(Boolean).join(" · ");
+  const canOfferThis = person.status !== "offered";
+
+  return (
+    <li className="flex flex-col gap-3 border-b py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-0.5">
+        <span className="font-medium">
+          {person.position != null ? `#${person.position} ` : ""}
+          {person.firstName} {person.lastName}
+        </span>
+        <span className="text-sm text-muted-foreground">{contact || "—"}</span>
+        {person.status === "waitlisted" && (
+          <span className="text-xs text-muted-foreground">
+            <span className="font-medium text-amber-600">Waitlisted</span> · joined{" "}
+            {person.joinedLabel}
+          </span>
+        )}
+        {person.status === "offered" && (
+          <span className="text-xs text-muted-foreground">
+            <span className="font-medium text-green-600">Offered</span> · expires{" "}
+            {person.offerExpiresLabel ?? "—"}
+          </span>
+        )}
+        {person.status === "expired" && (
+          <span className="text-xs text-muted-foreground">
+            <span className="font-medium">Offer expired</span>
+            {person.offerExpiresLabel ? ` ${person.offerExpiresLabel}` : ""}
+          </span>
+        )}
+      </div>
+      <div className="flex shrink-0 gap-2">
+        {canOfferThis && (
+          <Button
+            type="button"
+            size="sm"
+            disabled={busy || !canOffer}
+            title={canOffer ? undefined : "No open spot to offer"}
+            onClick={() => onOffer(person)}
+          >
+            Offer spot now
+          </Button>
+        )}
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={() => onRemove(person)}
+        >
+          Remove
+        </Button>
+      </div>
+    </li>
+  );
+}
+
 function RosterRow({
   person,
   onToggleCheckIn,
+  onRemove,
+  removing,
 }: {
   person: RosterPerson;
   onToggleCheckIn: (person: RosterPerson) => void;
+  onRemove: (person: RosterPerson) => void;
+  removing: boolean;
 }) {
   const contact = [person.phone, person.email].filter(Boolean).join(" · ");
   const emergency = [person.emergencyContact, person.emergencyPhone].filter(Boolean).join(" · ");
@@ -398,22 +603,30 @@ function RosterRow({
         {person.dietaryNotes && (
           <span className="text-sm text-muted-foreground">Dietary: {person.dietaryNotes}</span>
         )}
-        {person.status === "waitlisted" && (
-          <span className="text-xs font-medium text-amber-600">Waitlisted</span>
-        )}
       </div>
-      <button
-        type="button"
-        onClick={() => onToggleCheckIn(person)}
-        className={cn(
-          "flex h-11 min-w-32 shrink-0 items-center justify-center rounded-md px-4 text-sm font-semibold transition-colors",
-          person.checkedInAt
-            ? "bg-green-600 text-white hover:bg-green-700"
-            : "border border-input bg-background hover:bg-accent",
-        )}
-      >
-        {person.checkedInAt ? "✓ Checked in" : "Check in"}
-      </button>
+      <div className="flex shrink-0 items-center gap-2">
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          disabled={removing}
+          onClick={() => onRemove(person)}
+        >
+          Remove
+        </Button>
+        <button
+          type="button"
+          onClick={() => onToggleCheckIn(person)}
+          className={cn(
+            "flex h-11 min-w-32 shrink-0 items-center justify-center rounded-md px-4 text-sm font-semibold transition-colors",
+            person.checkedInAt
+              ? "bg-green-600 text-white hover:bg-green-700"
+              : "border border-input bg-background hover:bg-accent",
+          )}
+        >
+          {person.checkedInAt ? "✓ Checked in" : "Check in"}
+        </button>
+      </div>
     </li>
   );
 }
