@@ -1,3 +1,4 @@
+import nodemailer from "nodemailer";
 import { Resend } from "resend";
 
 import { formatEventDateRange } from "@/lib/format-date";
@@ -17,11 +18,30 @@ import {
   type RsvpEmailEventInfo,
 } from "@/lib/email/templates";
 
+type EmailProvider = "resend" | "smtp";
+
 // Defaults to a resend.dev test sender so this works before the org's
-// domain is verified with Resend.
-const FROM_ADDRESS =
+// domain is verified with Resend. The SMTP path uses EMAIL_FROM instead.
+const RESEND_FROM_ADDRESS =
   process.env.RESEND_FROM || "Fishing the Good Fight <onboarding@resend.dev>";
 const REPLY_TO = "tcramer@fishingthegoodfight.org";
+
+type OutgoingEmail = {
+  to: string | string[];
+  subject: string;
+  html: string;
+  text: string;
+  /** `content` is base64-encoded. */
+  attachments?: { filename: string; content: string; contentType: string }[];
+};
+
+function getEmailProvider(): EmailProvider {
+  const provider = (process.env.EMAIL_PROVIDER || "resend").trim().toLowerCase();
+  if (provider !== "resend" && provider !== "smtp") {
+    throw new Error(`EMAIL_PROVIDER must be "resend" or "smtp" (got "${provider}")`);
+  }
+  return provider;
+}
 
 function getResendClient(): Resend {
   const apiKey = process.env.RESEND_API_KEY;
@@ -29,6 +49,60 @@ function getResendClient(): Resend {
     throw new Error("RESEND_API_KEY is not set");
   }
   return new Resend(apiKey);
+}
+
+function getSmtpTransport() {
+  const host = process.env.SMTP_HOST;
+  const port = Number(process.env.SMTP_PORT || 587);
+  if (!host) {
+    throw new Error("SMTP_HOST is not set");
+  }
+  if (!process.env.EMAIL_FROM) {
+    throw new Error("EMAIL_FROM is not set");
+  }
+  const user = process.env.SMTP_USER;
+  return nodemailer.createTransport({
+    host,
+    port,
+    // Implicit TLS on 465; other ports upgrade via STARTTLS when offered.
+    secure: port === 465,
+    auth: user ? { user, pass: process.env.SMTP_PASS ?? "" } : undefined,
+  });
+}
+
+/** Single send path for every email — picks the transport from
+ * EMAIL_PROVIDER. Throws on failure on either transport. */
+async function deliverEmail(email: OutgoingEmail): Promise<void> {
+  if (getEmailProvider() === "smtp") {
+    await getSmtpTransport().sendMail({
+      from: process.env.EMAIL_FROM,
+      to: email.to,
+      replyTo: REPLY_TO,
+      subject: email.subject,
+      html: email.html,
+      text: email.text,
+      attachments: email.attachments?.map((a) => ({
+        filename: a.filename,
+        content: a.content,
+        encoding: "base64",
+        contentType: a.contentType,
+      })),
+    });
+    return;
+  }
+
+  const { error } = await getResendClient().emails.send({
+    from: RESEND_FROM_ADDRESS,
+    to: email.to,
+    replyTo: REPLY_TO,
+    subject: email.subject,
+    html: email.html,
+    text: email.text,
+    attachments: email.attachments,
+  });
+  if (error) {
+    throw new Error(error.message);
+  }
 }
 
 /** The event columns every RSVP/event email needs — see the
@@ -112,22 +186,16 @@ export async function sendRsvpConfirmationEmail({
   toEmail: string;
   status: "confirmed" | "waitlisted";
 }): Promise<void> {
-  const resend = getResendClient();
   const info = buildEventInfo(event);
   const { subject, html, text } = confirmationEmail(info, status);
 
-  const { error } = await resend.emails.send({
-    from: FROM_ADDRESS,
+  await deliverEmail({
     to: toEmail,
-    replyTo: REPLY_TO,
     subject,
     html,
     text,
     attachments: [buildIcsAttachment(event, "REQUEST")],
   });
-  if (error) {
-    throw new Error(error.message);
-  }
 }
 
 /**
@@ -142,22 +210,16 @@ export async function sendRsvpCancellationEmail({
   event: RsvpEmailEvent;
   toEmail: string;
 }): Promise<void> {
-  const resend = getResendClient();
   const info = buildEventInfo(event);
   const { subject, html, text } = cancellationEmail(info);
 
-  const { error } = await resend.emails.send({
-    from: FROM_ADDRESS,
+  await deliverEmail({
     to: toEmail,
-    replyTo: REPLY_TO,
     subject,
     html,
     text,
     attachments: [buildIcsAttachment(event, "CANCEL")],
   });
-  if (error) {
-    throw new Error(error.message);
-  }
 }
 
 /**
@@ -183,22 +245,16 @@ export async function sendEventCancellationEmail({
   toEmail: string;
   reason: string;
 }): Promise<void> {
-  const resend = getResendClient();
   const info = buildEventInfo(event);
   const { subject, html, text } = eventCancellationEmail(info, reason);
 
-  const { error } = await resend.emails.send({
-    from: FROM_ADDRESS,
+  await deliverEmail({
     to: toEmail,
-    replyTo: REPLY_TO,
     subject,
     html,
     text,
     attachments: [buildIcsAttachment(event, "CANCEL")],
   });
-  if (error) {
-    throw new Error(error.message);
-  }
 }
 
 /**
@@ -213,22 +269,16 @@ export async function sendEventUpdateEmail({
   event: RsvpEmailEvent;
   toEmail: string;
 }): Promise<void> {
-  const resend = getResendClient();
   const info = buildEventInfo(event);
   const { subject, html, text } = eventUpdateEmail(info);
 
-  const { error } = await resend.emails.send({
-    from: FROM_ADDRESS,
+  await deliverEmail({
     to: toEmail,
-    replyTo: REPLY_TO,
     subject,
     html,
     text,
     attachments: [buildIcsAttachment(event, "REQUEST")],
   });
-  if (error) {
-    throw new Error(error.message);
-  }
 }
 
 /**
@@ -243,22 +293,16 @@ export async function sendEventRestoredEmail({
   event: RsvpEmailEvent;
   toEmail: string;
 }): Promise<void> {
-  const resend = getResendClient();
   const info = buildEventInfo(event);
   const { subject, html, text } = eventRestoredEmail(info);
 
-  const { error } = await resend.emails.send({
-    from: FROM_ADDRESS,
+  await deliverEmail({
     to: toEmail,
-    replyTo: REPLY_TO,
     subject,
     html,
     text,
     attachments: [buildIcsAttachment(event, "REQUEST")],
   });
-  if (error) {
-    throw new Error(error.message);
-  }
 }
 
 /**
@@ -268,7 +312,7 @@ export async function sendEventRestoredEmail({
  * regardless of whether attendees were separately notified. A no-op (not an
  * error) when the env var isn't set.
  *
- * Logs the parsed recipient list and the raw Resend response either way —
+ * Logs the parsed recipient list and the provider used either way —
  * Resend's test sender (the resend.dev default FROM address, before a
  * domain is verified) silently only delivers to the account owner's own
  * address, so without this a "successful" send to anyone else looks
@@ -293,7 +337,6 @@ export async function sendAdminChangeNotificationEmail(params: {
   );
   if (recipients.length === 0) return;
 
-  const resend = getResendClient();
   const { subject, html, text } = adminChangeNotificationEmail({
     action: params.action,
     actorLabel: params.actorLabel,
@@ -303,21 +346,15 @@ export async function sendAdminChangeNotificationEmail(params: {
     reason: params.reason,
   });
 
-  const response = await resend.emails.send({
-    from: FROM_ADDRESS,
+  await deliverEmail({
     to: recipients,
-    replyTo: REPLY_TO,
     subject,
     html,
     text,
   });
   console.log(
-    `[admin-notify] event ${params.eventId} (${params.action}): Resend response`,
-    JSON.stringify(response),
+    `[admin-notify] event ${params.eventId} (${params.action}): sent via ${getEmailProvider()}`,
   );
-  if (response.error) {
-    throw new Error(response.error.message);
-  }
 }
 
 /** Pre-event reminder (no .ics). Throws on failure — the cron caller catches
@@ -331,18 +368,12 @@ export async function sendReminderEmail({
   toEmail: string;
   kind: ReminderKind;
 }): Promise<void> {
-  const resend = getResendClient();
   const { subject, html, text } = reminderEmail(buildEventInfo(event), kind);
 
-  const { error } = await resend.emails.send({
-    from: FROM_ADDRESS,
+  await deliverEmail({
     to: toEmail,
-    replyTo: REPLY_TO,
     subject,
     html,
     text,
   });
-  if (error) {
-    throw new Error(error.message);
-  }
 }
