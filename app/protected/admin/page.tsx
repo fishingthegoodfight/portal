@@ -11,7 +11,7 @@ async function AdminEventsLoader() {
   const { data: events, error } = await supabase
     .from("events")
     .select(
-      "id, name, chapter, starts_at, ends_at, timezone, location, description, capacity, spots_taken, status",
+      "id, name, chapter, starts_at, ends_at, timezone, location, description, occurrence_note, capacity, spots_taken, status",
     )
     .order("starts_at", { ascending: false });
 
@@ -36,6 +36,7 @@ async function AdminEventsLoader() {
             chapter: event.chapter,
             location: event.location,
             description: event.description,
+            occurrenceNote: event.occurrence_note,
             dateRange: formatEventDateRange(event.starts_at, event.ends_at, event.timezone),
             capacity: event.capacity,
             spots_taken: event.spots_taken,
@@ -76,6 +77,9 @@ export default function AdminEventsIndexPage() {
           </Button>
           <Button asChild variant="outline">
             <Link href="/protected/admin/waivers">Waivers</Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link href="/protected/admin/setup">Setup</Link>
           </Button>
           <Button asChild>
             <Link href="/protected/admin/events/new">New event</Link>

@@ -98,7 +98,7 @@ async function EventsListLoader({
   const { data: events, error: eventsError } = await supabase
     .from("events")
     .select(
-      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken",
+      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, occurrence_note, capacity, spots_taken",
     )
     .eq("is_published", true)
     .eq("status", "scheduled")
@@ -187,6 +187,7 @@ async function EventsListLoader({
                 chapter: event.chapter,
                 location: event.location,
                 description: event.description,
+                occurrenceNote: event.occurrence_note,
                 dateRange: formatEventDateRange(
                   event.starts_at,
                   event.ends_at,

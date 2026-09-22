@@ -15,6 +15,7 @@ import {
   CustomEmailNoteField,
   DescriptionField,
   EventTypeField,
+  OccurrenceNoteField,
   TitleField,
 } from "@/components/admin/fields/event-text-fields";
 import { LeadContactFields } from "@/components/admin/fields/lead-contact-fields";
@@ -24,6 +25,7 @@ import { isVirtualChapter } from "@/lib/chapters";
 import { RegistrationSectionsFields } from "@/components/admin/fields/registration-sections-fields";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import type { EventTypeOption } from "@/lib/event-types";
 
 type StringField = Exclude<keyof EventEditInput, "registrationSections">;
 
@@ -34,6 +36,7 @@ export function EventEditForm({
   legacyLocation,
   waiverLabel,
   isPartOfSeries,
+  eventTypes,
 }: {
   eventId: number;
   initial: EventEditInput;
@@ -44,6 +47,9 @@ export function EventEditForm({
   waiverLabel: string | null;
   /** The event was created as one of a repeating series. */
   isPartOfSeries: boolean;
+  /** Every event_types row, active and inactive — an already-deactivated
+   * type stays selectable so this event's edit form never silently changes it. */
+  eventTypes: EventTypeOption[];
 }) {
   const router = useRouter();
   const [form, setForm] = useState<EventEditInput>(initial);
@@ -152,6 +158,7 @@ export function EventEditForm({
                 idPrefix="edit"
                 value={form.eventType}
                 onChange={setField("eventType")}
+                eventTypes={eventTypes}
               />
             </div>
             <TitleField idPrefix="edit" value={form.name} onChange={setField("name")} />
@@ -190,6 +197,12 @@ export function EventEditForm({
               idPrefix="edit"
               value={form.description}
               onChange={setField("description")}
+            />
+
+            <OccurrenceNoteField
+              idPrefix="edit"
+              value={form.occurrenceNote}
+              onChange={setField("occurrenceNote")}
             />
 
             <CapacityField

@@ -37,7 +37,7 @@ function localDayNumber(instant: Date, timeZone: string): number {
 }
 
 const EVENT_COLUMNS =
-  "id, name, starts_at, ends_at, timezone, location, lead_name, lead_phone, lead_email, custom_email_note, virtual_link, virtual_access_notes, ics_sequence";
+  "id, name, starts_at, ends_at, timezone, location, lead_name, lead_phone, lead_email, custom_email_note, occurrence_note, virtual_link, virtual_access_notes, ics_sequence";
 
 export async function GET(request: NextRequest) {
   if (!isCronAuthorized(request)) {

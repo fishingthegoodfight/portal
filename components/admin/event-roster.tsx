@@ -18,6 +18,7 @@ import type { WaiverInfo } from "@/lib/waivers";
 import { adminOfferSpotAction, adminRemoveRsvpAction } from "@/lib/actions/admin-waitlist";
 import { CancelEventDialog } from "@/components/admin/cancel-event-dialog";
 import { RestoreEventDialog } from "@/components/admin/restore-event-dialog";
+import { SaveAsTemplateButton } from "@/components/admin/save-as-template-button";
 import { EventCard, type EventCardEvent } from "@/components/event-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -394,6 +395,11 @@ export function EventRoster({
               Print roster
             </Link>
           </Button>
+          <SaveAsTemplateButton
+            eventId={eventId}
+            eventName={eventCard.name}
+            eventChapter={eventCard.chapter}
+          />
           {!isCancelled && <Button onClick={openWalkupForm}>Add walk-up</Button>}
           {isCancelled ? (
             <RestoreEventDialog

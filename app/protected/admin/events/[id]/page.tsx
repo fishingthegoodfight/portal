@@ -30,6 +30,7 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
         chapter: event.chapter,
         location: event.location,
         description: event.description,
+        occurrenceNote: event.occurrence_note,
         dateRange: formatEventDateRange(event.starts_at, event.ends_at, event.timezone),
         capacity: event.capacity,
         // Open offers hold a spot, so count them as taken on the card.

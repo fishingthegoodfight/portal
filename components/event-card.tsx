@@ -16,6 +16,11 @@ export type EventCardEvent = {
   chapter: string | null;
   location: string | null;
   description: string | null;
+  /** A short public note for this specific occurrence (events.occurrence_note)
+   * — distinct from description (the event's standing description) and never
+   * pre-filled by a template. Shown directly under the description, styled
+   * apart from it. */
+  occurrenceNote?: string | null;
   /** Pre-formatted (see lib/format-date.ts) by the server loader — see the
    * comment on RsvpForm's EventSummary type for why this isn't formatted here. */
   dateRange: string;
@@ -122,10 +127,15 @@ export function EventCard({
           </div>
         </div>
       </CardHeader>
-      {(event.description || event.virtualLink) && (
+      {(event.description || event.occurrenceNote || event.virtualLink) && (
         <CardContent className="flex flex-col gap-3">
           {event.description && (
             <p className="text-sm text-muted-foreground">{event.description}</p>
+          )}
+          {event.occurrenceNote && (
+            <p className="rounded-md border-l-2 border-l-green-600 bg-green-600/10 px-3 py-2 text-sm">
+              {event.occurrenceNote}
+            </p>
           )}
           {event.virtualLink && (
             <p className="text-sm">

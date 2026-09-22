@@ -16,6 +16,10 @@ export type RsvpEmailEventInfo = {
   leadPhone: string | null;
   leadEmail: string | null;
   customNote: string | null;
+  /** Public per-occurrence note (events.occurrence_note) — distinct from
+   * customNote above (email-only). Rendered only by confirmationEmail and
+   * reminderEmail. */
+  occurrenceNote: string | null;
   eventUrl: string;
   googleCalendarUrl: string;
   /** Only ever set by the caller (lib/email/send.ts) for someone with a
@@ -103,6 +107,18 @@ function virtualSectionText(info: RsvpEmailEventInfo): string {
     .join("\n");
 }
 
+/** Visually distinct from the plain paragraphs around it (a tinted box),
+ * matching how the site shows it apart from the event's standing
+ * description — see EventCard/the RSVP page. */
+function occurrenceNoteSectionHtml(info: RsvpEmailEventInfo): string {
+  if (!info.occurrenceNote) return "";
+  return `<p style="margin:0 0 16px;padding:10px 12px;border-left:3px solid #166534;background:#f0fdf4;">${htmlWithLineBreaks(info.occurrenceNote)}</p>`;
+}
+
+function occurrenceNoteSectionText(info: RsvpEmailEventInfo): string {
+  return info.occurrenceNote ? `Note: ${info.occurrenceNote}` : "";
+}
+
 export function confirmationEmail(
   info: RsvpEmailEventInfo,
   status: "confirmed" | "waitlisted",
@@ -131,6 +147,7 @@ export function confirmationEmail(
         ? `<p style="margin:0 0 16px;"><strong>Where:</strong> ${escapeHtml(info.location)}</p>`
         : "",
       virtualSectionHtml(info),
+      occurrenceNoteSectionHtml(info),
       leadSectionHtml(info),
       info.customNote ? `<p style="margin:0 0 16px;">${htmlWithLineBreaks(info.customNote)}</p>` : "",
       `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">View event</a></p>`,
@@ -149,6 +166,7 @@ export function confirmationEmail(
     `When: ${info.dateRange}`,
     info.location ? `Where: ${info.location}` : "",
     virtualSectionText(info),
+    occurrenceNoteSectionText(info),
     leadSectionText(info),
     info.customNote ?? "",
     "",
@@ -427,6 +445,7 @@ export function reminderEmail(info: RsvpEmailEventInfo, kind: ReminderKind): Ren
         ? `<p style="margin:0 0 16px;"><strong>Where:</strong> ${escapeHtml(info.location)}</p>`
         : "",
       virtualSectionHtml(info),
+      occurrenceNoteSectionHtml(info),
       leadSectionHtml(info),
       info.customNote ? `<p style="margin:0 0 16px;">${htmlWithLineBreaks(info.customNote)}</p>` : "",
       `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">View event</a></p>`,
@@ -444,6 +463,7 @@ export function reminderEmail(info: RsvpEmailEventInfo, kind: ReminderKind): Ren
     `When: ${info.dateRange}`,
     info.location ? `Where: ${info.location}` : "",
     virtualSectionText(info),
+    occurrenceNoteSectionText(info),
     leadSectionText(info),
     info.customNote ?? "",
     "",

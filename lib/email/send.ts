@@ -123,6 +123,11 @@ export type RsvpEmailEvent = {
   lead_phone: string | null;
   lead_email: string | null;
   custom_email_note: string | null;
+  /** Public, shown site-wide (events list, event page) as well as in the
+   * confirmation and both reminder emails — distinct from custom_email_note
+   * above (email-only). No confirmed-RSVP gate, unlike virtual_link below:
+   * it's already public everywhere else this event appears. */
+  occurrence_note: string | null;
   /** Zoom/meeting link + access notes (passcode, dial-in, etc.) — shown only
    * to someone with a confirmed RSVP, never publicly, and never to a
    * waitlisted or offered person. Every send function below decides whether
@@ -159,6 +164,7 @@ function buildEventInfo(event: RsvpEmailEvent, includeVirtual: boolean): RsvpEma
     leadPhone: event.lead_phone,
     leadEmail: event.lead_email,
     customNote: event.custom_email_note,
+    occurrenceNote: event.occurrence_note,
     eventUrl: `${getSiteUrl()}/protected/events/${event.id}/rsvp`,
     googleCalendarUrl: buildGoogleCalendarLink(icsEvent),
     virtualLink,

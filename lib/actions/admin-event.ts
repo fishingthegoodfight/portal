@@ -20,7 +20,6 @@ import {
 import type { EventChangeDiffEntry } from "@/lib/email/templates";
 import { expireExcessOffers, offerFreeSpots } from "@/lib/waitlist";
 import { capacityError, parseCapacity } from "@/lib/event-capacity";
-import { EVENT_TYPES } from "@/lib/event-types";
 import { composeLocation, isLocationEmpty, locationErrors } from "@/lib/event-location";
 import { CHAPTERS, isVirtualChapter } from "@/lib/chapters";
 import {
@@ -37,6 +36,7 @@ type EventRow = {
   name: string;
   event_type: string | null;
   description: string | null;
+  occurrence_note: string | null;
   location: string | null;
   venue_name: string | null;
   street_address: string | null;
@@ -61,7 +61,7 @@ type EventRow = {
 };
 
 const EVENT_COLUMNS =
-  "id, name, event_type, description, location, venue_name, street_address, city, state, virtual_link, virtual_access_notes, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason";
+  "id, name, event_type, description, occurrence_note, location, venue_name, street_address, city, state, virtual_link, virtual_access_notes, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason";
 
 async function loadEvent(
   supabase: SupabaseServerClient,
@@ -187,6 +187,7 @@ function toEmailEvent(event: EventRow, icsSequence: number): RsvpEmailEvent {
     lead_phone: event.lead_phone,
     lead_email: event.lead_email,
     custom_email_note: event.custom_email_note,
+    occurrence_note: event.occurrence_note,
     virtual_link: event.virtual_link,
     virtual_access_notes: event.virtual_access_notes,
     ics_sequence: icsSequence,
@@ -213,6 +214,7 @@ function buildDiff(before: EventRow, after: EventRow): EventChangeDiffEntry[] {
   push("Event type", before.event_type ?? "", after.event_type ?? "");
   push("Chapter", before.chapter ?? "", after.chapter ?? "");
   push("Description", before.description ?? "", after.description ?? "");
+  push("Occurrence note", before.occurrence_note ?? "", after.occurrence_note ?? "");
   push("Location", before.location ?? "", after.location ?? "");
   push("Meeting link", before.virtual_link ?? "", after.virtual_link ?? "");
   push("Capacity", capacityLabel(before.capacity), capacityLabel(after.capacity));
@@ -239,11 +241,16 @@ function buildDiff(before: EventRow, after: EventRow): EventChangeDiffEntry[] {
 
 export type EventEditInput = {
   name: string;
-  /** One of lib/event-types.ts (or the event's existing legacy value). Changing it never re-defaults the registration sections. */
+  /** A name from `event_types` (active or not — see EventTypeField), or the
+   * event's existing legacy value. Changing it never re-defaults the
+   * registration sections. */
   eventType: string;
   /** Must be one of lib/chapters.ts — also decides which state's waiver applies. */
   chapter: string;
   description: string;
+  /** Public, shown on the events list/event page and in the confirmation
+   * and reminder emails — distinct from customEmailNote below. */
+  occurrenceNote: string;
   // Structured location — same fields as the create wizard. Composed into
   // events.location on save (see lib/event-location.ts).
   venueName: string;
@@ -392,13 +399,17 @@ export async function updateEventAction(
   if (capacityProblem) return { ok: false, error: capacityProblem };
   const capacity = parseCapacity(input.capacity);
 
-  // Event type: from the list, or unchanged (an older event may carry a value
-  // that isn't in it).
-  if (
-    !EVENT_TYPES.includes(input.eventType as (typeof EVENT_TYPES)[number]) &&
-    input.eventType !== before.event_type
-  ) {
-    return { ok: false, error: "Choose an event type" };
+  // Event type: any event_types row (active or not — the edit form offers
+  // both, so an already-deactivated type stays selectable), or left
+  // unchanged (an older event may carry a value that predates the table
+  // entirely).
+  if (input.eventType !== before.event_type) {
+    const { data: eventTypeRow } = await supabase
+      .from("event_types")
+      .select("id")
+      .eq("name", input.eventType)
+      .maybeSingle();
+    if (!eventTypeRow) return { ok: false, error: "Choose an event type" };
   }
 
   const validSectionIds = new Set(
@@ -444,6 +455,7 @@ export async function updateEventAction(
     event_type: input.eventType,
     chapter: input.chapter,
     description: input.description.trim() || null,
+    occurrence_note: input.occurrenceNote.trim() || null,
     // Physical location and virtual details are mutually exclusive — moving
     // an event to/from "Virtual" clears whichever side no longer applies
     // instead of leaving a stale address or link behind.
@@ -576,6 +588,7 @@ export async function updateEventAction(
       event_type: after.event_type,
       chapter: after.chapter,
       description: after.description,
+      occurrence_note: after.occurrence_note,
       location: after.location,
       venue_name: after.venue_name,
       street_address: after.street_address,

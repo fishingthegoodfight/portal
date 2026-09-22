@@ -1,25 +1,18 @@
-export const EVENT_TYPES = [
-  "Community Engagement",
-  "Fly Tying",
-  "Fish A-Long",
-  "Fly Fishing Education",
-  "Men's Night",
-  "Virtual Men's Night",
-  "Off the Water",
-  "Social Event",
-  "Other",
-] as const;
+/**
+ * Event types (table `event_types`, see the 2026-09-22 "Event types as
+ * data" schema-changes.sql entry) replace what used to be a hardcoded
+ * EVENT_TYPES list here. events.event_type stays plain text — same reasoning
+ * as events.chapter against the hardcoded CHAPTERS list — so a type that's
+ * later renamed or deactivated never breaks an event that already used it.
+ */
 
-export type EventType = (typeof EVENT_TYPES)[number];
-
-// Which optional registration sections (ids from lib/registration-sections.ts)
-// the "New event" form prefills for a given event type — still fully
-// editable on the form itself, this is only a starting point.
-const DEFAULT_REGISTRATION_SECTIONS_BY_EVENT_TYPE: Partial<Record<EventType, string[]>> = {
-  "Fish A-Long": ["fly_fishing_sizing"],
-  "Social Event": ["dietary"],
+export type EventTypeOption = {
+  id: number;
+  key: string;
+  name: string;
+  /** Registration section ids (lib/registration-sections.ts) the create
+   * wizard prefills when this type is chosen — still fully editable. */
+  default_registration_sections: string[];
+  sort_order: number;
+  active: boolean;
 };
-
-export function defaultRegistrationSectionsFor(eventType: string): string[] {
-  return DEFAULT_REGISTRATION_SECTIONS_BY_EVENT_TYPE[eventType as EventType] ?? [];
-}

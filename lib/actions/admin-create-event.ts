@@ -5,7 +5,6 @@ import { randomUUID } from "node:crypto";
 import { createClient } from "@/lib/supabase/server";
 import { actorLabel, requireAdmin } from "@/lib/admin/require-admin";
 import { CHAPTERS, isVirtualChapter, timezoneForChapter } from "@/lib/chapters";
-import { EVENT_TYPES } from "@/lib/event-types";
 import { formatEventDateRange } from "@/lib/format-date";
 import { generateRecurrenceDates, type RecurrenceFrequency } from "@/lib/admin/recurrence";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
@@ -51,6 +50,10 @@ export type CreateEventInput = {
   virtualLink: string;
   virtualAccessNotes: string;
   description: string;
+  /** Public, shown on the events list/event page and in the confirmation
+   * and reminder emails — distinct from customEmailNote below. Never
+   * pre-filled by a template. */
+  occurrenceNote: string;
   /** Raw form text — blank means unlimited; otherwise at least 1. */
   capacity: string;
   leadName: string;
@@ -93,7 +96,16 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
   if (!CHAPTERS.some((c) => c.name === input.chapter) && !isVirtualChapter(input.chapter)) {
     return { ok: false, error: "Choose a chapter" };
   }
-  if (!EVENT_TYPES.includes(input.eventType as (typeof EVENT_TYPES)[number])) {
+  // A new event can only take an active, currently-offered type — unlike
+  // editing, where an event may already carry one that's since been
+  // deactivated or never existed in event_types at all (see admin-event.ts).
+  const { data: eventTypeRow } = await supabase
+    .from("event_types")
+    .select("id")
+    .eq("name", input.eventType)
+    .eq("active", true)
+    .maybeSingle();
+  if (!eventTypeRow) {
     return { ok: false, error: "Choose an event type" };
   }
   if (!input.date || !input.time) {
@@ -194,6 +206,7 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
         chapter: input.chapter,
         event_type: input.eventType,
         description: input.description.trim() || null,
+        occurrence_note: input.occurrenceNote.trim() || null,
         venue_name: venueName,
         street_address: streetAddress,
         city,

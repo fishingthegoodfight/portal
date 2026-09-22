@@ -52,6 +52,7 @@ type EventSummary = {
   dateRange: string;
   location: string | null;
   description: string | null;
+  occurrenceNote?: string | null;
   capacity: number | null;
   spots_taken: number | null;
   registration_sections: string[];

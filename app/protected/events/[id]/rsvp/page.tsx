@@ -36,7 +36,7 @@ async function RsvpLoader({
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken, is_published, registration_sections, status, cancellation_reason, waiver_state, virtual_link, virtual_access_notes",
+      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, occurrence_note, capacity, spots_taken, is_published, registration_sections, status, cancellation_reason, waiver_state, virtual_link, virtual_access_notes",
     )
     .eq("id", eventId)
     .maybeSingle();
@@ -140,6 +140,7 @@ async function RsvpLoader({
         ),
         location: event.location,
         description: event.description,
+        occurrenceNote: event.occurrence_note,
         capacity: event.capacity,
         spots_taken: (event.spots_taken ?? 0) + offeredCount,
         registration_sections: event.registration_sections ?? [],

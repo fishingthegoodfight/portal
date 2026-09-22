@@ -15,7 +15,7 @@ export type RsvpActionResult = { ok: true; status: string } | { ok: false; error
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
 const EVENT_EMAIL_COLUMNS =
-  "id, name, starts_at, ends_at, timezone, location, lead_name, lead_phone, lead_email, custom_email_note, virtual_link, virtual_access_notes, ics_sequence";
+  "id, name, starts_at, ends_at, timezone, location, lead_name, lead_phone, lead_email, custom_email_note, occurrence_note, virtual_link, virtual_access_notes, ics_sequence";
 
 async function loadEmailContext(
   supabase: SupabaseServerClient,

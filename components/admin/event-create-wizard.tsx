@@ -15,6 +15,7 @@ import {
   CustomEmailNoteField,
   DescriptionField,
   EventTypeField,
+  OccurrenceNoteField,
   TitleField,
 } from "@/components/admin/fields/event-text-fields";
 import { capacityError } from "@/lib/event-capacity";
@@ -23,7 +24,8 @@ import { LocationFields } from "@/components/admin/fields/location-fields";
 import { VirtualEventFields } from "@/components/admin/fields/virtual-event-fields";
 import { locationErrors } from "@/lib/event-location";
 import { isVirtualChapter } from "@/lib/chapters";
-import { defaultRegistrationSectionsFor } from "@/lib/event-types";
+import type { EventTypeOption } from "@/lib/event-types";
+import type { EventTemplateWithRoles, ShiftAnchor } from "@/lib/event-templates";
 import { formatEventDateRange } from "@/lib/format-date";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 import { zonedDateTimeToUtc } from "@/lib/timezone";
@@ -61,6 +63,7 @@ function emptyForm(prefill: AdminPrefill): CreateEventInput {
     virtualLink: "",
     virtualAccessNotes: "",
     description: "",
+    occurrenceNote: "",
     capacity: "",
     leadName: prefill.leadName,
     leadEmail: prefill.leadEmail,
@@ -158,14 +161,54 @@ function errorsForStep(step: number, form: CreateEventInput): string[] {
   return [];
 }
 
+/** Minutes -> "HH:MM", wrapping within a day — a role's shift always stays on
+ * the same calendar date as the event occurrence itself (see
+ * admin-create-event.ts), so offsets never need to cross midnight. */
+function addMinutesToTime(time: string, minutes: number): string {
+  const [h, m] = time.split(":").map(Number);
+  const total = (((h * 60 + m + minutes) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+/** Resolves a template role boundary's actual HH:MM time. An end anchored to
+ * event_end with no event end time has nothing to anchor to, so it falls
+ * back to event start + the same offset — `fellBack` tells the caller to
+ * flag that for the admin to fix by hand. */
+function resolveShiftTime(
+  anchor: ShiftAnchor,
+  offsetMinutes: number,
+  eventStartTime: string,
+  eventEndTime: string,
+): { time: string; fellBack: boolean } {
+  if (anchor === "event_end") {
+    if (eventEndTime) return { time: addMinutesToTime(eventEndTime, offsetMinutes), fellBack: false };
+    return { time: addMinutesToTime(eventStartTime, offsetMinutes), fellBack: true };
+  }
+  return { time: addMinutesToTime(eventStartTime, offsetMinutes), fellBack: false };
+}
+
+type TemplateRoleTracking = {
+  startAnchor: ShiftAnchor;
+  startOffset: number;
+  endAnchor: ShiftAnchor;
+  endOffset: number;
+} | null;
+
 export function EventCreateWizard({
   adminPrefill,
   roleTypes,
+  eventTypes,
+  templates,
 }: {
   adminPrefill: AdminPrefill;
   /** Active volunteer_role_types with for_chapter_events true — the only
    * ones offered for an event role (see lib/volunteers.ts). */
   roleTypes: ChapterEventRoleType[];
+  /** Active event_types, for the "Event type" picker. */
+  eventTypes: EventTypeOption[];
+  /** Active event_templates with their roles, for the "Start from a
+   * template" picker — filtered client-side to the selected chapter. */
+  templates: EventTemplateWithRoles[];
 }) {
   const router = useRouter();
   const initialForm = useMemo(() => emptyForm(adminPrefill), [adminPrefill]);
@@ -244,18 +287,19 @@ export function EventCreateWizard({
       timezone: timezoneOverridden ? prev.timezone : timezoneForChapter(value),
     }));
 
+  const defaultSectionsFor = (eventType: string): string[] =>
+    eventTypes.find((t) => t.name === eventType)?.default_registration_sections ?? [];
+
   const updateEventType = (value: string) =>
     setForm((prev) => {
-      const oldDefault = defaultRegistrationSectionsFor(prev.eventType);
+      const oldDefault = defaultSectionsFor(prev.eventType);
       const stillDefault =
         prev.registrationSections.length === oldDefault.length &&
         prev.registrationSections.every((id) => oldDefault.includes(id));
       return {
         ...prev,
         eventType: value,
-        registrationSections: stillDefault
-          ? defaultRegistrationSectionsFor(value)
-          : prev.registrationSections,
+        registrationSections: stillDefault ? defaultSectionsFor(value) : prev.registrationSections,
       };
     });
 
@@ -267,18 +311,155 @@ export function EventCreateWizard({
         : prev.registrationSections.filter((s) => s !== id),
     }));
 
-  const addRole = () =>
+  // --- "Start from a template" (step 1) ---
+  // templateRoleTracking[i] mirrors form.volunteerRoles[i]: the anchors +
+  // offsets it came from, kept in sync so a later date/time entry can
+  // recompute its HH:MM shift times — until the admin edits that role's
+  // times by hand, at which point its entry is cleared and it stops
+  // tracking the template.
+  const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
+  const [templateRoleTracking, setTemplateRoleTracking] = useState<TemplateRoleTracking[]>([]);
+
+  const templatesForChapter = templates.filter(
+    (t) => t.chapter === null || t.chapter === form.chapter,
+  );
+
+  // Anything a template would overwrite — used to decide whether switching
+  // or clearing the selection needs to ask first.
+  const hasTemplateApplicableContent = () =>
+    Boolean(
+      form.description.trim() ||
+        form.capacity.trim() ||
+        form.registrationSections.length > 0 ||
+        form.virtualLink.trim() ||
+        form.virtualAccessNotes.trim() ||
+        form.volunteerRoles.length > 0,
+    );
+
+  const roleTypeName = (id: number) => roleTypes.find((rt) => rt.id === id)?.name ?? "";
+
+  const applyTemplate = (template: EventTemplateWithRoles) => {
+    const sortedRoles = template.roles.slice().sort((a, b) => a.sort_order - b.sort_order);
+    setForm((prev) => ({
+      ...prev,
+      eventType: template.event_type,
+      description: template.description ?? "",
+      capacity: template.default_capacity != null ? String(template.default_capacity) : "",
+      registrationSections: template.default_registration_sections,
+      virtualLink: template.default_virtual_link ?? "",
+      virtualAccessNotes: template.default_virtual_access_notes ?? "",
+      volunteersNeeded: sortedRoles.length > 0,
+      volunteerRoles: sortedRoles.map((r) => {
+        const start = prev.time
+          ? resolveShiftTime(r.shift_start_anchor, r.shift_start_offset, prev.time, prev.endTime)
+          : null;
+        const end = prev.time
+          ? resolveShiftTime(r.shift_end_anchor, r.shift_end_offset, prev.time, prev.endTime)
+          : null;
+        return {
+          title: roleTypeName(r.role_type_id),
+          description: r.description ?? "",
+          shiftStart: start?.time ?? "",
+          shiftEnd: end?.time ?? "",
+          whatToBring: r.what_to_bring ?? "",
+          numberNeeded: String(r.number_needed),
+          roleTypeId: String(r.role_type_id),
+        };
+      }),
+    }));
+    setTemplateRoleTracking(
+      sortedRoles.map((r) => ({
+        startAnchor: r.shift_start_anchor,
+        startOffset: r.shift_start_offset,
+        endAnchor: r.shift_end_anchor,
+        endOffset: r.shift_end_offset,
+      })),
+    );
+  };
+
+  const clearTemplateFields = () => {
+    setForm((prev) => ({
+      ...prev,
+      description: "",
+      capacity: "",
+      registrationSections: [],
+      virtualLink: "",
+      virtualAccessNotes: "",
+      volunteersNeeded: false,
+      volunteerRoles: [],
+    }));
+    setTemplateRoleTracking([]);
+  };
+
+  const handleTemplateChange = (value: string) => {
+    if (
+      hasTemplateApplicableContent() &&
+      !window.confirm(
+        value
+          ? "Choosing a different template will overwrite the description, capacity, registration sections, virtual details, and volunteer roles you've already entered. Continue?"
+          : "Clearing the template will reset the description, capacity, registration sections, virtual details, and volunteer roles it filled in. Continue?",
+      )
+    ) {
+      return;
+    }
+    setSelectedTemplateId(value);
+    if (!value) {
+      clearTemplateFields();
+      return;
+    }
+    const template = templates.find((t) => String(t.id) === value);
+    if (template) applyTemplate(template);
+  };
+
+  // Once a date/time exist, keep any still-template-derived role's shift
+  // times in sync with the template's anchors + offsets — an end anchor
+  // that's now resolvable (e.g. an end time was just entered) recomputes off
+  // event_end instead of the event_start fallback.
+  useEffect(() => {
+    if (!form.time || !templateRoleTracking.some(Boolean)) return;
+    setForm((prev) => ({
+      ...prev,
+      volunteerRoles: prev.volunteerRoles.map((role, i) => {
+        const t = templateRoleTracking[i];
+        if (!t) return role;
+        const start = resolveShiftTime(t.startAnchor, t.startOffset, prev.time, prev.endTime);
+        const end = resolveShiftTime(t.endAnchor, t.endOffset, prev.time, prev.endTime);
+        return { ...role, shiftStart: start.time, shiftEnd: end.time };
+      }),
+    }));
+  }, [form.time, form.endTime, templateRoleTracking]);
+
+  // Template-derived roles still tracking an event_end anchor while the
+  // event itself has no end time — their shown end time fell back to
+  // event start + offset, so it needs a manual look before this is trusted.
+  const templateEndFallbackRoles = form.volunteerRoles
+    .map((role, i) => ({ role, i, tracking: templateRoleTracking[i] }))
+    .filter(({ tracking }) => tracking?.endAnchor === "event_end" && !form.endTime)
+    .map(({ role, i }) => role.title.trim() || `Role ${i + 1}`);
+
+  const addRole = () => {
     setForm((prev) => ({ ...prev, volunteerRoles: [...prev.volunteerRoles, emptyVolunteerRole()] }));
-  const removeRole = (index: number) =>
+    setTemplateRoleTracking((prev) => [...prev, null]);
+  };
+  const removeRole = (index: number) => {
     setForm((prev) => ({
       ...prev,
       volunteerRoles: prev.volunteerRoles.filter((_, i) => i !== index),
     }));
-  const updateRole = (index: number, field: keyof VolunteerRoleInput, value: string) =>
+    setTemplateRoleTracking((prev) => prev.filter((_, i) => i !== index));
+  };
+  const updateRole = (index: number, field: keyof VolunteerRoleInput, value: string) => {
     setForm((prev) => ({
       ...prev,
       volunteerRoles: prev.volunteerRoles.map((r, i) => (i === index ? { ...r, [field]: value } : r)),
     }));
+    // A manual edit to a template-derived role's own shift times stops it
+    // tracking the template's anchors — further date/time changes leave it
+    // alone from here on.
+    if (field === "shiftStart" || field === "shiftEnd") {
+      setTemplateRoleTracking((prev) => prev.map((t, i) => (i === index ? null : t)));
+    }
+  };
 
   const occurrenceDates = useMemo(() => {
     if (!form.date) return [];
@@ -373,8 +554,36 @@ export function EventCreateWizard({
           <div className="flex flex-col gap-4">
             <div className="grid grid-cols-2 gap-4">
               <ChapterField idPrefix="create" value={form.chapter} onChange={updateChapter} />
-              <EventTypeField idPrefix="create" value={form.eventType} onChange={updateEventType} />
+              <EventTypeField
+                idPrefix="create"
+                value={form.eventType}
+                onChange={updateEventType}
+                eventTypes={eventTypes}
+              />
             </div>
+
+            {templatesForChapter.length > 0 && (
+              <div className="grid gap-2">
+                <Label htmlFor="create_template">Start from a template</Label>
+                <Select
+                  id="create_template"
+                  value={selectedTemplateId}
+                  onChange={(e) => handleTemplateChange(e.target.value)}
+                >
+                  <option value="">No template</option>
+                  {templatesForChapter.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Pre-fills description, capacity, registration sections, virtual details, and
+                  volunteer roles — everything stays editable afterward.
+                </p>
+              </div>
+            )}
+
             <TitleField idPrefix="create" value={form.title} onChange={setField("title")} />
             {form.chapter ? (
               <DateTimeFields
@@ -420,6 +629,12 @@ export function EventCreateWizard({
               idPrefix="create"
               value={form.description}
               onChange={setField("description")}
+            />
+
+            <OccurrenceNoteField
+              idPrefix="create"
+              value={form.occurrenceNote}
+              onChange={setField("occurrenceNote")}
             />
 
             <CapacityField idPrefix="create" value={form.capacity} onChange={setField("capacity")} />
@@ -486,6 +701,15 @@ export function EventCreateWizard({
                     {roleTypes.length > 0 && (
                       <div className="grid gap-2">
                         <Label htmlFor={`role_${i}_role_type`}>Role type</Label>
+                        {/* "Custom / other" bypasses the volunteer_role_types
+                          * catalog entirely (roleTypeId stays ""), which is
+                          * fine today since a role type has no gating
+                          * behavior yet — but volunteer_role_approvals is
+                          * keyed by role_type_id, so once event volunteer
+                          * SIGNUPS get gated by approval, a custom/other role
+                          * has nothing to approve against. Not changed here;
+                          * flagging so that decision (open-to-anyone, or
+                          * retire this option) gets made deliberately then. */}
                         <Select
                           id={`role_${i}_role_type`}
                           value={role.roleTypeId}
@@ -655,6 +879,7 @@ export function EventCreateWizard({
                 />
               )}
               <ReviewRow label="Description" value={form.description || "—"} />
+              <ReviewRow label="Occurrence note (public)" value={form.occurrenceNote.trim() || "—"} />
               <ReviewRow label="Capacity" value={form.capacity.trim() || "Unlimited"} />
               <ReviewRow
                 label="Lead contact"
@@ -682,6 +907,18 @@ export function EventCreateWizard({
                 ))
               ) : (
                 <ReviewRow label="Volunteers" value="Not needed" />
+              )}
+              {templateEndFallbackRoles.length > 0 && (
+                <p className="rounded-md border border-amber-500/50 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+                  This event has no end time, so{" "}
+                  {templateEndFallbackRoles.length === 1
+                    ? `${templateEndFallbackRoles[0]}'s`
+                    : `${templateEndFallbackRoles.join(", ")}'s`}{" "}
+                  end time{templateEndFallbackRoles.length === 1 ? "" : "s"} fell back to event
+                  start + offset instead of the template&apos;s event-end anchor — check{" "}
+                  {templateEndFallbackRoles.length === 1 ? "it" : "them"} by hand, or add an end
+                  time to the event.
+                </p>
               )}
             </ReviewSection>
 

@@ -2387,3 +2387,169 @@ update public.events
 update public.profiles
   set program_interests = array_replace(program_interests, 'Outreach Events', 'Community Engagement Events')
   where 'Outreach Events' = any(program_interests);
+
+-- =============================================================================
+-- 2026-09-22 — Event types as data, event templates, per-occurrence note
+-- =============================================================================
+-- Three independent additions:
+--  - event_types replaces the hardcoded EVENT_TYPES list (lib/event-types.ts)
+--    as the single source of truth for the "Event type" picker, with its own
+--    admin screen (add/rename/reorder/deactivate) at /protected/admin/event-types.
+--    events.event_type stays a plain text column, exactly like events.chapter
+--    stays plain text against the hardcoded CHAPTERS list — no FK, so a type
+--    that's later renamed or deactivated never breaks an event that already
+--    used it. Deactivating only removes it from new events' picker (still
+--    shown, unselectable-as-new, on an existing event that already has it);
+--    there is deliberately no DELETE policy or grant on this table, mirroring
+--    volunteer_role_types below it, so "a type in use can't be deleted" is
+--    true by construction rather than a check the app has to enforce.
+--  - event_templates / event_template_roles: a reusable starting point for
+--    the create wizard (description, capacity, registration sections,
+--    virtual details, and a set of volunteer roles with shift times stored
+--    as minute offsets from the event's start, so they move with whatever
+--    time is entered). Applying a template only ever copies values onto a
+--    new event at creation time — there is no link stored back from events
+--    to the template that seeded them, so editing or deactivating a template
+--    can never change an event already created from it.
+--  - events.occurrence_note: a short public note for one specific occurrence
+--    (e.g. "Tonight we're tying a Pat's Rubber Legs"), distinct from the
+--    existing custom_email_note (email-only, never shown on the site) and
+--    never pre-filled by a template.
+
+-- ---- Event types -----------------------------------------------------------
+create table public.event_types (
+  id bigserial primary key,
+  key text not null unique,
+  name text not null unique,
+  default_registration_sections text[] not null default '{}'::text[],
+  sort_order integer not null default 0,
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+insert into public.event_types (key, name, default_registration_sections, sort_order)
+values
+  ('community_engagement', 'Community Engagement', '{}', 10),
+  ('fly_tying', 'Fly Tying', '{}', 20),
+  ('fish_a_long', 'Fish A-Long', '{fly_fishing_sizing}', 30),
+  ('fly_fishing_education', 'Fly Fishing Education', '{}', 40),
+  ('mens_night', 'Men''s Night', '{}', 50),
+  ('virtual_mens_night', 'Virtual Men''s Night', '{}', 60),
+  ('off_the_water', 'Off the Water', '{}', 70),
+  ('social_event', 'Social Event', '{dietary}', 80),
+  ('other', 'Other', '{}', 90)
+on conflict (key) do nothing;
+
+alter table public.event_types enable row level security;
+
+create policy event_types_admin_all on public.event_types
+  for all to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+revoke all on public.event_types from anon;
+grant select, insert, update on public.event_types to authenticated;
+grant usage, select on sequence public.event_types_id_seq to authenticated;
+grant all on public.event_types to service_role;
+grant usage, select on sequence public.event_types_id_seq to service_role;
+
+-- ---- Event templates --------------------------------------------------------
+create table public.event_templates (
+  id bigserial primary key,
+  name text not null,
+  -- Free text, matching events.event_type — not an FK, same reasoning as
+  -- event_types above (a renamed/deactivated type never breaks a template
+  -- that referenced it; applying it just carries the text over).
+  event_type text not null,
+  -- Null = available to every chapter's create wizard; set = only shown when
+  -- that chapter is selected.
+  chapter text,
+  description text,
+  default_capacity integer,
+  default_registration_sections text[] not null default '{}'::text[],
+  default_virtual_link text,
+  default_virtual_access_notes text,
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+alter table public.event_templates enable row level security;
+
+create policy event_templates_admin_all on public.event_templates
+  for all to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+revoke all on public.event_templates from anon;
+grant select, insert, update on public.event_templates to authenticated;
+grant usage, select on sequence public.event_templates_id_seq to authenticated;
+grant all on public.event_templates to service_role;
+grant usage, select on sequence public.event_templates_id_seq to service_role;
+
+create table public.event_template_roles (
+  id bigserial primary key,
+  template_id bigint not null references public.event_templates(id) on delete cascade,
+  -- The title comes from the catalog (role_type_id); description and
+  -- what_to_bring are the parts that are standard per PROGRAM rather than
+  -- per role type (e.g. what to bring to a Fly Tying Night applies to every
+  -- role at it, not to "Fly Tying Lead" as a role type in general), so they
+  -- live on the template role, not on volunteer_role_types.
+  role_type_id bigint not null references public.volunteer_role_types(id),
+  description text,
+  what_to_bring text,
+  -- Minutes relative to the event's start (can be negative, e.g. a setup
+  -- role starting 60 minutes before the event itself) — applying the
+  -- template computes actual HH:MM shift times from these once the create
+  -- wizard has a date and time to apply them to.
+  shift_start_offset integer not null,
+  shift_end_offset integer not null,
+  number_needed integer not null default 1,
+  sort_order integer not null default 0
+);
+
+create index event_template_roles_template_idx on public.event_template_roles (template_id);
+
+alter table public.event_template_roles enable row level security;
+
+create policy event_template_roles_admin_all on public.event_template_roles
+  for all to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+revoke all on public.event_template_roles from anon;
+grant select, insert, update, delete on public.event_template_roles to authenticated;
+grant usage, select on sequence public.event_template_roles_id_seq to authenticated;
+grant all on public.event_template_roles to service_role;
+grant usage, select on sequence public.event_template_roles_id_seq to service_role;
+
+-- ---- Per-occurrence note -----------------------------------------------------
+alter table public.events
+  add column if not exists occurrence_note text;
+
+-- =============================================================================
+-- 2026-09-22 — Template role shift times: independent start/end anchors
+-- =============================================================================
+-- event_template_roles.shift_start_offset / shift_end_offset (see the
+-- "event templates" entry above) were both minutes relative to the event's
+-- START, which made an end-of-event role (e.g. cleanup) drift whenever the
+-- event's own length changed. Each boundary now anchors independently to
+-- either the event's start or its end:
+--   shift_start_anchor / shift_end_anchor: 'event_start' | 'event_end'
+-- defaulting to start-anchored/end-anchored respectively — setup begins
+-- before doors (event_start), cleanup ends after the event (event_end),
+-- which is the common case. The offset columns are unchanged in shape, just
+-- now read relative to their own anchor instead of always the start.
+--
+-- No real template rows exist yet (confirmed with the user before writing
+-- this), so there's no value-preserving conversion to do — the reset below
+-- is defensive only, in case a row was created between then and now.
+
+alter table public.event_template_roles
+  add column if not exists shift_start_anchor text not null default 'event_start'
+    check (shift_start_anchor in ('event_start', 'event_end')),
+  add column if not exists shift_end_anchor text not null default 'event_end'
+    check (shift_end_anchor in ('event_start', 'event_end'));
+
+update public.event_template_roles
+  set shift_end_offset = 0
+  where shift_end_anchor = 'event_end';

@@ -6,6 +6,7 @@ import { toZonedDateTimeInputs } from "@/lib/timezone";
 import { timezoneForChapter } from "@/lib/chapters";
 import { WAIVER_STATES, waiverStateForChapter } from "@/lib/waivers";
 import { EventEditForm } from "@/components/admin/event-edit-form";
+import type { EventTypeOption } from "@/lib/event-types";
 
 async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -15,13 +16,21 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
   }
 
   const supabase = await createClient();
-  const { data: event } = await supabase
-    .from("events")
-    .select(
-      "id, name, event_type, series_id, description, location, venue_name, street_address, city, state, virtual_link, virtual_access_notes, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, starts_at, ends_at, timezone, chapter, status, waiver_state",
-    )
-    .eq("id", eventId)
-    .maybeSingle();
+  const [{ data: event }, { data: eventTypes }] = await Promise.all([
+    supabase
+      .from("events")
+      .select(
+        "id, name, event_type, series_id, description, occurrence_note, location, venue_name, street_address, city, state, virtual_link, virtual_access_notes, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, starts_at, ends_at, timezone, chapter, status, waiver_state",
+      )
+      .eq("id", eventId)
+      .maybeSingle(),
+    // Active AND inactive — an already-deactivated type stays selectable on
+    // an event that already has it (see EventTypeField).
+    supabase
+      .from("event_types")
+      .select("id, key, name, default_registration_sections, sort_order, active")
+      .order("sort_order", { ascending: true }),
+  ]);
 
   if (!event) {
     notFound();
@@ -40,6 +49,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
       eventId={event.id}
       isCancelled={event.status === "cancelled"}
       isPartOfSeries={Boolean(event.series_id)}
+      eventTypes={(eventTypes ?? []) as EventTypeOption[]}
       legacyLocation={
         !event.venue_name && !event.street_address && !event.city && !event.state
           ? event.location
@@ -56,6 +66,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
         eventType: event.event_type ?? "",
         chapter: event.chapter ?? "",
         description: event.description ?? "",
+        occurrenceNote: event.occurrence_note ?? "",
         venueName: event.venue_name ?? "",
         streetAddress: event.street_address ?? "",
         city: event.city ?? "",

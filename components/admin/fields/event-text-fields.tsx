@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { EVENT_TYPES } from "@/lib/event-types";
+import type { EventTypeOption } from "@/lib/event-types";
 
 /**
  * The plain text-ish event fields shared by the admin create wizard and edit
@@ -38,14 +38,21 @@ export function EventTypeField({
   idPrefix,
   value,
   onChange,
+  eventTypes,
 }: {
   idPrefix: string;
   value: string;
   onChange: (value: string) => void;
+  /** From the `event_types` table (lib/event-types.ts) — the create wizard
+   * passes active-only rows, the edit form passes every row (active and
+   * inactive) so an event that already has a deactivated type still shows
+   * it correctly. */
+  eventTypes: EventTypeOption[];
 }) {
-  // An event created by hand can carry a type that isn't in the list; keep it
-  // selectable so opening the edit form doesn't silently change it.
-  const isLegacy = value !== "" && !EVENT_TYPES.includes(value as (typeof EVENT_TYPES)[number]);
+  // An event's stored type can predate event_types entirely, or be a value
+  // that's since been renamed — keep it selectable either way, so opening
+  // the edit form never silently changes it.
+  const isLegacy = value !== "" && !eventTypes.some((t) => t.name === value);
   return (
     <div className="grid content-start gap-2">
       <Label htmlFor={`${idPrefix}_event_type`}>Event type</Label>
@@ -57,11 +64,14 @@ export function EventTypeField({
       >
         <option value="">Select a type</option>
         {isLegacy && <option value={value}>{value}</option>}
-        {EVENT_TYPES.map((t) => (
-          <option key={t} value={t}>
-            {t}
-          </option>
-        ))}
+        {[...eventTypes]
+          .sort((a, b) => a.sort_order - b.sort_order)
+          .map((t) => (
+            <option key={t.id} value={t.name}>
+              {t.name}
+              {!t.active ? " (inactive)" : ""}
+            </option>
+          ))}
       </Select>
     </div>
   );
@@ -126,10 +136,39 @@ export function CustomEmailNoteField({
 }) {
   return (
     <div className="grid gap-2">
-      <Label htmlFor={`${idPrefix}_custom_note`}>Custom email note</Label>
+      <Label htmlFor={`${idPrefix}_custom_note`}>Custom email note (email only, not shown on the site)</Label>
       <Textarea
         id={`${idPrefix}_custom_note`}
-        placeholder="Shown in the RSVP confirmation email, if set"
+        placeholder="Shown in the RSVP confirmation email and reminders, if set"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </div>
+  );
+}
+
+/**
+ * A short public note for this specific occurrence — e.g. "Tonight we're
+ * tying a Pat's Rubber Legs." Distinct from CustomEmailNoteField above
+ * (email-only) and from DescriptionField (the event's standing description):
+ * this shows on the site (events list, event page) as well as in the
+ * confirmation and reminder emails, and is never pre-filled by a template.
+ */
+export function OccurrenceNoteField({
+  idPrefix,
+  value,
+  onChange,
+}: {
+  idPrefix: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="grid gap-2">
+      <Label htmlFor={`${idPrefix}_occurrence_note`}>Note for this occurrence (shown publicly)</Label>
+      <Textarea
+        id={`${idPrefix}_occurrence_note`}
+        placeholder="Optional — shown on the events list, the event page, and in the confirmation/reminder emails"
         value={value}
         onChange={(e) => onChange(e.target.value)}
       />
