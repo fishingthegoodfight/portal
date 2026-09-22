@@ -18,7 +18,7 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
   if (!data) {
     notFound();
   }
-  const { event, roster, waitlist, waiver, dietary } = data;
+  const { event, roster, waitlist, waiver, dietary, volunteerRoles, volunteerRoster } = data;
   const offeredCount = waitlist.filter((w) => w.status === "offered").length;
 
   return (
@@ -45,6 +45,8 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
       waiver={waiver}
       dietary={dietary}
       registrationSectionIds={event.registration_sections ?? []}
+      volunteerRoles={volunteerRoles}
+      initialVolunteerRoster={volunteerRoster}
     />
   );
 }

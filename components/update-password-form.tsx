@@ -12,7 +12,6 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 export function UpdatePasswordForm({
@@ -28,7 +27,6 @@ export function UpdatePasswordForm({
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const router = useRouter();
 
   const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -39,7 +37,13 @@ export function UpdatePasswordForm({
     try {
       const { error } = await supabase.auth.updateUser({ password });
       if (error) throw error;
-      router.push(next || "/protected/events");
+      // Hard navigation, not router.push: this changes the session (a fresh
+      // password, and for the recovery/invite flow, the first time this
+      // session becomes a normal one) — every server component in the tree,
+      // including the header, has to render fresh against it rather than
+      // risk serving a previous user's cached layout/page from the client
+      // router cache. Same reasoning as logout-button.tsx / login-form.tsx.
+      window.location.href = next || "/protected/events";
     } catch (error: unknown) {
       setError(error instanceof Error ? error.message : "An error occurred");
     } finally {

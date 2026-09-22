@@ -6,6 +6,7 @@ import { profileValueFromColumn, REGISTRATION_SECTIONS } from "@/lib/registratio
 import {
   isWaiverState,
   resolveEventWaiver,
+  resolveVolunteerWaiverForEvent,
   waiverInfoForUser,
   type WaiverEvent,
   type WaiverInfo,
@@ -66,6 +67,46 @@ export async function signWaiverAction(
   // 23505 = already signed this exact waiver; nothing to do.
   if (error && error.code !== "23505") {
     console.error(`[waiver] event ${eventId}: signing failed:`, error);
+    return { ok: false, error: error.message };
+  }
+  return { ok: true };
+}
+
+/**
+ * Same as signWaiverAction, but for the VOLUNTEER audience waiver a shift
+ * signup calls for (the event's own state/year — see
+ * resolveVolunteerWaiverForEvent) rather than the participant one. Backs the
+ * inline waiver step in the event page's Volunteer section.
+ */
+export async function signVolunteerWaiverForEventAction(
+  eventId: number,
+  signedName: string,
+  agreed: boolean,
+): Promise<SignWaiverResult> {
+  const supabase = await createClient();
+  const { data: claims, error: authError } = await supabase.auth.getClaims();
+  if (authError || !claims?.claims) return { ok: false, error: "Not authenticated" };
+  const userId = claims.claims.sub as string;
+
+  const name = signedName.trim();
+  if (!agreed) return { ok: false, error: "You must agree to the waiver to sign it." };
+  if (!name) return { ok: false, error: "Type your full name to sign the waiver." };
+
+  const event = await loadWaiverEvent(supabase, eventId);
+  if (!event) return { ok: false, error: "Event not found" };
+
+  const requirement = await resolveVolunteerWaiverForEvent(supabase, event);
+  if (requirement.kind !== "ok") {
+    return { ok: false, error: "No volunteer waiver is available for this event yet." };
+  }
+
+  const { error } = await supabase.from("waiver_signatures").insert({
+    user_id: userId,
+    waiver_id: requirement.waiver.id,
+    signed_name: name,
+  });
+  if (error && error.code !== "23505") {
+    console.error(`[waiver] event ${eventId}: signing volunteer waiver failed:`, error);
     return { ok: false, error: error.message };
   }
   return { ok: true };

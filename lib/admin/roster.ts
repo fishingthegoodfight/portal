@@ -1,5 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
-import { formatDateInZone, formatEventInstant } from "@/lib/format-date";
+import { formatDateInZone, formatEventDateRange, formatEventInstant } from "@/lib/format-date";
 import { resolveEventWaiver, waiverHeading } from "@/lib/waivers";
 
 export type AdminEventSummary = {
@@ -77,6 +77,28 @@ export type RosterDietary = {
   notAnsweredCount: number;
 };
 
+export type VolunteerRosterPerson = {
+  signupId: number;
+  opportunityId: number;
+  role: string;
+  /** Pre-formatted in the event's own timezone. */
+  shiftLabel: string;
+  firstName: string;
+  lastName: string;
+  phone: string;
+  checkedInAt: string | null;
+};
+
+/** One volunteer role's fill status — every opportunity at the event, even
+ * ones with zero confirmed signups, so "filled vs needed" always shows. */
+export type VolunteerRoleSummary = {
+  opportunityId: number;
+  role: string;
+  shiftLabel: string;
+  slots: number;
+  slotsTaken: number;
+};
+
 export type EventRoster = {
   event: AdminEventSummary;
   dietary: RosterDietary;
@@ -86,6 +108,10 @@ export type EventRoster = {
   /** Everyone waiting or holding/lost an offer, in join order (lapsed
    * offers last). */
   waitlist: WaitlistPerson[];
+  /** Every volunteer role at the event, filled vs needed. */
+  volunteerRoles: VolunteerRoleSummary[];
+  /** Confirmed volunteer signups, sorted by role then last name. */
+  volunteerRoster: VolunteerRosterPerson[];
 };
 
 /**
@@ -222,6 +248,70 @@ export async function loadEventRoster(
   const collectsDietary =
     (event.registration_sections as string[] | null)?.includes("dietary") ?? false;
 
+  // Volunteer roster — separate from the participant one above. Embeds
+  // profiles directly (unlike rsvps): volunteer_signups.user_id references
+  // profiles(id), not auth.users(id) independently, so PostgREST can walk it.
+  const { data: opportunityRows } = await supabase
+    .from("volunteer_opportunities")
+    .select("id, role, shift_start, shift_end, slots, slots_taken")
+    .eq("event_id", eventId);
+
+  const opportunities = (opportunityRows ?? []) as {
+    id: number;
+    role: string;
+    shift_start: string;
+    shift_end: string;
+    slots: number;
+    slots_taken: number;
+  }[];
+
+  const volunteerRoles: VolunteerRoleSummary[] = opportunities.map((o) => ({
+    opportunityId: o.id,
+    role: o.role,
+    shiftLabel: formatEventDateRange(o.shift_start, o.shift_end, event.timezone as string),
+    slots: o.slots,
+    slotsTaken: o.slots_taken,
+  }));
+
+  let volunteerRoster: VolunteerRosterPerson[] = [];
+  if (opportunities.length > 0) {
+    const shiftLabelByOpportunity = new Map(volunteerRoles.map((r) => [r.opportunityId, r.shiftLabel]));
+    const roleByOpportunity = new Map(opportunities.map((o) => [o.id, o.role]));
+
+    const { data: signupRows } = await supabase
+      .from("volunteer_signups")
+      .select("id, opportunity_id, checked_in_at, profile:profiles(first_name, last_name, phone)")
+      .in(
+        "opportunity_id",
+        opportunities.map((o) => o.id),
+      )
+      .eq("status", "confirmed");
+
+    volunteerRoster = ((signupRows ?? []) as unknown as {
+      id: number;
+      opportunity_id: number;
+      checked_in_at: string | null;
+      profile: { first_name: string | null; last_name: string | null; phone: string | null } | null;
+    }[]).map((s) => ({
+      signupId: s.id,
+      opportunityId: s.opportunity_id,
+      role: roleByOpportunity.get(s.opportunity_id) ?? "",
+      shiftLabel: shiftLabelByOpportunity.get(s.opportunity_id) ?? "",
+      firstName: s.profile?.first_name ?? "",
+      lastName: s.profile?.last_name ?? "",
+      phone: s.profile?.phone ?? "",
+      checkedInAt: s.checked_in_at,
+    }));
+
+    volunteerRoster.sort(
+      (a, b) =>
+        a.role.localeCompare(b.role) ||
+        (a.lastName || a.firstName).localeCompare(b.lastName || b.firstName, undefined, {
+          sensitivity: "base",
+        }),
+    );
+  }
+
   return {
     event: event as AdminEventSummary,
     dietary: {
@@ -231,5 +321,7 @@ export async function loadEventRoster(
     waiver: { heading: waiverHeadingText, problem: waiverProblem },
     roster,
     waitlist,
+    volunteerRoles,
+    volunteerRoster,
   };
 }

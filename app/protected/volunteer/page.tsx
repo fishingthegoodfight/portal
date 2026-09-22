@@ -8,6 +8,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { certIsCurrent, VOLUNTEER_STATUS_LABELS, type VolunteerStatus } from "@/lib/volunteers";
+import { formatEventDateRange } from "@/lib/format-date";
+import { VolunteerShiftsList, type VolunteerShift } from "@/components/volunteer-shifts-list";
 
 async function VolunteerHomeLoader({
   searchParams,
@@ -78,6 +80,48 @@ async function VolunteerHomeLoader({
 
   const status = volunteer.status as VolunteerStatus;
 
+  const { data: signupRows } = await supabase
+    .from("volunteer_signups")
+    .select(
+      "id, opportunity_id, opportunity:volunteer_opportunities(id, role, shift_start, shift_end, event:events(id, name, timezone))",
+    )
+    .eq("user_id", userId)
+    .eq("status", "confirmed");
+
+  const now = Date.now();
+  const shiftsWithStart: (VolunteerShift & { shiftStart: string })[] = [];
+  for (const row of (signupRows ?? []) as unknown as {
+    opportunity: {
+      id: number;
+      role: string;
+      shift_start: string;
+      shift_end: string;
+      event: { id: number; name: string; timezone: string } | null;
+    } | null;
+  }[]) {
+    const opportunity = row.opportunity;
+    if (!opportunity?.event) continue;
+    shiftsWithStart.push({
+      opportunityId: opportunity.id,
+      eventId: opportunity.event.id,
+      eventName: opportunity.event.name,
+      role: opportunity.role,
+      shiftLabel: formatEventDateRange(
+        opportunity.shift_start,
+        opportunity.shift_end,
+        opportunity.event.timezone,
+      ),
+      shiftStart: opportunity.shift_start,
+    });
+  }
+
+  const upcomingShifts = shiftsWithStart
+    .filter((s) => new Date(s.shiftStart).getTime() >= now)
+    .sort((a, b) => a.shiftStart.localeCompare(b.shiftStart));
+  const pastShifts = shiftsWithStart
+    .filter((s) => new Date(s.shiftStart).getTime() < now)
+    .sort((a, b) => b.shiftStart.localeCompare(a.shiftStart));
+
   return (
     <div className="flex flex-col gap-6">
       {saved === "1" && (
@@ -94,6 +138,15 @@ async function VolunteerHomeLoader({
         </div>
         <Badge variant="secondary">{VOLUNTEER_STATUS_LABELS[status] ?? status}</Badge>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Your shifts</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <VolunteerShiftsList upcoming={upcomingShifts} past={pastShifts} />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

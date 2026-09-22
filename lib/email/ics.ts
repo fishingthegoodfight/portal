@@ -143,10 +143,19 @@ export function icsUidForEvent(eventId: number): string {
   return `event-${eventId}@fishingthegoodfight.org`;
 }
 
+/** Distinct namespace from icsUidForEvent — a volunteer shift's .ics is a
+ * separate calendar entry from the same person's RSVP invite for the same
+ * event, and opportunity ids and event ids are independent sequences that
+ * could otherwise collide. */
+export function icsUidForVolunteerShift(opportunityId: number): string {
+  return `volunteer-shift-${opportunityId}@fishingthegoodfight.org`;
+}
+
 export function buildEventIcs({
   event,
   method,
   sequence,
+  uid,
 }: {
   event: IcsEventInput;
   method: "REQUEST" | "CANCEL";
@@ -157,13 +166,16 @@ export function buildEventIcs({
    * this UID accepts this one as the newer version rather than ignoring it.
    */
   sequence: number;
+  /** Defaults to icsUidForEvent(event.id) — pass icsUidForVolunteerShift(...)
+   * for a volunteer shift's own calendar entry instead. */
+  uid?: string;
 }): string {
   const start = new Date(event.startsAt);
   const end = event.endsAt
     ? new Date(event.endsAt)
     : new Date(start.getTime() + 60 * 60 * 1000);
 
-  const uid = icsUidForEvent(event.id);
+  const resolvedUid = uid ?? icsUidForEvent(event.id);
   const dtstamp = formatIcsDateTimeUTC(new Date());
   const status = method === "CANCEL" ? "CANCELLED" : "CONFIRMED";
   // A virtual event has no physical location, so the link fills LOCATION too
@@ -181,7 +193,7 @@ export function buildEventIcs({
     "CALSCALE:GREGORIAN",
     buildVTimezone(event.timezone, start.getUTCFullYear()),
     "BEGIN:VEVENT",
-    `UID:${uid}`,
+    `UID:${resolvedUid}`,
     `DTSTAMP:${dtstamp}`,
     `DTSTART;TZID=${event.timezone}:${formatIcsDateTimeInZone(start, event.timezone)}`,
     `DTEND;TZID=${event.timezone}:${formatIcsDateTimeInZone(end, event.timezone)}`,

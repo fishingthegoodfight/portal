@@ -2,7 +2,12 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { isCronAuthorized } from "@/lib/cron-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { sendReminderEmail, type RsvpEmailEvent } from "@/lib/email/send";
+import {
+  sendReminderEmail,
+  sendVolunteerReminderEmail,
+  type RsvpEmailEvent,
+  type VolunteerShiftEmailContext,
+} from "@/lib/email/send";
 import type { ReminderKind } from "@/lib/email/templates";
 
 /**
@@ -73,6 +78,12 @@ export async function GET(request: NextRequest) {
   }
 
   const totals: Record<ReminderKind, Outcome> = {
+    "1week": { sent: 0, skipped: 0, failed: 0 },
+    "1day": { sent: 0, skipped: 0, failed: 0 },
+  };
+  // Separate from the participant totals above — a distinct email, same cron
+  // pass and event-level day-out window (see the module comment).
+  const volunteerTotals: Record<ReminderKind, Outcome> = {
     "1week": { sent: 0, skipped: 0, failed: 0 },
     "1day": { sent: 0, skipped: 0, failed: 0 },
   };
@@ -159,8 +170,110 @@ export async function GET(request: NextRequest) {
         );
       }
     }
+
+    // Volunteer shift reminders — same event-level kind/window computed
+    // above, a separate email per confirmed shift signup (not per RSVP).
+    const { data: opportunities } = await supabase
+      .from("volunteer_opportunities")
+      .select("id, role, description, what_to_bring, shift_start, shift_end")
+      .eq("event_id", event.id);
+
+    if (opportunities?.length) {
+      const vColumn = kind === "1week" ? "sent_1week_at" : "sent_1day_at";
+      const { data: signups, error: signupError } = await supabase
+        .from("volunteer_signups")
+        .select(`id, opportunity_id, user_id, ${vColumn}`)
+        .in(
+          "opportunity_id",
+          opportunities.map((o) => o.id),
+        )
+        .eq("status", "confirmed")
+        .is(vColumn, null);
+
+      if (signupError) {
+        console.error(
+          `[reminders] event ${event.id}: failed to load volunteer signups:`,
+          signupError.message,
+        );
+      } else if (signups?.length) {
+        const { data: vProfiles } = await supabase
+          .from("profiles")
+          .select("id, email")
+          .in(
+            "id",
+            signups.map((s) => s.user_id as string),
+          );
+        const vEmailById = new Map(
+          (vProfiles ?? []).map((p) => [p.id as string, (p.email as string | null) ?? ""]),
+        );
+        const opportunityById = new Map(opportunities.map((o) => [o.id as number, o]));
+
+        for (const signup of signups) {
+          const signupId = signup.id as number;
+          const opportunity = opportunityById.get(signup.opportunity_id as number);
+          const email = vEmailById.get(signup.user_id as string);
+          if (!opportunity || !email) {
+            volunteerTotals[kind].skipped++;
+            console.warn(
+              `[reminders] volunteer event ${event.id} signup ${signupId}: missing opportunity or email — skipped`,
+            );
+            continue;
+          }
+          if (dry) {
+            volunteerTotals[kind].skipped++;
+            console.log(`[reminders] DRY volunteer event ${event.id} (${kind}): would send to ${email}`);
+            continue;
+          }
+
+          try {
+            const { data: claimed, error: claimError } = await supabase
+              .from("volunteer_signups")
+              .update({ [vColumn]: new Date().toISOString() })
+              .eq("id", signupId)
+              .is(vColumn, null)
+              .select("id");
+            if (claimError) throw claimError;
+            if (!claimed?.length) {
+              volunteerTotals[kind].skipped++;
+              continue;
+            }
+
+            const ctx: VolunteerShiftEmailContext = {
+              opportunityId: opportunity.id as number,
+              role: opportunity.role as string,
+              description: opportunity.description as string | null,
+              whatToBring: opportunity.what_to_bring as string | null,
+              shiftStart: opportunity.shift_start as string,
+              shiftEnd: opportunity.shift_end as string,
+              eventId: event.id,
+              eventName: event.name,
+              timezone: event.timezone,
+              location: event.location,
+              virtualLink: event.virtual_link,
+              virtualAccessNotes: event.virtual_access_notes,
+              leadEmail: event.lead_email,
+            };
+
+            try {
+              await sendVolunteerReminderEmail({ ctx, toEmail: email, kind });
+            } catch (sendErr) {
+              await supabase.from("volunteer_signups").update({ [vColumn]: null }).eq("id", signupId);
+              throw sendErr;
+            }
+            volunteerTotals[kind].sent++;
+            console.log(`[reminders] volunteer event ${event.id} (${kind}): sent to ${email}`);
+          } catch (err) {
+            volunteerTotals[kind].failed++;
+            console.error(
+              `[reminders] volunteer event ${event.id} (${kind}) signup ${signupId} failed:`,
+              err instanceof Error ? err.message : err,
+            );
+          }
+        }
+      }
+    }
   }
 
-  console.log("[reminders] done", { now: now.toISOString(), dry, totals });
-  return NextResponse.json({ ok: true, now: now.toISOString(), dry, totals });
+  console.log("[reminders] done", { now: now.toISOString(), dry, totals, volunteerTotals });
+  return NextResponse.json({ ok: true, now: now.toISOString(), dry, totals, volunteerTotals });
 }

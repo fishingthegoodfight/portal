@@ -28,7 +28,16 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
   if (!data) {
     notFound();
   }
-  const { event, roster, dietary } = data;
+  const { event, roster, dietary, volunteerRoster } = data;
+
+  // Grouped by role, preserving the roster's existing role-then-name sort
+  // (see loadEventRoster) — Map insertion order matches first-seen role order.
+  const volunteersByRole = new Map<string, typeof volunteerRoster>();
+  for (const v of volunteerRoster) {
+    const group = volunteersByRole.get(v.role) ?? [];
+    group.push(v);
+    volunteersByRole.set(v.role, group);
+  }
 
   return (
     <div className="flex-1 w-full flex flex-col gap-6 print:gap-4">
@@ -94,6 +103,43 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
       </table>
 
       {roster.length === 0 && <p className="text-sm text-muted-foreground">No RSVPs yet.</p>}
+
+      {volunteerRoster.length > 0 && (
+        <div className="flex flex-col gap-3 print:break-before-page">
+          <h2 className="text-lg font-bold">Volunteers ({volunteerRoster.length})</h2>
+          {[...volunteersByRole.entries()].map(([role, people]) => (
+            <table key={role} className="w-full border-collapse text-sm print:text-xs">
+              <thead>
+                <tr className="border-b-2 border-black text-left">
+                  <th className="py-2 pr-3 font-semibold" colSpan={4}>
+                    {role}
+                  </th>
+                </tr>
+                <tr className="border-b border-neutral-400 text-left">
+                  <th className="py-1 pr-3 font-semibold">Name</th>
+                  <th className="py-1 pr-3 font-semibold">Phone</th>
+                  <th className="py-1 pr-3 font-semibold">Shift</th>
+                  <th className="w-10 py-1 font-semibold">✓</th>
+                </tr>
+              </thead>
+              <tbody>
+                {people.map((person) => (
+                  <tr key={person.signupId} className="border-b border-neutral-300">
+                    <td className="py-2 pr-3">
+                      {person.firstName} {person.lastName}
+                    </td>
+                    <td className="py-2 pr-3">{person.phone || "—"}</td>
+                    <td className="py-2 pr-3">{person.shiftLabel}</td>
+                    <td className="py-2">
+                      <span className="inline-block h-4 w-4 border border-black" aria-hidden />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

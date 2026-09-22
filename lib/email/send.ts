@@ -3,7 +3,7 @@ import { Resend } from "resend";
 
 import { formatEventDateRange, formatEventInstant } from "@/lib/format-date";
 import { getSiteUrl } from "@/lib/site-url";
-import { buildEventIcs, buildGoogleCalendarLink } from "@/lib/email/ics";
+import { buildEventIcs, buildGoogleCalendarLink, icsUidForVolunteerShift } from "@/lib/email/ics";
 import {
   adminChangeNotificationEmail,
   cancellationEmail,
@@ -12,14 +12,19 @@ import {
   eventRestoredEmail,
   eventUpdateEmail,
   leadParticipantCancelledEmail,
+  leadVolunteerSignupChangeEmail,
   reminderEmail,
+  volunteerCancellationEmail,
   volunteerInviteEmail,
+  volunteerReminderEmail,
+  volunteerSignupConfirmationEmail,
   waitlistOfferEmail,
   waitlistOfferExpiredEmail,
   type ReminderKind,
   type EventChangeDiffEntry,
   type EventChangeAction,
   type RsvpEmailEventInfo,
+  type VolunteerShiftEmailInfo,
 } from "@/lib/email/templates";
 
 type EmailProvider = "resend" | "smtp";
@@ -495,4 +500,166 @@ export async function sendLeadParticipantCancelledEmail({
     offeredTo,
   });
   await deliverEmail({ to: event.lead_email, subject, html, text });
+}
+
+/**
+ * Everything a volunteer shift email (confirmation, cancellation, reminder,
+ * lead notification) needs — the shift's own times, not the event's, and
+ * the virtual link/notes always included (a confirmed volunteer signup is
+ * itself the "eligible to see it" gate — see checkVolunteerSignupEligibility
+ * in lib/volunteer-signups.ts for why there's no separate RSVP check here).
+ */
+export type VolunteerShiftEmailContext = {
+  opportunityId: number;
+  role: string;
+  description: string | null;
+  whatToBring: string | null;
+  /** ISO instants. */
+  shiftStart: string;
+  shiftEnd: string;
+  eventId: number;
+  eventName: string;
+  timezone: string;
+  location: string | null;
+  virtualLink: string | null;
+  virtualAccessNotes: string | null;
+  leadEmail: string | null;
+};
+
+function buildVolunteerShiftInfo(ctx: VolunteerShiftEmailContext): VolunteerShiftEmailInfo {
+  const icsEvent = {
+    id: ctx.opportunityId,
+    name: `${ctx.role} — ${ctx.eventName}`,
+    startsAt: ctx.shiftStart,
+    endsAt: ctx.shiftEnd,
+    timezone: ctx.timezone,
+    location: ctx.location,
+    virtualLink: ctx.virtualLink,
+    virtualAccessNotes: ctx.virtualAccessNotes,
+  };
+
+  return {
+    eventName: ctx.eventName,
+    role: ctx.role,
+    shiftDateRange: formatEventDateRange(ctx.shiftStart, ctx.shiftEnd, ctx.timezone),
+    description: ctx.description,
+    whatToBring: ctx.whatToBring,
+    location: ctx.location,
+    virtualLink: ctx.virtualLink,
+    virtualAccessNotes: ctx.virtualAccessNotes,
+    eventUrl: `${getSiteUrl()}/protected/events/${ctx.eventId}/rsvp`,
+    googleCalendarUrl: buildGoogleCalendarLink(icsEvent),
+  };
+}
+
+function buildVolunteerShiftIcsAttachment(
+  ctx: VolunteerShiftEmailContext,
+  method: "REQUEST" | "CANCEL",
+): { filename: string; content: string; contentType: string } {
+  const ics = buildEventIcs({
+    method,
+    // No persisted sequence counter for a shift (shift-time edits don't
+    // trigger a re-notification, out of scope here) — 0 for the original
+    // REQUEST, 1 for the CANCEL, enough for a calendar client to tell the
+    // CANCEL is the newer state for this UID.
+    sequence: method === "CANCEL" ? 1 : 0,
+    uid: icsUidForVolunteerShift(ctx.opportunityId),
+    event: {
+      id: ctx.opportunityId,
+      name: `${ctx.role} — ${ctx.eventName}`,
+      startsAt: ctx.shiftStart,
+      endsAt: ctx.shiftEnd,
+      timezone: ctx.timezone,
+      location: ctx.location,
+      virtualLink: ctx.virtualLink,
+      virtualAccessNotes: ctx.virtualAccessNotes,
+    },
+  });
+  return {
+    filename: method === "CANCEL" ? "cancel.ics" : "shift.ics",
+    content: Buffer.from(ics, "utf-8").toString("base64"),
+    contentType: `text/calendar; method=${method}; charset=UTF-8`,
+  };
+}
+
+/** Sent on a successful volunteer shift signup — a METHOD:REQUEST .ics for
+ * the shift's own times. Throws on failure — the caller (the signup action)
+ * decides how to surface that, same as the RSVP confirmation. */
+export async function sendVolunteerSignupConfirmationEmail({
+  ctx,
+  toEmail,
+}: {
+  ctx: VolunteerShiftEmailContext;
+  toEmail: string;
+}): Promise<void> {
+  const info = buildVolunteerShiftInfo(ctx);
+  const { subject, html, text } = volunteerSignupConfirmationEmail(info);
+  await deliverEmail({
+    to: toEmail,
+    subject,
+    html,
+    text,
+    attachments: [buildVolunteerShiftIcsAttachment(ctx, "REQUEST")],
+  });
+}
+
+/** Sent when a volunteer cancels their shift signup — a METHOD:CANCEL .ics,
+ * same UID as the confirmation. */
+export async function sendVolunteerCancellationEmail({
+  ctx,
+  toEmail,
+}: {
+  ctx: VolunteerShiftEmailContext;
+  toEmail: string;
+}): Promise<void> {
+  const info = buildVolunteerShiftInfo(ctx);
+  const { subject, html, text } = volunteerCancellationEmail(info);
+  await deliverEmail({
+    to: toEmail,
+    subject,
+    html,
+    text,
+    attachments: [buildVolunteerShiftIcsAttachment(ctx, "CANCEL")],
+  });
+}
+
+/** Pre-shift reminder (no .ics — the confirmation already carried it). Sent
+ * by /api/cron/reminders as a separate email from the participant reminder. */
+export async function sendVolunteerReminderEmail({
+  ctx,
+  toEmail,
+  kind,
+}: {
+  ctx: VolunteerShiftEmailContext;
+  toEmail: string;
+  kind: ReminderKind;
+}): Promise<void> {
+  const info = buildVolunteerShiftInfo(ctx);
+  const { subject, html, text } = volunteerReminderEmail(info, kind);
+  await deliverEmail({ to: toEmail, subject, html, text });
+}
+
+/** Internal heads-up to the event's lead (lead_email) when a volunteer signs
+ * up or cancels — a no-op when the event has no lead email, same as
+ * sendLeadParticipantCancelledEmail. */
+export async function sendLeadVolunteerSignupChangeEmail({
+  ctx,
+  volunteerName,
+  action,
+}: {
+  ctx: VolunteerShiftEmailContext;
+  /** "First Last <email>" or just the email. */
+  volunteerName: string;
+  action: "signed_up" | "cancelled";
+}): Promise<void> {
+  if (!ctx.leadEmail) return;
+  const { subject, html, text } = leadVolunteerSignupChangeEmail({
+    action,
+    volunteerName,
+    role: ctx.role,
+    eventName: ctx.eventName,
+    shiftDateRange: formatEventDateRange(ctx.shiftStart, ctx.shiftEnd, ctx.timezone),
+    eventAdminUrl: `${getSiteUrl()}/protected/admin/events/${ctx.eventId}`,
+  });
+  await deliverEmail({ to: ctx.leadEmail, subject, html, text });
 }

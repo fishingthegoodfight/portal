@@ -149,6 +149,23 @@ export async function resolveVolunteerWaiver(
   return waiver ? { kind: "ok", state, year, waiver } : { kind: "no_waiver", state, year };
 }
 
+/** Which waiver a volunteer SHIFT SIGNUP calls for: the active 'volunteer'
+ * waiver for the EVENT's own state and calendar year — not the volunteer's
+ * home chapter (that's resolveVolunteerWaiver, used at registration time).
+ * Someone with no local chapter volunteering at a Denver event still needs
+ * the Colorado volunteer waiver, same reasoning as the participant waiver
+ * following the event rather than the attendee. */
+export async function resolveVolunteerWaiverForEvent(
+  supabase: SupabaseClient,
+  event: WaiverEvent,
+): Promise<WaiverRequirement> {
+  const state = waiverStateForEvent(event);
+  if (!state) return { kind: "no_state" };
+  const year = eventYear(event.starts_at, event.timezone);
+  const waiver = await loadActiveWaiver(supabase, state, year, "volunteer");
+  return waiver ? { kind: "ok", state, year, waiver } : { kind: "no_waiver", state, year };
+}
+
 /** One user's signature on one waiver, if any. Always filtered by user_id —
  * admins can read everyone's signatures, so RLS alone isn't enough. */
 export async function loadSignature(
@@ -259,5 +276,22 @@ export async function waiverInfoForVolunteer(
     userId,
     timeZone,
     "Volunteer registration requires a waiver, but your home chapter isn't set to one we recognize. Please contact an organizer.",
+  );
+}
+
+/** What a volunteer SHIFT SIGNUP needs to know about the volunteer waiver
+ * for the event they're signing up at (see resolveVolunteerWaiverForEvent). */
+export async function waiverInfoForVolunteerAtEvent(
+  supabase: SupabaseClient,
+  event: WaiverEvent,
+  userId: string,
+): Promise<WaiverInfo> {
+  const requirement = await resolveVolunteerWaiverForEvent(supabase, event);
+  return waiverInfoFromRequirement(
+    supabase,
+    requirement,
+    userId,
+    event.timezone,
+    "Volunteering here requires a waiver but no waiver state is set for this event. Please contact an organizer.",
   );
 }

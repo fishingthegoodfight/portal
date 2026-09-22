@@ -16,6 +16,7 @@ import {
 } from "@/components/waiver-signing";
 import type { WaiverInfo } from "@/lib/waivers";
 import { adminOfferSpotAction, adminRemoveRsvpAction } from "@/lib/actions/admin-waitlist";
+import { adminAddVolunteerSignupAction } from "@/lib/actions/admin-volunteer-signup";
 import { CancelEventDialog } from "@/components/admin/cancel-event-dialog";
 import { RestoreEventDialog } from "@/components/admin/restore-event-dialog";
 import { SaveAsTemplateButton } from "@/components/admin/save-as-template-button";
@@ -24,6 +25,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 import { RegistrationFieldInput } from "@/components/registration-fields";
 import { HomeChapterField } from "@/components/chapter-select";
 import { formatPhoneNumber } from "@/lib/phone";
@@ -38,6 +40,8 @@ import type {
   RosterDietary,
   RosterPerson,
   RosterWaiver,
+  VolunteerRoleSummary,
+  VolunteerRosterPerson,
   WaitlistPerson,
 } from "@/lib/admin/roster";
 
@@ -77,6 +81,8 @@ export function EventRoster({
   registrationSectionIds,
   virtualLink,
   virtualAccessNotes,
+  volunteerRoles,
+  initialVolunteerRoster,
 }: {
   eventId: number;
   eventCard: EventCardEvent;
@@ -94,6 +100,10 @@ export function EventRoster({
    * RSVP), an admin managing the event always sees it. */
   virtualLink: string | null;
   virtualAccessNotes: string | null;
+  /** Every volunteer role at the event, filled vs needed — empty when the
+   * event has none. */
+  volunteerRoles: VolunteerRoleSummary[];
+  initialVolunteerRoster: VolunteerRosterPerson[];
 }) {
   const router = useRouter();
   const isCancelled = status === "cancelled";
@@ -109,6 +119,14 @@ export function EventRoster({
   const waitlist = initialWaitlist;
   const [busyRsvpId, setBusyRsvpId] = useState<number | null>(null);
   const [waitlistError, setWaitlistError] = useState<string | null>(null);
+
+  const [volunteerRoster, setVolunteerRoster] = useState<VolunteerRosterPerson[]>(
+    initialVolunteerRoster,
+  );
+  useEffect(() => {
+    setVolunteerRoster(initialVolunteerRoster);
+  }, [initialVolunteerRoster]);
+  const [volunteerCheckInError, setVolunteerCheckInError] = useState<string | null>(null);
 
   // eventCard.spots_taken already includes spots held by open offers, so
   // this is what's genuinely free to offer right now.
@@ -174,6 +192,18 @@ export function EventRoster({
   const [walkupError, setWalkupError] = useState<string | null>(null);
   const [isSubmittingWalkup, setIsSubmittingWalkup] = useState(false);
   const [capacityConfirmPending, setCapacityConfirmPending] = useState(false);
+
+  const [showAddVolunteerForm, setShowAddVolunteerForm] = useState(false);
+  const [addVolunteerEmail, setAddVolunteerEmail] = useState("");
+  const [addVolunteerOpportunityId, setAddVolunteerOpportunityId] = useState("");
+  const [addVolunteerError, setAddVolunteerError] = useState<string | null>(null);
+  const [isAddingVolunteer, setIsAddingVolunteer] = useState(false);
+  // Set once the action reports something that needs an explicit override —
+  // "not approved for this role" or "shift is full" — then cleared on any
+  // further edit, same two-step confirm shape as the walk-up capacity flow.
+  const [addVolunteerConfirm, setAddVolunteerConfirm] = useState<"not_approved" | "capacity" | null>(
+    null,
+  );
   // The event's own sections the walk-up form collects — the same catalog-
   // driven sections the RSVP form shows. The emergency contact and directory
   // choice have their own fields above; the waiver has its own block below.
@@ -270,6 +300,31 @@ export function EventRoster({
     }
   };
 
+  const toggleVolunteerCheckIn = async (person: VolunteerRosterPerson) => {
+    setVolunteerCheckInError(null);
+    const previous = person.checkedInAt;
+    const next = previous ? null : new Date().toISOString();
+
+    setVolunteerRoster((prev) =>
+      prev.map((p) => (p.signupId === person.signupId ? { ...p, checkedInAt: next } : p)),
+    );
+
+    const supabase = createClient();
+    const { error } = await supabase
+      .from("volunteer_signups")
+      .update({ checked_in_at: next })
+      .eq("id", person.signupId);
+
+    if (error) {
+      setVolunteerRoster((prev) =>
+        prev.map((p) => (p.signupId === person.signupId ? { ...p, checkedInAt: previous } : p)),
+      );
+      setVolunteerCheckInError(
+        `Couldn't update check-in for ${person.firstName} ${person.lastName}: ${error.message}`,
+      );
+    }
+  };
+
   const openWalkupForm = () => {
     setWalkupForm(EMPTY_WALKUP_FORM);
     setWalkupError(null);
@@ -357,6 +412,56 @@ export function EventRoster({
     router.refresh();
   };
 
+  const openAddVolunteerForm = () => {
+    setAddVolunteerEmail("");
+    setAddVolunteerOpportunityId(volunteerRoles[0] ? String(volunteerRoles[0].opportunityId) : "");
+    setAddVolunteerError(null);
+    setAddVolunteerConfirm(null);
+    setShowAddVolunteerForm(true);
+  };
+
+  const closeAddVolunteerForm = () => {
+    if (isAddingVolunteer) return;
+    setShowAddVolunteerForm(false);
+  };
+
+  const submitAddVolunteer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsAddingVolunteer(true);
+    setAddVolunteerError(null);
+
+    const result = await adminAddVolunteerSignupAction({
+      opportunityId: Number(addVolunteerOpportunityId),
+      email: addVolunteerEmail,
+      overrideApproval: addVolunteerConfirm === "not_approved",
+      forceCapacity: addVolunteerConfirm === "capacity",
+    });
+
+    setIsAddingVolunteer(false);
+
+    if (!result.ok) {
+      setAddVolunteerError(result.error);
+      return;
+    }
+    if (result.status === "not_approved") {
+      setAddVolunteerConfirm("not_approved");
+      setAddVolunteerError(
+        result.approvedForRole
+          ? "This person is an approved volunteer but not for this specific role."
+          : "This person isn't an approved volunteer.",
+      );
+      return;
+    }
+    if (result.status === "capacity_exceeded") {
+      setAddVolunteerConfirm("capacity");
+      setAddVolunteerError("This shift is full.");
+      return;
+    }
+
+    setShowAddVolunteerForm(false);
+    router.refresh();
+  };
+
   return (
     <div className="flex flex-col gap-6">
       <EventCard event={eventCard} rsvpStatus={null} />
@@ -401,6 +506,11 @@ export function EventRoster({
             eventChapter={eventCard.chapter}
           />
           {!isCancelled && <Button onClick={openWalkupForm}>Add walk-up</Button>}
+          {!isCancelled && volunteerRoles.length > 0 && (
+            <Button variant="outline" onClick={openAddVolunteerForm}>
+              Add volunteer
+            </Button>
+          )}
           {isCancelled ? (
             <RestoreEventDialog
               eventId={eventId}
@@ -547,6 +657,122 @@ export function EventRoster({
           )}
         </CardContent>
       </Card>
+
+      {volunteerRoles.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Volunteers</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <div className="flex flex-wrap gap-2">
+              {volunteerRoles.map((role) => (
+                <span
+                  key={role.opportunityId}
+                  className="rounded-full border px-3 py-1 text-xs text-muted-foreground"
+                >
+                  {role.role}: {role.slotsTaken}/{role.slots} filled
+                </span>
+              ))}
+            </div>
+
+            {volunteerCheckInError && (
+              <p className="text-sm text-red-500">{volunteerCheckInError}</p>
+            )}
+
+            {volunteerRoster.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No one has signed up yet.</p>
+            ) : (
+              <ul>
+                {volunteerRoster.map((person) => (
+                  <VolunteerRosterRow
+                    key={person.signupId}
+                    person={person}
+                    onToggleCheckIn={toggleVolunteerCheckIn}
+                  />
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {showAddVolunteerForm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <Card className="max-h-[90vh] w-full max-w-sm overflow-y-auto sm:max-w-md">
+            <form onSubmit={submitAddVolunteer}>
+              <CardHeader>
+                <CardTitle>Add volunteer</CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="add_volunteer_role">Role</Label>
+                  <Select
+                    id="add_volunteer_role"
+                    value={addVolunteerOpportunityId}
+                    onChange={(e) => {
+                      setAddVolunteerOpportunityId(e.target.value);
+                      setAddVolunteerConfirm(null);
+                      setAddVolunteerError(null);
+                    }}
+                  >
+                    {volunteerRoles.map((role) => (
+                      <option key={role.opportunityId} value={role.opportunityId}>
+                        {role.role} ({role.slotsTaken}/{role.slots} filled)
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="add_volunteer_email">Email</Label>
+                  <Input
+                    id="add_volunteer_email"
+                    type="email"
+                    inputMode="email"
+                    autoComplete="email"
+                    required
+                    autoFocus
+                    value={addVolunteerEmail}
+                    onChange={(e) => {
+                      setAddVolunteerEmail(e.target.value);
+                      setAddVolunteerConfirm(null);
+                      setAddVolunteerError(null);
+                    }}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    They need an existing account — this doesn&apos;t create one, unlike the
+                    participant walk-up flow.
+                  </p>
+                </div>
+                {addVolunteerConfirm && (
+                  <p className="text-sm text-amber-600">
+                    {addVolunteerConfirm === "not_approved"
+                      ? "Add them anyway?"
+                      : "Add them anyway, over capacity?"}
+                  </p>
+                )}
+                {addVolunteerError && <p className="text-sm text-red-500">{addVolunteerError}</p>}
+              </CardContent>
+              <CardFooter className="flex justify-end gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={closeAddVolunteerForm}
+                  disabled={isAddingVolunteer}
+                >
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={isAddingVolunteer}>
+                  {isAddingVolunteer
+                    ? "Adding..."
+                    : addVolunteerConfirm
+                      ? "Add anyway"
+                      : "Add volunteer"}
+                </Button>
+              </CardFooter>
+            </form>
+          </Card>
+        </div>
+      )}
 
       {showWalkupForm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
@@ -896,6 +1122,38 @@ function RosterRow({
           {person.checkedInAt ? "✓ Checked in" : "Check in"}
         </button>
       </div>
+    </li>
+  );
+}
+
+function VolunteerRosterRow({
+  person,
+  onToggleCheckIn,
+}: {
+  person: VolunteerRosterPerson;
+  onToggleCheckIn: (person: VolunteerRosterPerson) => void;
+}) {
+  return (
+    <li className="flex flex-col gap-1 border-b py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-0.5">
+        <span className="font-medium">
+          {person.firstName} {person.lastName} · {person.role}
+        </span>
+        <span className="text-sm text-muted-foreground">{person.shiftLabel}</span>
+        <span className="text-sm text-muted-foreground">{person.phone || "—"}</span>
+      </div>
+      <button
+        type="button"
+        onClick={() => onToggleCheckIn(person)}
+        className={cn(
+          "flex h-11 min-w-32 shrink-0 items-center justify-center rounded-md px-4 text-sm font-semibold transition-colors",
+          person.checkedInAt
+            ? "bg-green-600 text-white hover:bg-green-700"
+            : "border border-input bg-background hover:bg-accent",
+        )}
+      >
+        {person.checkedInAt ? "✓ Checked in" : "Check in"}
+      </button>
     </li>
   );
 }

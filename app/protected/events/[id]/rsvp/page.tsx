@@ -5,9 +5,16 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { RsvpForm } from "@/components/rsvp-form";
 import { EventCard } from "@/components/event-card";
+import { VolunteerSignupSection, type EligibleVolunteerRole } from "@/components/volunteer-signup-section";
 import { Button } from "@/components/ui/button";
 import { formatEventDateRange, formatEventInstant } from "@/lib/format-date";
-import { waiverInfoForUser } from "@/lib/waivers";
+import { waiverInfoForUser, waiverInfoForVolunteerAtEvent, type WaiverInfo } from "@/lib/waivers";
+import {
+  approvedRoleTypeIds,
+  eligibleOpportunities,
+  isApprovedVolunteer,
+  type VolunteerOpportunity,
+} from "@/lib/volunteer-signups";
 import {
   profileValueFromColumn,
   REGISTRATION_SECTIONS,
@@ -115,6 +122,63 @@ async function RsvpLoader({
   // to this event (state + year) and whether this user has signed it.
   const waiver = await waiverInfoForUser(supabase, event, userId);
 
+  // Volunteer signups are independent of RSVPing — computed regardless of
+  // activeRsvp above. Only rendered at all when the event actually has
+  // volunteer roles (see lib/volunteer-signups.ts).
+  const { data: opportunities } = await supabase
+    .from("volunteer_opportunities")
+    .select(
+      "id, event_id, role, description, what_to_bring, role_type_id, shift_start, shift_end, slots, slots_taken",
+    )
+    .eq("event_id", eventId);
+
+  let volunteerSection: React.ReactNode = null;
+  if (opportunities && opportunities.length > 0) {
+    const approvedVolunteer = await isApprovedVolunteer(supabase, userId);
+    let eligibleRoles: EligibleVolunteerRole[] = [];
+    let volunteerWaiver: WaiverInfo = { status: "unavailable", message: "" };
+
+    if (approvedVolunteer) {
+      const approvedTypes = await approvedRoleTypeIds(supabase, userId);
+      const eligible = eligibleOpportunities(opportunities as VolunteerOpportunity[], approvedTypes);
+
+      const { data: signups } = await supabase
+        .from("volunteer_signups")
+        .select("opportunity_id, status")
+        .eq("user_id", userId)
+        .in(
+          "opportunity_id",
+          eligible.map((o) => o.id),
+        );
+      const signedUpIds = new Set(
+        (signups ?? [])
+          .filter((s) => s.status === "confirmed")
+          .map((s) => s.opportunity_id as number),
+      );
+
+      eligibleRoles = eligible.map((o) => ({
+        id: o.id,
+        role: o.role,
+        description: o.description,
+        whatToBring: o.what_to_bring,
+        shiftDateRange: formatEventDateRange(o.shift_start, o.shift_end, event.timezone),
+        spotsRemaining: Math.max(o.slots - o.slots_taken, 0),
+        signedUp: signedUpIds.has(o.id),
+      }));
+
+      volunteerWaiver = await waiverInfoForVolunteerAtEvent(supabase, event, userId);
+    }
+
+    volunteerSection = (
+      <VolunteerSignupSection
+        eventId={event.id}
+        isApprovedVolunteer={approvedVolunteer}
+        eligibleRoles={eligibleRoles}
+        waiver={volunteerWaiver}
+      />
+    );
+  }
+
   // Every registration field's current value, keyed by its profile column —
   // formatted (e.g. the phone mask) in case a stored value predates that
   // formatting, same as the profile page does for its own initial values.
@@ -126,6 +190,7 @@ async function RsvpLoader({
   }
 
   return (
+    <div className="flex flex-col gap-8">
     <RsvpForm
       userId={userId}
       event={{
@@ -174,6 +239,8 @@ async function RsvpLoader({
       offerLapsed={offerLapsed}
       waiver={waiver}
     />
+    {volunteerSection}
+    </div>
   );
 }
 

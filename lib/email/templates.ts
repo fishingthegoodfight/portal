@@ -688,3 +688,217 @@ export function leadParticipantCancelledEmail({
 
   return { subject, html, text };
 }
+
+/**
+ * What a volunteer shift email (confirmation, cancellation, reminder) needs.
+ * Distinct from RsvpEmailEventInfo — this is about the SHIFT, not the whole
+ * event: shiftDateRange is the role's own shift_start/shift_end, not the
+ * event's start/end, and there's no waitlist/lead-contact concept here (no
+ * volunteer waitlist yet).
+ */
+export type VolunteerShiftEmailInfo = {
+  eventName: string;
+  role: string;
+  /** Pre-formatted in the event's own timezone — see lib/format-date.ts. */
+  shiftDateRange: string;
+  description: string | null;
+  whatToBring: string | null;
+  location: string | null;
+  /** Always included when set — unlike the participant confirmation, a
+   * confirmed volunteer signup is itself the "eligible to see it" gate, no
+   * separate RSVP status to check (see lib/email/send.ts). */
+  virtualLink: string | null;
+  virtualAccessNotes: string | null;
+  eventUrl: string;
+  googleCalendarUrl: string;
+};
+
+function volunteerWhereHtml(info: VolunteerShiftEmailInfo): string {
+  return [
+    info.location
+      ? `<p style="margin:0 0 16px;"><strong>Where:</strong> ${escapeHtml(info.location)}</p>`
+      : "",
+    info.virtualLink
+      ? `<p style="margin:0 0 4px;"><strong>Join online:</strong> <a href="${escapeHtml(info.virtualLink)}" style="color:#166534;">${escapeHtml(info.virtualLink)}</a></p>`
+      : "",
+    info.virtualLink && info.virtualAccessNotes
+      ? `<p style="margin:0 0 16px;">${htmlWithLineBreaks(info.virtualAccessNotes)}</p>`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function volunteerWhereText(info: VolunteerShiftEmailInfo): string {
+  return [
+    info.location ? `Where: ${info.location}` : "",
+    info.virtualLink ? `Join online: ${info.virtualLink}` : "",
+    info.virtualLink ? (info.virtualAccessNotes ?? "") : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Sent when someone signs up for a volunteer shift — carries a
+ * METHOD:REQUEST .ics for the SHIFT's own times, not the event's. */
+export function volunteerSignupConfirmationEmail(info: VolunteerShiftEmailInfo): RenderedEmail {
+  const subject = `You're signed up to volunteer: ${info.role} — ${info.eventName}`;
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">You're signed up to volunteer!</p>`,
+      `<p style="margin:0 0 16px;"><strong>${escapeHtml(info.role)}</strong> at <strong>${escapeHtml(info.eventName)}</strong>.</p>`,
+      `<p style="margin:0 0 4px;"><strong>Shift:</strong> ${escapeHtml(info.shiftDateRange)}</p>`,
+      volunteerWhereHtml(info),
+      info.whatToBring
+        ? `<p style="margin:0 0 16px;"><strong>What to bring or wear:</strong> ${escapeHtml(info.whatToBring)}</p>`
+        : "",
+      info.description ? `<p style="margin:0 0 16px;">${htmlWithLineBreaks(info.description)}</p>` : "",
+      `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">View event</a></p>`,
+      `<p style="margin:8px 0 16px;font-size:13px;"><a href="${info.googleCalendarUrl}" style="color:#166534;">Add to Google Calendar</a></p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Can't make it? Visit the event page above and cancel your volunteer signup.</p>`,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+
+  const text = [
+    "You're signed up to volunteer!",
+    "",
+    `${info.role} at ${info.eventName}.`,
+    "",
+    `Shift: ${info.shiftDateRange}`,
+    volunteerWhereText(info),
+    info.whatToBring ? `What to bring or wear: ${info.whatToBring}` : "",
+    info.description ?? "",
+    "",
+    `Event page: ${info.eventUrl}`,
+    `Add to Google Calendar: ${info.googleCalendarUrl}`,
+    "",
+    "Can't make it? Visit the event page and cancel your volunteer signup.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return { subject, html, text };
+}
+
+/** Sent when a volunteer cancels their shift signup — carries a
+ * METHOD:CANCEL .ics, same UID as the confirmation. */
+export function volunteerCancellationEmail(info: VolunteerShiftEmailInfo): RenderedEmail {
+  const subject = `Volunteer signup cancelled: ${info.role} — ${info.eventName}`;
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">Your volunteer signup has been cancelled</p>`,
+      `<p style="margin:0 0 16px;">You're no longer signed up for <strong>${escapeHtml(info.role)}</strong> at <strong>${escapeHtml(info.eventName)}</strong> (${escapeHtml(info.shiftDateRange)}).</p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Changed your mind? <a href="${info.eventUrl}" style="color:#166534;">Sign up again</a> if a spot is still open.</p>`,
+    ].join("\n"),
+  );
+
+  const text = [
+    "Your volunteer signup has been cancelled",
+    "",
+    `You're no longer signed up for ${info.role} at ${info.eventName} (${info.shiftDateRange}).`,
+    "",
+    `Changed your mind? Sign up again if a spot is still open: ${info.eventUrl}`,
+  ].join("\n");
+
+  return { subject, html, text };
+}
+
+/**
+ * Pre-shift reminder (1 week / 1 day out — same cron pass and window as the
+ * participant reminder, a separate email). No .ics — the confirmation
+ * already carried it.
+ */
+export function volunteerReminderEmail(
+  info: VolunteerShiftEmailInfo,
+  kind: ReminderKind,
+): RenderedEmail {
+  const when = kind === "1week" ? "one week from now" : "tomorrow";
+  const subject =
+    kind === "1week"
+      ? `Volunteering in one week: ${info.role} — ${info.eventName}`
+      : `Volunteering tomorrow: ${info.role} — ${info.eventName}`;
+  const heading = kind === "1week" ? "Your volunteer shift is in a week" : "Your volunteer shift is tomorrow";
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">${heading}</p>`,
+      `<p style="margin:0 0 16px;">A reminder that you're volunteering as <strong>${escapeHtml(info.role)}</strong> at <strong>${escapeHtml(info.eventName)}</strong> ${when}.</p>`,
+      `<p style="margin:0 0 4px;"><strong>Shift:</strong> ${escapeHtml(info.shiftDateRange)}</p>`,
+      volunteerWhereHtml(info),
+      info.whatToBring
+        ? `<p style="margin:0 0 16px;"><strong>What to bring or wear:</strong> ${escapeHtml(info.whatToBring)}</p>`
+        : "",
+      `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">View event</a></p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Can't make it? Please let us know: visit the event page above and cancel your volunteer signup.</p>`,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+
+  const text = [
+    heading,
+    "",
+    `A reminder that you're volunteering as ${info.role} at ${info.eventName} ${when}.`,
+    "",
+    `Shift: ${info.shiftDateRange}`,
+    volunteerWhereText(info),
+    info.whatToBring ? `What to bring or wear: ${info.whatToBring}` : "",
+    "",
+    `Event page: ${info.eventUrl}`,
+    "",
+    "Can't make it? Please let us know: visit the event page and cancel your volunteer signup.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return { subject, html, text };
+}
+
+/** Internal heads-up to an event's lead (lead_email) when someone signs up
+ * for or cancels a volunteer shift — mirrors leadParticipantCancelledEmail
+ * above. `action` selects the copy; a no-op when the event has no lead
+ * email is the caller's job (see lib/email/send.ts). */
+export function leadVolunteerSignupChangeEmail({
+  action,
+  volunteerName,
+  role,
+  eventName,
+  shiftDateRange,
+  eventAdminUrl,
+}: {
+  action: "signed_up" | "cancelled";
+  /** "First Last <email>" — see actorLabel-style formatting, or just the email. */
+  volunteerName: string;
+  role: string;
+  eventName: string;
+  shiftDateRange: string;
+  eventAdminUrl: string;
+}): RenderedEmail {
+  const verb = action === "signed_up" ? "signed up for" : "cancelled";
+  const subject =
+    action === "signed_up"
+      ? `Volunteer signed up: ${role} — ${eventName}`
+      : `Volunteer cancelled: ${role} — ${eventName}`;
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">A volunteer ${verb} a shift</p>`,
+      `<p style="margin:0 0 16px;"><strong>${escapeHtml(volunteerName)}</strong> ${verb} <strong>${escapeHtml(role)}</strong> at <strong>${escapeHtml(eventName)}</strong> (${escapeHtml(shiftDateRange)}).</p>`,
+      `<p style="margin:16px 0 0;font-size:13px;"><a href="${eventAdminUrl}" style="color:#166534;">View event roster</a></p>`,
+    ].join("\n"),
+  );
+
+  const text = [
+    `A volunteer ${verb} a shift`,
+    "",
+    `${volunteerName} ${verb} ${role} at ${eventName} (${shiftDateRange}).`,
+    "",
+    `View event roster: ${eventAdminUrl}`,
+  ].join("\n");
+
+  return { subject, html, text };
+}

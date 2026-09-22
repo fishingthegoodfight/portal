@@ -2553,3 +2553,294 @@ alter table public.event_template_roles
 update public.event_template_roles
   set shift_end_offset = 0
   where shift_end_anchor = 'event_end';
+
+-- =============================================================================
+-- 2026-09-22 — Volunteer signups for events
+-- =============================================================================
+-- volunteer_signups was one of the 5 Phase 0 tables, but had 0 rows and a
+-- shape ('pending' status, notes, no cancelled_at/checked_in_at) nothing in
+-- the app ever wrote to — confirmed empty before dropping and recreating it
+-- to the shape this feature actually needs. volunteer_opportunities has real
+-- rows, so it's altered in place, not recreated; capacity uses its existing
+-- slots / slots_taken columns (not a new "number needed" column), following
+-- the exact same atomic claim pattern as try_claim_event_spot for RSVPs.
+--
+-- No volunteer waitlist or shift swaps yet — a full shift is just "full",
+-- same message either way, no queue.
+--
+-- Eligibility (volunteers.status = 'approved', an active
+-- volunteer_role_approvals row for the role's role_type_id — or, for a
+-- role_type_id-less "Custom / other" opportunity, any approved volunteer —
+-- and a signed volunteer waiver for the EVENT's state/year) is enforced in
+-- the server action layer (lib/actions/volunteer-signup.ts), the same way
+-- the RSVP waiver check already is — see confirmRsvpAction in
+-- lib/actions/rsvp.ts. The RPCs below only own the atomic capacity claim,
+-- same division of responsibility as rsvp_to_event / try_claim_event_spot.
+--
+-- volunteer_opportunities.is_published is never set true by any code path
+-- (confirmed unused before writing this) — deliberately NOT gated on here,
+-- same as the rest of the app already treats it.
+
+drop table if exists public.volunteer_signups;
+
+create table public.volunteer_signups (
+  id bigserial primary key,
+  opportunity_id bigint not null references public.volunteer_opportunities(id) on delete cascade,
+  -- References profiles(id), not auth.users(id) — matches the rest of the
+  -- volunteer registry (volunteers.user_id, volunteer_role_approvals.volunteer_id).
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  status text not null default 'confirmed' check (status in ('confirmed', 'cancelled')),
+  signed_up_at timestamptz not null default now(),
+  cancelled_at timestamptz,
+  checked_in_at timestamptz,
+  -- Reminder dedup, same purpose as rsvps.sent_1week_at/sent_1day_at — a
+  -- volunteer reminder rides the same cron pass and event-level day-out
+  -- window as the participant one, just with the shift's own content.
+  sent_1week_at timestamptz,
+  sent_1day_at timestamptz,
+  unique (opportunity_id, user_id)
+);
+
+create index volunteer_signups_opportunity_idx on public.volunteer_signups (opportunity_id);
+create index volunteer_signups_user_idx on public.volunteer_signups (user_id);
+
+alter table public.volunteer_signups enable row level security;
+
+create policy volunteer_signups_select_own on public.volunteer_signups
+  for select to authenticated
+  using (user_id = auth.uid());
+
+create policy volunteer_signups_select_admin on public.volunteer_signups
+  for select to authenticated
+  using (public.is_admin());
+
+-- Lets the check-in toggle update checked_in_at directly from the browser
+-- client, same instant-feeling pattern as admin_update_rsvps.
+create policy volunteer_signups_update_admin on public.volunteer_signups
+  for update to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+revoke all on public.volunteer_signups from anon;
+grant select, update on public.volunteer_signups to authenticated;
+grant usage, select on sequence public.volunteer_signups_id_seq to authenticated;
+grant all on public.volunteer_signups to service_role;
+grant usage, select on sequence public.volunteer_signups_id_seq to service_role;
+
+-- Atomic capacity claim on volunteer_opportunities.slots_taken — same shape
+-- as try_claim_event_spot on events.spots_taken. Internal only (called from
+-- the two functions below, not directly by the client).
+create or replace function public.try_claim_volunteer_slot(p_opportunity_id bigint)
+returns boolean
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  update public.volunteer_opportunities vo
+     set slots_taken = vo.slots_taken + 1
+    from public.events e
+   where vo.id = p_opportunity_id
+     and vo.event_id = e.id
+     and coalesce(e.is_published, false)
+     and coalesce(e.status, 'scheduled') = 'scheduled'
+     and vo.slots_taken < vo.slots;
+  return found;
+end $function$;
+
+revoke all on function public.try_claim_volunteer_slot(bigint) from public, anon, authenticated;
+grant execute on function public.try_claim_volunteer_slot(bigint) to service_role;
+
+-- The "Sign up" button on the event page. Eligibility is already checked by
+-- the caller (see lib/actions/volunteer-signup.ts) — this only owns the
+-- atomic capacity claim and the upsert, same shape as rsvp_to_event.
+-- Re-signing up after cancelling reclaims a slot and clears checked_in_at
+-- (a fresh signup, not still checked in from before).
+create or replace function public.sign_up_for_volunteer_shift(p_opportunity_id bigint)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  v_existing_status text;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  select status into v_existing_status
+    from public.volunteer_signups
+   where opportunity_id = p_opportunity_id and user_id = v_uid;
+
+  if v_existing_status = 'confirmed' then
+    return 'confirmed';
+  end if;
+
+  if not public.try_claim_volunteer_slot(p_opportunity_id) then
+    return 'full';
+  end if;
+
+  insert into public.volunteer_signups (opportunity_id, user_id, status, signed_up_at, cancelled_at, checked_in_at)
+  values (p_opportunity_id, v_uid, 'confirmed', now(), null, null)
+  on conflict (opportunity_id, user_id)
+  do update set status = 'confirmed',
+                signed_up_at = now(),
+                cancelled_at = null,
+                checked_in_at = null;
+
+  return 'confirmed';
+end $function$;
+
+revoke all on function public.sign_up_for_volunteer_shift(bigint) from public, anon;
+grant execute on function public.sign_up_for_volunteer_shift(bigint) to authenticated;
+
+-- The "Cancel" button — frees the slot back. Returns 'cancelled' or
+-- 'not_signed_up' (nothing to cancel, e.g. a double-click).
+create or replace function public.cancel_volunteer_signup(p_opportunity_id bigint)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  v_status text;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  select status into v_status
+    from public.volunteer_signups
+   where opportunity_id = p_opportunity_id and user_id = v_uid;
+
+  if v_status is distinct from 'confirmed' then
+    return 'not_signed_up';
+  end if;
+
+  update public.volunteer_signups
+     set status = 'cancelled', cancelled_at = now()
+   where opportunity_id = p_opportunity_id and user_id = v_uid;
+
+  update public.volunteer_opportunities
+     set slots_taken = greatest(slots_taken - 1, 0)
+   where id = p_opportunity_id;
+
+  return 'cancelled';
+end $function$;
+
+revoke all on function public.cancel_volunteer_signup(bigint) from public, anon;
+grant execute on function public.cancel_volunteer_signup(bigint) to authenticated;
+
+-- Admin "add a volunteer" (the walk-up equivalent) — approval eligibility is
+-- checked by the caller, same as the participant path; p_force overrides
+-- capacity only (mirrors admin_upsert_walkup_rsvp's p_force), returning
+-- 'capacity_exceeded' without writing anything until the admin confirms.
+create or replace function public.admin_add_volunteer_signup(
+  p_opportunity_id bigint,
+  p_user_id uuid,
+  p_force boolean default false
+)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_existing_status text;
+  v_claimed boolean;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can add a volunteer signup';
+  end if;
+
+  select status into v_existing_status
+    from public.volunteer_signups
+   where opportunity_id = p_opportunity_id and user_id = p_user_id;
+
+  if v_existing_status = 'confirmed' then
+    return 'confirmed';
+  end if;
+
+  v_claimed := public.try_claim_volunteer_slot(p_opportunity_id);
+
+  if not v_claimed and not p_force then
+    return 'capacity_exceeded';
+  end if;
+
+  if not v_claimed and p_force then
+    update public.volunteer_opportunities
+       set slots_taken = slots_taken + 1
+     where id = p_opportunity_id;
+  end if;
+
+  insert into public.volunteer_signups (opportunity_id, user_id, status, signed_up_at, cancelled_at, checked_in_at)
+  values (p_opportunity_id, p_user_id, 'confirmed', now(), null, null)
+  on conflict (opportunity_id, user_id)
+  do update set status = 'confirmed',
+                signed_up_at = now(),
+                cancelled_at = null,
+                checked_in_at = null;
+
+  return 'confirmed';
+end $function$;
+
+revoke all on function public.admin_add_volunteer_signup(bigint, uuid, boolean) from public, anon;
+grant execute on function public.admin_add_volunteer_signup(bigint, uuid, boolean) to authenticated;
+
+-- =============================================================================
+-- 2026-09-22 — Volunteers can read their own role approvals (+ role types,
+-- + opportunities for published events / their own shifts)
+-- =============================================================================
+-- volunteer_role_approvals and volunteer_role_types were admin-only for
+-- SELECT, so every volunteer-facing read of them through the user's own
+-- (RLS-bound) client came back empty: the /protected/volunteer "Approved
+-- roles" card, the event page's eligible-roles filter (approvedRoleTypeIds),
+-- and — because eligibility is checked in the server action with that same
+-- client, not inside the SECURITY DEFINER RPC — the signup action itself,
+-- which rejected every role-typed shift with "not approved for this role".
+--
+-- Additive SELECT policies only; the admin policies are unchanged and still
+-- the only INSERT/UPDATE path. No recursion: the role-types policy reads
+-- volunteer_role_approvals, whose policies never read volunteer_role_types.
+
+create policy volunteer_role_approvals_select_own on public.volunteer_role_approvals
+  for select to authenticated
+  using (volunteer_id = auth.uid());
+
+-- Only the role types this volunteer holds (or held) an approval for — the
+-- rest of the catalog stays admin-only.
+create policy volunteer_role_types_select_own_approved on public.volunteer_role_types
+  for select to authenticated
+  using (
+    exists (
+      select 1 from public.volunteer_role_approvals a
+       where a.role_type_id = volunteer_role_types.id
+         and a.volunteer_id = auth.uid()
+    )
+  );
+
+-- volunteer_opportunities' only SELECT policy added after Phase 0 is
+-- admin_select_volunteer_opportunities; the Phase 0 one isn't in this log.
+-- The event page's Volunteer section, the signup/cancel actions, and the
+-- volunteer home page's "Your shifts" join all read this table with the
+-- user's client. Any signed-in user may see the roles on a published event
+-- (the event page shows them the section either way), and a volunteer can
+-- always see an opportunity they've signed up for, even after its event is
+-- unpublished. Permissive, so harmless if Phase 0 already allows this.
+create policy volunteer_opportunities_select_published_or_own on public.volunteer_opportunities
+  for select to authenticated
+  using (
+    exists (
+      select 1 from public.events e
+       where e.id = volunteer_opportunities.event_id
+         and coalesce(e.is_published, false)
+    )
+    or exists (
+      select 1 from public.volunteer_signups s
+       where s.opportunity_id = volunteer_opportunities.id
+         and s.user_id = auth.uid()
+    )
+  );
