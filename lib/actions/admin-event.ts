@@ -3,7 +3,21 @@
 import { createClient } from "@/lib/supabase/server";
 import { actorLabel, requireAdmin } from "@/lib/admin/require-admin";
 import { formatEventDateRange } from "@/lib/format-date";
-import { zonedDateTimeToUtc } from "@/lib/timezone";
+import { toZonedDateTimeInputs, zonedDateTimeToUtc } from "@/lib/timezone";
+import {
+  cancelEventVolunteerSignups,
+  countSignupsCancelledWithEvent,
+  emailVolunteersEventRestored,
+  executeRoleOps,
+  loadActiveRoles,
+  planEventRoles,
+  planSiblingRoles,
+  type EditableVolunteerRole,
+  type ExistingRole,
+  type RoleOp,
+  type RolePlan,
+} from "@/lib/admin/event-roles";
+import { laterOccurrenceIds, peopleByEvent, sumPeople, type EditScope } from "@/lib/admin/series";
 import {
   isSectionComplete,
   profileValueFromColumn,
@@ -58,10 +72,12 @@ type EventRow = {
   ics_sequence: number;
   status: string;
   cancellation_reason: string | null;
+  cancelled_at: string | null;
+  series_id: string | null;
 };
 
 const EVENT_COLUMNS =
-  "id, name, event_type, description, occurrence_note, location, venue_name, street_address, city, state, virtual_link, virtual_access_notes, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason";
+  "id, name, event_type, description, occurrence_note, location, venue_name, street_address, city, state, virtual_link, virtual_access_notes, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason, cancelled_at, series_id";
 
 async function loadEvent(
   supabase: SupabaseServerClient,
@@ -73,6 +89,23 @@ async function loadEvent(
     .eq("id", eventId)
     .maybeSingle();
   return (data as EventRow | null) ?? null;
+}
+
+/** For an "all future events" edit or cancel: the scheduled occurrences after
+ * this one in its series (lib/admin/series.ts), soonest first. */
+async function loadLaterOccurrences(
+  supabase: SupabaseServerClient,
+  event: EventRow,
+): Promise<EventRow[]> {
+  if (!event.series_id) return [];
+  const ids = await laterOccurrenceIds(supabase, event.series_id, event.starts_at);
+  if (ids.length === 0) return [];
+  const { data } = await supabase
+    .from("events")
+    .select(EVENT_COLUMNS)
+    .in("id", ids)
+    .order("starts_at", { ascending: true });
+  return (data ?? []) as EventRow[];
 }
 
 async function confirmedRsvpEmails(
@@ -277,7 +310,17 @@ export type EventEditInput = {
   /** "HH:MM", 24-hour — "" means open-ended (ends_at stays null). */
   endTime: string;
   timezone: string;
+  /** Every active role the form loaded, plus any added — see
+   * EditableVolunteerRole for delete/cancel marks. */
+  volunteerRoles: EditableVolunteerRole[];
 };
+
+/** How far an edit reaches, for an event in a series. "future" carries only
+ * what the admin changed on this occurrence — title, description, location
+ * and meeting link, capacity, lead contact, registration sections, time of
+ * day (never the date), volunteer roles, and the occurrence note when
+ * `applyOccurrenceNote` — onto every later scheduled occurrence. */
+export type EditScopeOptions = { scope: EditScope; applyOccurrenceNote: boolean };
 
 /** What moving an event to a chapter in a different state does to the people
  * already registered: they signed the old state's waiver, not the new one's. */
@@ -317,11 +360,18 @@ export type EditWarning =
       severity: "warning";
       registeredCount: number;
       sections: { title: string; missingCount: number }[];
+    }
+  | {
+      kind: "series_capacity";
+      severity: "warning";
+      newCapacity: number;
+      /** Later occurrences whose confirmed count is over the new capacity. */
+      overDates: string[];
     };
 
 export type UpdateEventResult =
   | { ok: true; needsConfirm: true; warnings: EditWarning[] }
-  | { ok: true; needsNotifyDecision: true; confirmedCount: number }
+  | { ok: true; needsNotifyDecision: true; confirmedCount: number; eventCount: number }
   | { ok: true; needsNotifyDecision: false }
   | { ok: false; error: string };
 
@@ -366,6 +416,128 @@ async function countMissingAnswers(
   return missing;
 }
 
+/** HH:MM of an instant in a zone, or "" for a null (open-ended) end. */
+const timeOfDay = (iso: string | null, timeZone: string) =>
+  iso ? toZonedDateTimeInputs(new Date(iso), timeZone).time : "";
+
+/**
+ * A later occurrence after an "all future events" edit: only the fields the
+ * admin changed on the edited event carry over, so anything individually
+ * adjusted on this occurrence keeps its other differences. Its date never
+ * changes — a changed time of day lands on its own date, in its own zone.
+ */
+function applyToLaterOccurrence(
+  occurrence: EventRow,
+  before: EventRow,
+  after: EventRow,
+  applyOccurrenceNote: boolean,
+): EventRow {
+  const next: EventRow = { ...occurrence };
+  // Arrays (registration_sections) compare as sets — reordering isn't a change.
+  const normalize = (value: unknown) =>
+    JSON.stringify(Array.isArray(value) ? [...value].sort() : (value ?? null));
+  const changed = <K extends keyof EventRow>(key: K) => normalize(before[key]) !== normalize(after[key]);
+  const copy = <K extends keyof EventRow>(...keys: K[]) => {
+    if (keys.some(changed)) for (const key of keys) next[key] = after[key];
+  };
+
+  copy("name");
+  copy("description");
+  copy("capacity");
+  copy("lead_name");
+  copy("lead_phone");
+  copy("lead_email");
+  copy("registration_sections");
+  if (applyOccurrenceNote) copy("occurrence_note");
+  // Location and meeting link move as one group — and only onto an
+  // occurrence of the same kind (physical vs virtual), since chapter itself
+  // never carries over.
+  if (isVirtualChapter(occurrence.chapter) === isVirtualChapter(after.chapter)) {
+    copy(
+      "location",
+      "venue_name",
+      "street_address",
+      "city",
+      "state",
+      "virtual_link",
+      "virtual_access_notes",
+    );
+  }
+
+  const date = toZonedDateTimeInputs(new Date(occurrence.starts_at), occurrence.timezone).date;
+  const newStart = timeOfDay(after.starts_at, after.timezone);
+  const newEnd = timeOfDay(after.ends_at, after.timezone);
+  if (timeOfDay(before.starts_at, before.timezone) !== newStart) {
+    next.starts_at = zonedDateTimeToUtc(date, newStart, occurrence.timezone).toISOString();
+  }
+  if (timeOfDay(before.ends_at, before.timezone) !== newEnd) {
+    next.ends_at = newEnd ? zonedDateTimeToUtc(date, newEnd, occurrence.timezone).toISOString() : null;
+  }
+  return next;
+}
+
+/** A changed date/time, location, chapter, or meeting link — what attendees
+ * are offered an update email (and a revised .ics) for. */
+function scheduleOrPlaceChanged(before: EventRow, after: EventRow): boolean {
+  return (
+    before.starts_at !== after.starts_at ||
+    (before.ends_at ?? null) !== (after.ends_at ?? null) ||
+    (before.location ?? null) !== (after.location ?? null) ||
+    (before.chapter ?? null) !== (after.chapter ?? null) ||
+    (before.virtual_link ?? null) !== (after.virtual_link ?? null)
+  );
+}
+
+const shortDate = (event: EventRow) =>
+  new Intl.DateTimeFormat("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    timeZone: event.timezone,
+  }).format(new Date(event.starts_at));
+
+/** Columns updateEventAction writes, from an EventRow. */
+function eventUpdateColumns(row: EventRow, icsSequence: number) {
+  return {
+    name: row.name,
+    event_type: row.event_type,
+    chapter: row.chapter,
+    description: row.description,
+    occurrence_note: row.occurrence_note,
+    location: row.location,
+    venue_name: row.venue_name,
+    street_address: row.street_address,
+    city: row.city,
+    state: row.state,
+    virtual_link: row.virtual_link,
+    virtual_access_notes: row.virtual_access_notes,
+    capacity: row.capacity,
+    lead_name: row.lead_name,
+    lead_phone: row.lead_phone,
+    lead_email: row.lead_email,
+    custom_email_note: row.custom_email_note,
+    registration_sections: row.registration_sections,
+    waiver_state: row.waiver_state,
+    starts_at: row.starts_at,
+    ends_at: row.ends_at,
+    timezone: row.timezone,
+    ics_sequence: icsSequence,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+/** Capacity follow-ups after a save, same as a single edit always did: less
+ * room expires open offers that no longer fit, more room offers spots to the
+ * waitlist. */
+async function settleCapacity(before: EventRow, after: EventRow) {
+  if (after.capacity != null && after.capacity !== before.capacity) {
+    await expireExcessOffers(after.id);
+  }
+  if (before.capacity != null && (after.capacity == null || after.capacity > before.capacity)) {
+    await offerFreeSpots(after.id);
+  }
+}
+
 /**
  * Saves an event edit. When the date, time, or location changes and the
  * event has confirmed RSVPs, this first returns needsNotifyDecision (no
@@ -373,6 +545,12 @@ async function countMissingAnswers(
  * back with an explicit `notifyAttendees` to actually commit the change.
  * The admin change-notification email (item 4) always fires on a real
  * write, independent of that attendee-notify choice.
+ *
+ * Volunteer roles are saved in the same action (lib/admin/event-roles.ts),
+ * and with scope "future" the edit also reaches every later scheduled
+ * occurrence of the series (applyToLaterOccurrence). Everything — role
+ * guards on every occurrence included — is validated before anything is
+ * written.
  */
 export async function updateEventAction(
   eventId: number,
@@ -381,6 +559,7 @@ export async function updateEventAction(
   /** The admin has confirmed the warnings returned by an earlier call (see
    * EditWarning). Pass true on the follow-up call to actually save. */
   confirmed = false,
+  options: EditScopeOptions = { scope: "this", applyOccurrenceNote: false },
 ): Promise<UpdateEventResult> {
   const supabase = await createClient();
   const adminCheck = await requireAdmin(supabase);
@@ -488,13 +667,53 @@ export async function updateEventAction(
   // (LOCATION/DESCRIPTION — see lib/email/ics.ts) gets updated and attendees
   // can be told.
   const chapterChanged = (before.chapter ?? null) !== (after.chapter ?? null);
-  const virtualLinkChanged = (before.virtual_link ?? null) !== (after.virtual_link ?? null);
-  const dateTimeOrLocationChanged =
-    before.starts_at !== after.starts_at ||
-    (before.ends_at ?? null) !== (after.ends_at ?? null) ||
-    (before.location ?? null) !== (after.location ?? null) ||
-    chapterChanged ||
-    virtualLinkChanged;
+  const dateTimeOrLocationChanged = scheduleOrPlaceChanged(before, after);
+
+  // --- Series scope: which later occurrences this edit also reaches ---
+  const laterPairs: { before: EventRow; after: EventRow }[] = [];
+  if (options.scope === "future") {
+    if (!before.series_id) return { ok: false, error: "This event isn't part of a series" };
+    // Chapter decides the waiver state and physical-vs-virtual, so it's never
+    // carried across a series; saving it for this event alone keeps each
+    // occurrence's own waiver and location consistent.
+    if (chapterChanged) {
+      return {
+        ok: false,
+        error:
+          'A chapter change can only be saved for "This event only". Save the chapter change on its own first, then make the series-wide changes.',
+      };
+    }
+    for (const occurrence of await loadLaterOccurrences(supabase, before)) {
+      const next = applyToLaterOccurrence(occurrence, before, after, options.applyOccurrenceNote);
+      if (next.ends_at && new Date(next.ends_at).getTime() <= new Date(next.starts_at).getTime()) {
+        return {
+          ok: false,
+          error: `On ${shortDate(occurrence)} the end time would be before the start time — adjust that occurrence first`,
+        };
+      }
+      laterPairs.push({ before: occurrence, after: next });
+    }
+  }
+
+  // --- Volunteer roles: plan every write, on every occurrence, up front ---
+  const existingRoles = await loadActiveRoles(supabase, [
+    eventId,
+    ...laterPairs.map((p) => p.before.id),
+  ]);
+  const rolesOf = (id: number): ExistingRole[] => existingRoles.filter((r) => r.event_id === id);
+  const { data: roleTypeRows } = await supabase.from("volunteer_role_types").select("id, name");
+  const roleTypeNames = new Map((roleTypeRows ?? []).map((rt) => [rt.id as number, rt.name as string]));
+
+  const eventRolePlan = planEventRoles(input.volunteerRoles, rolesOf(eventId), after, roleTypeNames);
+  const rolePlans: RolePlan[] = [
+    eventRolePlan,
+    ...laterPairs.map((p) =>
+      planSiblingRoles(input.volunteerRoles, rolesOf(eventId), before.timezone, rolesOf(p.before.id), p.after),
+    ),
+  ];
+  const roleErrors = rolePlans.flatMap((p) => p.errors);
+  if (roleErrors.length > 0) return { ok: false, error: roleErrors.join(". ") };
+  const roleOps: RoleOp[] = rolePlans.flatMap((p) => p.ops);
 
   // Anything the admin should confirm first — nothing is written until they do.
   if (!confirmed) {
@@ -524,6 +743,25 @@ export async function updateEventAction(
           overBy,
           openOffers: registrants.offeredCount,
           offersDisplaced,
+        });
+      }
+
+      // The same capacity carried to later occurrences: nobody is removed
+      // there either, and their own over-capacity open offers are withdrawn.
+      const overDates: string[] = [];
+      for (const pair of laterPairs) {
+        if (pair.after.capacity == null || pair.after.capacity === pair.before.capacity) continue;
+        const later = await loadRegistrants(supabase, pair.before.id);
+        if (later.confirmedCount + later.offeredCount > pair.after.capacity) {
+          overDates.push(shortDate(pair.before));
+        }
+      }
+      if (overDates.length > 0) {
+        warnings.push({
+          kind: "series_capacity",
+          severity: "warning",
+          newCapacity: after.capacity,
+          overDates,
         });
       }
     }
@@ -571,111 +809,81 @@ export async function updateEventAction(
     if (warnings.length > 0) return { ok: true, needsConfirm: true, warnings };
   }
 
-  if (dateTimeOrLocationChanged && notifyAttendees === null) {
-    const confirmedCount = await countConfirmedRsvps(supabase, eventId);
+  // Every occurrence whose date/time or place changes — the edited one and
+  // any later ones this reaches.
+  const rescheduled = [
+    ...(dateTimeOrLocationChanged ? [{ before, after }] : []),
+    ...laterPairs.filter((p) => scheduleOrPlaceChanged(p.before, p.after)),
+  ];
+
+  if (rescheduled.length > 0 && notifyAttendees === null) {
+    let confirmedCount = 0;
+    for (const pair of rescheduled) {
+      confirmedCount += await countConfirmedRsvps(supabase, pair.before.id);
+    }
     if (confirmedCount > 0) {
-      return { ok: true, needsNotifyDecision: true, confirmedCount };
+      return {
+        ok: true,
+        needsNotifyDecision: true,
+        confirmedCount,
+        eventCount: rescheduled.length,
+      };
     }
   }
 
-  const shouldBumpSequence = dateTimeOrLocationChanged;
-  const newSequence = shouldBumpSequence ? before.ics_sequence + 1 : before.ics_sequence;
+  const newSequence = dateTimeOrLocationChanged ? before.ics_sequence + 1 : before.ics_sequence;
 
   const { error: updateError } = await supabase
     .from("events")
-    .update({
-      name: after.name,
-      event_type: after.event_type,
-      chapter: after.chapter,
-      description: after.description,
-      occurrence_note: after.occurrence_note,
-      location: after.location,
-      venue_name: after.venue_name,
-      street_address: after.street_address,
-      city: after.city,
-      state: after.state,
-      virtual_link: after.virtual_link,
-      virtual_access_notes: after.virtual_access_notes,
-      capacity: after.capacity,
-      lead_name: after.lead_name,
-      lead_phone: after.lead_phone,
-      lead_email: after.lead_email,
-      custom_email_note: after.custom_email_note,
-      registration_sections: after.registration_sections,
-      waiver_state: after.waiver_state,
-      starts_at: after.starts_at,
-      ends_at: after.ends_at,
-      timezone: after.timezone,
-      ics_sequence: newSequence,
-      updated_at: new Date().toISOString(),
-    })
+    .update(eventUpdateColumns(after, newSequence))
     .eq("id", eventId);
   if (updateError) return { ok: false, error: updateError.message };
+  await settleCapacity(before, after);
 
-  // Less room than before: expire any open offers that no longer fit and send
-  // those people the usual "offer lapsed" email.
-  if (after.capacity != null && after.capacity !== before.capacity) {
-    await expireExcessOffers(eventId);
+  const laterSequences = new Map<number, number>();
+  for (const pair of laterPairs) {
+    const sequence = scheduleOrPlaceChanged(pair.before, pair.after)
+      ? pair.before.ics_sequence + 1
+      : pair.before.ics_sequence;
+    laterSequences.set(pair.before.id, sequence);
+    const { error } = await supabase
+      .from("events")
+      .update(eventUpdateColumns(pair.after, sequence))
+      .eq("id", pair.before.id);
+    if (error) {
+      return {
+        ok: false,
+        error: `Saved this event, but updating ${shortDate(pair.before)} failed (${error.message}) — later occurrences weren't changed`,
+      };
+    }
+    await settleCapacity(pair.before, pair.after);
   }
 
-  // More room than before: spots that just opened go to the waitlist, same
-  // as if someone had cancelled.
-  const capacityGrew =
-    before.capacity != null && (after.capacity == null || after.capacity > before.capacity);
-  if (capacityGrew) {
-    await offerFreeSpots(eventId);
+  const roleResult = await executeRoleOps(
+    supabase,
+    roleOps,
+    new Map([after, ...laterPairs.map((p) => p.after)].map((e) => [e.id, e])),
+  );
+  if (roleResult.error) {
+    return { ok: false, error: `Saved the event details, but volunteer roles didn't all save: ${roleResult.error}` };
   }
 
-  if (notifyAttendees === true && dateTimeOrLocationChanged) {
-    try {
-      const attendees = await confirmedAttendees(supabase, eventId);
-      const emailEvent = toEmailEvent(after, newSequence);
-
-      // When the update moved the event to the other state's waiver, tell the
-      // attendees who still have to sign it (anyone who already signed the new
-      // state's waiver for this year gets the usual wording).
-      let signedNewWaiver = new Set<string>();
-      const waiverStateChanged = before.waiver_state !== after.waiver_state;
-      if (waiverStateChanged) {
-        const requirement = await resolveEventWaiver(supabase, after);
-        if (requirement.kind === "ok" && attendees.length > 0) {
-          const { data: signatures } = await supabase
-            .from("waiver_signatures")
-            .select("user_id")
-            .eq("waiver_id", requirement.waiver.id)
-            .in(
-              "user_id",
-              attendees.map((a) => a.userId),
-            );
-          signedNewWaiver = new Set((signatures ?? []).map((s) => s.user_id as string));
-        }
-      }
-      const newWaiverStateName =
-        waiverStateChanged && isWaiverState(after.waiver_state)
-          ? WAIVER_STATES[after.waiver_state]
-          : undefined;
-
-      for (const { userId, email: toEmail } of attendees) {
-        try {
-          await sendEventUpdateEmail({
-            event: emailEvent,
-            toEmail,
-            newWaiverStateName: signedNewWaiver.has(userId) ? undefined : newWaiverStateName,
-          });
-        } catch (err) {
-          console.error(
-            `Failed to send event-update email to ${toEmail} for event ${eventId}:`,
-            err,
-          );
-        }
-      }
-    } catch (err) {
-      console.error(`Failed to notify attendees of event ${eventId} update:`, err);
+  if (notifyAttendees === true) {
+    for (const pair of rescheduled) {
+      const sequence = pair.before.id === eventId ? newSequence : (laterSequences.get(pair.before.id) as number);
+      await notifyRescheduled(supabase, pair.before, pair.after, sequence);
     }
   }
 
   try {
-    const diff = buildDiff(before, after);
+    const diff = [...buildDiff(before, after), ...eventRolePlan.diff];
+    if (laterPairs.length > 0) {
+      diff.push({
+        label: "Applied to",
+        before: "",
+        after: `This occurrence and ${laterPairs.length} later ${laterPairs.length === 1 ? "occurrence" : "occurrences"} in the series (${laterPairs.map((p) => shortDate(p.before)).join(", ")})`,
+      });
+    }
     if (diff.length > 0) {
       await sendAdminChangeNotificationEmail({
         action: "edited",
@@ -692,15 +900,98 @@ export async function updateEventAction(
   return { ok: true, needsNotifyDecision: false };
 }
 
+/** Update email (with a revised .ics) to every confirmed attendee of one
+ * rescheduled or moved occurrence. Failures are logged per recipient. */
+async function notifyRescheduled(
+  supabase: SupabaseServerClient,
+  before: EventRow,
+  after: EventRow,
+  icsSequence: number,
+) {
+  const eventId = after.id;
+  try {
+    const attendees = await confirmedAttendees(supabase, eventId);
+    const emailEvent = toEmailEvent(after, icsSequence);
+
+    // When the update moved the event to the other state's waiver, tell the
+    // attendees who still have to sign it (anyone who already signed the new
+    // state's waiver for this year gets the usual wording).
+    let signedNewWaiver = new Set<string>();
+    const waiverStateChanged = before.waiver_state !== after.waiver_state;
+    if (waiverStateChanged) {
+      const requirement = await resolveEventWaiver(supabase, after);
+      if (requirement.kind === "ok" && attendees.length > 0) {
+        const { data: signatures } = await supabase
+          .from("waiver_signatures")
+          .select("user_id")
+          .eq("waiver_id", requirement.waiver.id)
+          .in(
+            "user_id",
+            attendees.map((a) => a.userId),
+          );
+        signedNewWaiver = new Set((signatures ?? []).map((s) => s.user_id as string));
+      }
+    }
+    const newWaiverStateName =
+      waiverStateChanged && isWaiverState(after.waiver_state)
+        ? WAIVER_STATES[after.waiver_state]
+        : undefined;
+
+    for (const { userId, email: toEmail } of attendees) {
+      try {
+        await sendEventUpdateEmail({
+          event: emailEvent,
+          toEmail,
+          newWaiverStateName: signedNewWaiver.has(userId) ? undefined : newWaiverStateName,
+        });
+      } catch (err) {
+        console.error(
+          `Failed to send event-update email to ${toEmail} for event ${eventId}:`,
+          err,
+        );
+      }
+    }
+  } catch (err) {
+    console.error(`Failed to notify attendees of event ${eventId} update:`, err);
+  }
+}
+
 export type CancelPreviewResult =
-  | { ok: true; subject: string; html: string; text: string; recipientCount: number }
+  | {
+      ok: true;
+      subject: string;
+      html: string;
+      text: string;
+      recipientCount: number;
+      /** Confirmed volunteer signups that are cancelled (and emailed) too. */
+      volunteerCount: number;
+      /** How many occurrences this cancels (1 unless scope is "future"). */
+      eventCount: number;
+      /** Their dates, soonest first. */
+      eventDates: string[];
+    }
   | { ok: false; error: string };
 
-/** Renders the exact cancellation email and counts recipients — no writes,
- * no sends. Backs the admin cancel flow's required preview step. */
+/** The occurrences a cancel reaches: this one (if still scheduled) and, for
+ * "future", every later scheduled occurrence in its series. */
+async function eventsToCancel(
+  supabase: SupabaseServerClient,
+  event: EventRow,
+  scope: EditScope,
+): Promise<EventRow[]> {
+  const events = event.status === "scheduled" ? [event] : [];
+  if (scope === "future") events.push(...(await loadLaterOccurrences(supabase, event)));
+  return events;
+}
+
+/** Renders the exact cancellation email (for this occurrence — the others
+ * get the same text with their own date) and counts recipients across every
+ * occurrence it reaches — no writes, no sends. Backs the admin cancel flow's
+ * required preview step. */
 export async function previewEventCancellationAction(
   eventId: number,
   reason: string,
+  scope: EditScope = "this",
 ): Promise<CancelPreviewResult> {
   const supabase = await createClient();
   const adminCheck = await requireAdmin(supabase);
@@ -711,26 +1002,53 @@ export async function previewEventCancellationAction(
 
   const event = await loadEvent(supabase, eventId);
   if (!event) return { ok: false, error: "Event not found" };
+  if (scope === "future" && !event.series_id) {
+    return { ok: false, error: "This event isn't part of a series" };
+  }
 
-  const emails = await confirmedRsvpEmails(supabase, eventId);
+  const events = await eventsToCancel(supabase, event, scope);
+  if (events.length === 0) return { ok: false, error: "There's nothing scheduled left to cancel" };
+  let recipientCount = 0;
+  for (const e of events) {
+    recipientCount += (await confirmedRsvpEmails(supabase, e.id)).length;
+  }
   const { subject, html, text } = previewEventCancellationEmail(
-    toEmailEvent(event, event.ics_sequence + 1),
+    toEmailEvent(events[0], events[0].ics_sequence + 1),
     trimmedReason,
   );
+  const people = await peopleByEvent(
+    supabase,
+    events.map((e) => e.id),
+  );
 
-  return { ok: true, subject, html, text, recipientCount: emails.length };
+  return {
+    ok: true,
+    subject,
+    html,
+    text,
+    recipientCount,
+    volunteerCount: sumPeople(people.values()).volunteers,
+    eventCount: events.length,
+    eventDates: events.map(shortDate),
+  };
 }
 
-export type CancelEventResult = { ok: true } | { ok: false; error: string };
+export type CancelEventResult =
+  | { ok: true; cancelledCount: number; volunteerSignupsCancelled: number }
+  | { ok: false; error: string };
 
 /**
  * Cancels the event (status -> 'cancelled', bumped ics_sequence) and emails
  * every confirmed attendee a METHOD:CANCEL update plus the admin
- * notification list — always, regardless of who's on that list.
+ * notification list — always, regardless of who's on that list. With scope
+ * "future", does the same for every later scheduled occurrence in the
+ * series, each attendee getting the same reason for their own occurrence;
+ * the admin list gets one notification covering all of them.
  */
 export async function cancelEventAction(
   eventId: number,
   reason: string,
+  scope: EditScope = "this",
 ): Promise<CancelEventResult> {
   const supabase = await createClient();
   const adminCheck = await requireAdmin(supabase);
@@ -739,48 +1057,90 @@ export async function cancelEventAction(
   const trimmedReason = reason.trim();
   if (!trimmedReason) return { ok: false, error: "A cancellation reason is required" };
 
-  const before = await loadEvent(supabase, eventId);
-  if (!before) return { ok: false, error: "Event not found" };
+  const anchor = await loadEvent(supabase, eventId);
+  if (!anchor) return { ok: false, error: "Event not found" };
+  if (scope === "future" && !anchor.series_id) {
+    return { ok: false, error: "This event isn't part of a series" };
+  }
 
-  const newSequence = before.ics_sequence + 1;
+  const events = await eventsToCancel(supabase, anchor, scope);
+  if (events.length === 0) return { ok: false, error: "There's nothing scheduled left to cancel" };
 
-  const { error: updateError } = await supabase
-    .from("events")
-    .update({
-      status: "cancelled",
-      cancellation_reason: trimmedReason,
-      cancelled_at: new Date().toISOString(),
-      ics_sequence: newSequence,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", eventId);
-  if (updateError) return { ok: false, error: updateError.message };
-
-  const emailEvent = toEmailEvent(before, newSequence);
-
-  try {
-    const emails = await confirmedRsvpEmails(supabase, eventId);
-    for (const toEmail of emails) {
-      try {
-        await sendEventCancellationEmail({ event: emailEvent, toEmail, reason: trimmedReason });
-      } catch (err) {
-        console.error(
-          `Failed to send event-cancellation email to ${toEmail} for event ${eventId}:`,
-          err,
-        );
-      }
+  const cancelled: EventRow[] = [];
+  let volunteerSignupsCancelled = 0;
+  const volunteerErrors: string[] = [];
+  for (const before of events) {
+    const newSequence = before.ics_sequence + 1;
+    // Shared with the volunteer signups cancelled below, so a restore can
+    // tell exactly which ones went with the event.
+    const cancelledAt = new Date().toISOString();
+    const { error: updateError } = await supabase
+      .from("events")
+      .update({
+        status: "cancelled",
+        cancellation_reason: trimmedReason,
+        cancelled_at: cancelledAt,
+        ics_sequence: newSequence,
+        updated_at: cancelledAt,
+      })
+      .eq("id", before.id)
+      .eq("status", "scheduled");
+    if (updateError) {
+      if (cancelled.length === 0) return { ok: false, error: updateError.message };
+      console.error(`Failed to cancel event ${before.id} in series cancel:`, updateError);
+      break;
     }
-  } catch (err) {
-    console.error(`Failed to notify attendees of event ${eventId} cancellation:`, err);
+    cancelled.push(before);
+
+    // Volunteers too — otherwise people show up to a cancelled event for a
+    // shift that no longer exists.
+    const volunteerResult = await cancelEventVolunteerSignups(supabase, before, trimmedReason, cancelledAt);
+    volunteerSignupsCancelled += volunteerResult.cancelledCount;
+    if (volunteerResult.error) {
+      console.error(`Failed to cancel volunteer signups for event ${before.id}:`, volunteerResult.error);
+      volunteerErrors.push(`${shortDate(before)}: ${volunteerResult.error}`);
+    }
+
+    const emailEvent = toEmailEvent(before, newSequence);
+    try {
+      const emails = await confirmedRsvpEmails(supabase, before.id);
+      for (const toEmail of emails) {
+        try {
+          await sendEventCancellationEmail({ event: emailEvent, toEmail, reason: trimmedReason });
+        } catch (err) {
+          console.error(
+            `Failed to send event-cancellation email to ${toEmail} for event ${before.id}:`,
+            err,
+          );
+        }
+      }
+    } catch (err) {
+      console.error(`Failed to notify attendees of event ${before.id} cancellation:`, err);
+    }
   }
 
   try {
+    const diff: EventChangeDiffEntry[] = [{ label: "Status", before: "Scheduled", after: "Cancelled" }];
+    if (volunteerSignupsCancelled > 0) {
+      diff.push({
+        label: "Volunteer signups",
+        before: `${volunteerSignupsCancelled} confirmed`,
+        after: "Cancelled and emailed",
+      });
+    }
+    if (scope === "future") {
+      diff.push({
+        label: "Occurrences cancelled",
+        before: "",
+        after: `${cancelled.length}: ${cancelled.map(shortDate).join(", ")}`,
+      });
+    }
     await sendAdminChangeNotificationEmail({
       action: "cancelled",
       actorLabel: actorLabel(adminCheck.actor),
-      eventName: before.name,
-      eventId: before.id,
-      diff: [{ label: "Status", before: "Scheduled", after: "Cancelled" }],
+      eventName: anchor.name,
+      eventId: anchor.id,
+      diff,
       reason: trimmedReason,
     });
   } catch (err) {
@@ -790,7 +1150,19 @@ export async function cancelEventAction(
     );
   }
 
-  return { ok: true };
+  if (cancelled.length < events.length) {
+    return {
+      ok: false,
+      error: `Cancelled ${cancelled.length} of ${events.length} occurrences before an error — the rest are still scheduled. Try again to finish.`,
+    };
+  }
+  if (volunteerErrors.length > 0) {
+    return {
+      ok: false,
+      error: `The event was cancelled and attendees emailed, but volunteer signups couldn't be cancelled (${volunteerErrors.join("; ")}). Remove those volunteers from the roster by hand.`,
+    };
+  }
+  return { ok: true, cancelledCount: cancelled.length, volunteerSignupsCancelled };
 }
 
 export type RestoreEventResult = { ok: true } | { ok: false; error: string };
@@ -801,10 +1173,17 @@ export type RestoreEventResult = { ok: true } | { ok: false; error: string };
  * row was never touched by the cancellation, so this is still accurate) a
  * fresh METHOD:REQUEST so the event reappears on their calendar. The admin
  * notification fires either way, same as edit/cancel.
+ *
+ * Volunteer shifts are NOT restored: cancelling the event cancelled those
+ * signups and told each volunteer not to come, so silently re-confirming
+ * them would count people who may have made other plans. Their roles are
+ * open again instead, and `notifyVolunteers` emails them that the event is
+ * back on and they can sign up again.
  */
 export async function restoreEventAction(
   eventId: number,
   notifyAttendees: boolean,
+  notifyVolunteers = false,
 ): Promise<RestoreEventResult> {
   const supabase = await createClient();
   const adminCheck = await requireAdmin(supabase);
@@ -815,6 +1194,12 @@ export async function restoreEventAction(
   if (before.status !== "cancelled") return { ok: false, error: "Event is not cancelled" };
 
   const newSequence = before.ics_sequence + 1;
+  // Read before the update clears cancelled_at, which is how these are found.
+  const volunteersCancelled = await countSignupsCancelledWithEvent(
+    supabase,
+    eventId,
+    before.cancelled_at,
+  );
 
   const { error: updateError } = await supabase
     .from("events")
@@ -848,10 +1233,27 @@ export async function restoreEventAction(
     }
   }
 
+  if (notifyVolunteers && volunteersCancelled > 0) {
+    try {
+      await emailVolunteersEventRestored(supabase, before, before.cancelled_at);
+    } catch (err) {
+      console.error(`Failed to email volunteers about event ${eventId} restore:`, err);
+    }
+  }
+
   try {
     const diff: EventChangeDiffEntry[] = [{ label: "Status", before: "Cancelled", after: "Scheduled" }];
     if (before.cancellation_reason) {
       diff.push({ label: "Cancellation reason", before: before.cancellation_reason, after: "" });
+    }
+    if (volunteersCancelled > 0) {
+      diff.push({
+        label: "Volunteer signups",
+        before: `${volunteersCancelled} cancelled with the event`,
+        after: notifyVolunteers
+          ? "Not restored — emailed to sign up again"
+          : "Not restored — not emailed",
+      });
     }
     await sendAdminChangeNotificationEmail({
       action: "restored",

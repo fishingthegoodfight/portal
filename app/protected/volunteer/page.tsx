@@ -156,11 +156,37 @@ async function VolunteerHomeLoader({
           {approvedRoles.length === 0 ? (
             <p className="text-sm text-muted-foreground">No roles approved yet.</p>
           ) : (
-            <ul className="flex flex-col gap-1 text-sm">
-              {approvedRoles.map((name) => (
-                <li key={name}>{name}</li>
-              ))}
-            </ul>
+            <div className="flex flex-col gap-3">
+              {/* A role approval only lets someone sign up once their
+                * registration itself is approved (lib/volunteer-signups.ts). */}
+              {status !== "approved" && (
+                <p className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400">
+                  {status === "invited" || status === "registered" ? (
+                    <>
+                      Your volunteer registration is still under review. You&apos;ll be able to
+                      sign up for shifts in these roles once it&apos;s approved.
+                    </>
+                  ) : (
+                    <>
+                      Your volunteer status is {VOLUNTEER_STATUS_LABELS[status] ?? status}, so you
+                      can&apos;t sign up for shifts right now. Contact{" "}
+                      <a
+                        href="mailto:tcramer@fishingthegoodfight.org"
+                        className="underline underline-offset-4"
+                      >
+                        tcramer@fishingthegoodfight.org
+                      </a>{" "}
+                      with any questions.
+                    </>
+                  )}
+                </p>
+              )}
+              <ul className="flex flex-col gap-1 text-sm">
+                {approvedRoles.map((name) => (
+                  <li key={name}>{name}</li>
+                ))}
+              </ul>
+            </div>
           )}
         </CardContent>
       </Card>

@@ -3,6 +3,7 @@ import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
 import { loadEventRoster } from "@/lib/admin/roster";
+import { countSignupsCancelledWithEvent } from "@/lib/admin/event-roles";
 import { formatEventDateRange } from "@/lib/format-date";
 import { EventRoster } from "@/components/admin/event-roster";
 
@@ -20,6 +21,11 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
   }
   const { event, roster, waitlist, waiver, dietary, volunteerRoles, volunteerRoster } = data;
   const offeredCount = waitlist.filter((w) => w.status === "offered").length;
+  // Only needed for the restore dialog — shifts don't come back on restore.
+  const volunteersCancelledWithEvent =
+    event.status === "cancelled"
+      ? await countSignupsCancelledWithEvent(supabase, event.id, event.cancelled_at)
+      : 0;
 
   return (
     <EventRoster
@@ -47,6 +53,8 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
       registrationSectionIds={event.registration_sections ?? []}
       volunteerRoles={volunteerRoles}
       initialVolunteerRoster={volunteerRoster}
+      seriesId={event.series_id}
+      volunteersCancelledWithEvent={volunteersCancelledWithEvent}
     />
   );
 }

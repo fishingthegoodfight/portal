@@ -176,7 +176,8 @@ export async function GET(request: NextRequest) {
     const { data: opportunities } = await supabase
       .from("volunteer_opportunities")
       .select("id, role, description, what_to_bring, shift_start, shift_end")
-      .eq("event_id", event.id);
+      .eq("event_id", event.id)
+      .is("cancelled_at", null);
 
     if (opportunities?.length) {
       const vColumn = kind === "1week" ? "sent_1week_at" : "sent_1day_at";

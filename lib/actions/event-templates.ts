@@ -224,7 +224,8 @@ export async function saveEventAsTemplateAction(
   const { data: opportunities } = await supabase
     .from("volunteer_opportunities")
     .select("role_type_id, description, what_to_bring, shift_start, shift_end, slots")
-    .eq("event_id", eventId);
+    .eq("event_id", eventId)
+    .is("cancelled_at", null);
 
   const startsAt = new Date(event.starts_at as string).getTime();
   const endsAt = event.ends_at ? new Date(event.ends_at as string).getTime() : null;

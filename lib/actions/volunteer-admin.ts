@@ -20,10 +20,12 @@ export async function updateVolunteerStatusAction(
     return { ok: false, error: "Invalid status" };
   }
 
-  const { error } = await supabase
-    .from("volunteers")
-    .update({ status, updated_at: new Date().toISOString() })
-    .eq("user_id", volunteerId);
+  // approved_at records the latest approval, same as
+  // createApprovedVolunteerAction and approveRoleAction's setApproved.
+  const now = new Date().toISOString();
+  const update: Record<string, string> = { status, updated_at: now };
+  if (status === "approved") update.approved_at = now;
+  const { error } = await supabase.from("volunteers").update(update).eq("user_id", volunteerId);
   if (error) return { ok: false, error: error.message };
   return { ok: true };
 }
@@ -75,14 +77,30 @@ export type ApproveRoleResult =
  * detail page) is responsible for showing the "cert required, not on file"
  * flag; `certWarning` echoes that back so a fresh approve can surface it
  * immediately without a second round trip.
+ *
+ * A role approval only makes someone eligible to sign up once
+ * volunteers.status is also 'approved' (lib/volunteer-signups.ts). The detail
+ * page asks before approving a role for someone who isn't; `setApproved`
+ * moves their status to 'approved' in the same action.
  */
 export async function approveRoleAction(
   volunteerId: string,
   roleTypeId: number,
+  setApproved = false,
 ): Promise<ApproveRoleResult> {
   const supabase = await createClient();
   const adminCheck = await requireAdmin(supabase);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
+
+  if (setApproved) {
+    const now = new Date().toISOString();
+    const { error: statusError } = await supabase
+      .from("volunteers")
+      .update({ status: "approved", approved_at: now, updated_at: now })
+      .eq("user_id", volunteerId)
+      .neq("status", "approved");
+    if (statusError) return { ok: false, error: statusError.message };
+  }
 
   const { data: roleType } = await supabase
     .from("volunteer_role_types")

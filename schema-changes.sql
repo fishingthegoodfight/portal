@@ -2844,3 +2844,174 @@ create policy volunteer_opportunities_select_published_or_own on public.voluntee
          and s.user_id = auth.uid()
     )
   );
+
+-- =============================================================================
+-- 2026-09-22 — Editable volunteer roles, cancelled roles, series trimming
+-- =============================================================================
+-- 1. Volunteer roles are now editable after an event is created (admin event
+--    edit form). Until now volunteer_opportunities only had admin INSERT and
+--    SELECT policies — editing a role's text/shift/slots is a plain admin
+--    UPDATE, so it gets the same is_admin() policy as events. Deleting and
+--    cancelling a role go through the SECURITY DEFINER functions below
+--    instead, so the "no signups" check and the write can't race a signup.
+--
+-- 2. A role with signups is never deleted — it's CANCELLED: cancelled_at is
+--    set, its confirmed signups move to 'cancelled' (row kept, like a
+--    volunteer's own cancel), and slots_taken drops to 0. A cancelled role
+--    stays on the event for history but is hidden from signup, the roster,
+--    and reminders, and try_claim_volunteer_slot refuses it.
+--
+-- 3. Deleting events (series trimming): only occurrences nobody is on. "On"
+--    means an ACTIVE rsvp (confirmed / waitlisted / offered) or a confirmed
+--    volunteer signup. Inactive history rows (cancelled/expired RSVPs,
+--    cancelled volunteer signups) go with the event — there's nothing left
+--    for them to point at. Anything with people goes through Cancel instead.
+
+alter table public.volunteer_opportunities
+  add column if not exists cancelled_at timestamptz;
+
+create policy admin_update_volunteer_opportunities on public.volunteer_opportunities
+  for update to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+grant update on public.volunteer_opportunities to authenticated;
+
+-- Same as the 2026-09-22 version plus "and vo.cancelled_at is null".
+create or replace function public.try_claim_volunteer_slot(p_opportunity_id bigint)
+returns boolean
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  update public.volunteer_opportunities vo
+     set slots_taken = vo.slots_taken + 1
+    from public.events e
+   where vo.id = p_opportunity_id
+     and vo.event_id = e.id
+     and vo.cancelled_at is null
+     and coalesce(e.is_published, false)
+     and coalesce(e.status, 'scheduled') = 'scheduled'
+     and vo.slots_taken < vo.slots;
+  return found;
+end $function$;
+
+revoke all on function public.try_claim_volunteer_slot(bigint) from public, anon, authenticated;
+grant execute on function public.try_claim_volunteer_slot(bigint) to service_role;
+
+-- Deletes a role only if nobody is signed up. The row lock serializes this
+-- against a concurrent sign_up_for_volunteer_shift (which updates the same
+-- row via try_claim_volunteer_slot). Returns 'deleted', 'has_signups', or
+-- 'not_found'. Cancelled signup rows go with it (on delete cascade).
+create or replace function public.admin_delete_volunteer_opportunity(p_opportunity_id bigint)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can delete a volunteer role';
+  end if;
+
+  perform 1 from public.volunteer_opportunities where id = p_opportunity_id for update;
+  if not found then
+    return 'not_found';
+  end if;
+
+  if exists (
+    select 1 from public.volunteer_signups
+     where opportunity_id = p_opportunity_id and status = 'confirmed'
+  ) then
+    return 'has_signups';
+  end if;
+
+  delete from public.volunteer_opportunities where id = p_opportunity_id;
+  return 'deleted';
+end $function$;
+
+revoke all on function public.admin_delete_volunteer_opportunity(bigint) from public, anon;
+grant execute on function public.admin_delete_volunteer_opportunity(bigint) to authenticated;
+
+-- Cancels a role: every confirmed signup -> 'cancelled', slots_taken -> 0,
+-- cancelled_at set. Returns the user_ids whose signup it cancelled, so the
+-- caller can email exactly those people. Idempotent: an already-cancelled
+-- role returns no rows.
+create or replace function public.admin_cancel_volunteer_opportunity(p_opportunity_id bigint)
+returns table (user_id uuid)
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can cancel a volunteer role';
+  end if;
+
+  perform 1 from public.volunteer_opportunities
+   where id = p_opportunity_id and cancelled_at is null
+   for update;
+  if not found then
+    return;
+  end if;
+
+  return query
+    with cancelled as (
+      update public.volunteer_signups s
+         set status = 'cancelled', cancelled_at = now()
+       where s.opportunity_id = p_opportunity_id and s.status = 'confirmed'
+      returning s.user_id as cancelled_user_id
+    )
+    select c.cancelled_user_id from cancelled c;
+
+  update public.volunteer_opportunities
+     set cancelled_at = now(), slots_taken = 0
+   where id = p_opportunity_id;
+end $function$;
+
+revoke all on function public.admin_cancel_volunteer_opportunity(bigint) from public, anon;
+grant execute on function public.admin_cancel_volunteer_opportunity(bigint) to authenticated;
+
+-- Deletes whichever of p_event_ids nobody is on (see 3. above) and returns
+-- the ids it actually deleted; any with people are skipped, not errored, so
+-- "delete all future empty occurrences" can pass the whole candidate list.
+-- Locks each event row first so an RSVP arriving mid-delete (rsvp_to_event
+-- updates events.spots_taken) waits and then fails on the missing row
+-- rather than being silently deleted with it.
+create or replace function public.admin_delete_empty_events(p_event_ids bigint[])
+returns setof bigint
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_id bigint;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can delete events';
+  end if;
+
+  for v_id in
+    select id from public.events where id = any(p_event_ids) order by id for update
+  loop
+    if exists (
+      select 1 from public.rsvps
+       where event_id = v_id and status in ('confirmed', 'waitlisted', 'offered')
+    ) or exists (
+      select 1 from public.volunteer_signups s
+        join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+       where vo.event_id = v_id and s.status = 'confirmed'
+    ) then
+      continue;
+    end if;
+
+    delete from public.rsvps where event_id = v_id;
+    delete from public.volunteer_opportunities where event_id = v_id;
+    delete from public.events where id = v_id;
+    return next v_id;
+  end loop;
+end $function$;
+
+revoke all on function public.admin_delete_empty_events(bigint[]) from public, anon;
+grant execute on function public.admin_delete_empty_events(bigint[]) to authenticated;

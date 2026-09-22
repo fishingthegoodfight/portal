@@ -21,6 +21,8 @@ export type VolunteerOpportunity = {
   shift_end: string;
   slots: number;
   slots_taken: number;
+  /** Set when an admin cancelled the role — never offered for signup. */
+  cancelled_at?: string | null;
 };
 
 /** volunteers.status === 'approved' — the base gate for every eligibility

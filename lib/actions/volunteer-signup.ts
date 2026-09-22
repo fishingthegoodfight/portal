@@ -17,7 +17,7 @@ export type VolunteerSignupResult =
 export type VolunteerCancelResult = { ok: true } | { ok: false; error: string };
 
 const OPPORTUNITY_COLUMNS =
-  "id, event_id, role, description, what_to_bring, role_type_id, shift_start, shift_end, slots, slots_taken";
+  "id, event_id, role, description, what_to_bring, role_type_id, shift_start, shift_end, slots, slots_taken, cancelled_at";
 const EVENT_COLUMNS =
   "id, name, chapter, waiver_state, starts_at, timezone, location, virtual_link, virtual_access_notes, lead_email";
 
@@ -98,6 +98,8 @@ export async function signUpForVolunteerShiftAction(
   const loaded = await loadOpportunityAndEvent(supabase, opportunityId);
   if (!loaded) return { ok: false, error: "This volunteer role no longer exists." };
   const { opportunity, event } = loaded;
+  // try_claim_volunteer_slot refuses it too, but would read as "full".
+  if (opportunity.cancelled_at) return { ok: false, error: "This volunteer role was cancelled." };
 
   const eligibility = await checkVolunteerSignupEligibility(supabase, userId, opportunity, event);
   if (!eligibility.ok) {

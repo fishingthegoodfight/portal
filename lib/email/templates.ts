@@ -360,7 +360,7 @@ export type EventChangeDiffEntry = {
   after: string;
 };
 
-export type EventChangeAction = "created" | "edited" | "cancelled" | "restored";
+export type EventChangeAction = "created" | "edited" | "cancelled" | "restored" | "deleted";
 
 /**
  * Internal notification to ADMIN_NOTIFICATION_EMAILS — every create, edit,
@@ -802,6 +802,89 @@ export function volunteerCancellationEmail(info: VolunteerShiftEmailInfo): Rende
     `You're no longer signed up for ${info.role} at ${info.eventName} (${info.shiftDateRange}).`,
     "",
     `Changed your mind? Sign up again if a spot is still open: ${info.eventUrl}`,
+  ].join("\n");
+
+  return { subject, html, text };
+}
+
+/** Sent when an admin cancels a volunteer role outright (edit form, "Cancel
+ * role") — unlike volunteerCancellationEmail, the volunteer didn't choose
+ * this, and there's nothing to sign up for again. Carries a METHOD:CANCEL
+ * .ics, same UID as the confirmation. */
+export function volunteerRoleCancelledEmail(info: VolunteerShiftEmailInfo): RenderedEmail {
+  const subject = `Volunteer role cancelled: ${info.role} — ${info.eventName}`;
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">A volunteer role you signed up for was cancelled</p>`,
+      `<p style="margin:0 0 16px;">The organizers cancelled <strong>${escapeHtml(info.role)}</strong> at <strong>${escapeHtml(info.eventName)}</strong> (${escapeHtml(info.shiftDateRange)}), so your signup for it has been cancelled. Thank you for offering your time.</p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">You can see any other open volunteer roles on the <a href="${info.eventUrl}" style="color:#166534;">event page</a>.</p>`,
+    ].join("\n"),
+  );
+
+  const text = [
+    "A volunteer role you signed up for was cancelled",
+    "",
+    `The organizers cancelled ${info.role} at ${info.eventName} (${info.shiftDateRange}), so your signup for it has been cancelled. Thank you for offering your time.`,
+    "",
+    `Any other open volunteer roles are on the event page: ${info.eventUrl}`,
+  ].join("\n");
+
+  return { subject, html, text };
+}
+
+/** Sent when the whole EVENT is cancelled (cancelEventAction) to each
+ * volunteer whose confirmed shift was cancelled with it — the admin's reason
+ * plus a METHOD:CANCEL .ics for the shift, same UID as the confirmation. */
+export function volunteerShiftEventCancelledEmail(
+  info: VolunteerShiftEmailInfo,
+  reason: string,
+): RenderedEmail {
+  const subject = `Event cancelled: ${info.eventName} — your ${info.role} shift is cancelled`;
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">${escapeHtml(info.eventName)} has been cancelled</p>`,
+      `<p style="margin:0 0 16px;">Your volunteer shift as <strong>${escapeHtml(info.role)}</strong> (${escapeHtml(info.shiftDateRange)}) is cancelled along with it — please don't come in for it.</p>`,
+      `<p style="margin:0 0 16px;"><strong>Reason:</strong> ${htmlWithLineBreaks(reason)}</p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Thank you for offering your time. The attached calendar update removes the shift from your calendar.</p>`,
+    ].join("\n"),
+  );
+
+  const text = [
+    `${info.eventName} has been cancelled`,
+    "",
+    `Your volunteer shift as ${info.role} (${info.shiftDateRange}) is cancelled along with it — please don't come in for it.`,
+    "",
+    `Reason: ${reason}`,
+    "",
+    "Thank you for offering your time. The attached calendar update removes the shift from your calendar.",
+  ].join("\n");
+
+  return { subject, html, text };
+}
+
+/** Sent on restoring a cancelled event (restoreEventAction), when the admin
+ * chooses to, to the volunteers whose shifts were cancelled with it. Their
+ * signups are NOT restored — this tells them it's back on and they can sign
+ * up again. No .ics: they aren't signed up for anything yet. */
+export function volunteerEventRestoredEmail(info: VolunteerShiftEmailInfo): RenderedEmail {
+  const subject = `Back on: ${info.eventName} — sign up again to volunteer`;
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">${escapeHtml(info.eventName)} is back on</p>`,
+      `<p style="margin:0 0 16px;">This event was cancelled earlier, which also cancelled your volunteer shift as <strong>${escapeHtml(info.role)}</strong> (${escapeHtml(info.shiftDateRange)}). The event has been restored, but your shift <strong>was not</strong> — you're not signed up for it right now.</p>`,
+      `<p style="margin:0 0 16px;">If you can still make it, <a href="${info.eventUrl}" style="color:#166534;">sign up again on the event page</a> while spots are open.</p>`,
+    ].join("\n"),
+  );
+
+  const text = [
+    `${info.eventName} is back on`,
+    "",
+    `This event was cancelled earlier, which also cancelled your volunteer shift as ${info.role} (${info.shiftDateRange}). The event has been restored, but your shift was NOT — you're not signed up for it right now.`,
+    "",
+    `If you can still make it, sign up again on the event page while spots are open: ${info.eventUrl}`,
   ].join("\n");
 
   return { subject, html, text };

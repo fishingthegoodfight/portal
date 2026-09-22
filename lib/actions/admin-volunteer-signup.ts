@@ -15,7 +15,7 @@ import {
 } from "@/lib/email/send";
 
 const OPPORTUNITY_COLUMNS =
-  "id, event_id, role, description, what_to_bring, role_type_id, shift_start, shift_end, slots, slots_taken";
+  "id, event_id, role, description, what_to_bring, role_type_id, shift_start, shift_end, slots, slots_taken, cancelled_at";
 const EVENT_COLUMNS =
   "id, name, chapter, waiver_state, starts_at, timezone, location, virtual_link, virtual_access_notes, lead_email";
 
@@ -64,6 +64,8 @@ export async function adminAddVolunteerSignupAction(input: {
     .eq("id", input.opportunityId)
     .maybeSingle();
   if (!opportunity) return { ok: false, error: "This volunteer role no longer exists." };
+  // admin_add_volunteer_signup's p_force would otherwise book a cancelled role.
+  if (opportunity.cancelled_at) return { ok: false, error: "This volunteer role was cancelled." };
 
   const { data: event } = await supabase
     .from("events")

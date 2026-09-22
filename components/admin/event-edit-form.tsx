@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import {
@@ -8,6 +9,9 @@ import {
   type EditWarning,
   type EventEditInput,
 } from "@/lib/actions/admin-event";
+import { seriesScopeSummaryAction, type ScopeSummary } from "@/lib/actions/admin-event-series";
+import type { EditableVolunteerRole } from "@/lib/admin/event-roles";
+import type { EditScope } from "@/lib/admin/series";
 import { ChapterField } from "@/components/admin/fields/chapter-field";
 import { DateTimeFields } from "@/components/admin/fields/datetime-fields";
 import {
@@ -23,11 +27,32 @@ import { LocationFields } from "@/components/admin/fields/location-fields";
 import { VirtualEventFields } from "@/components/admin/fields/virtual-event-fields";
 import { isVirtualChapter } from "@/lib/chapters";
 import { RegistrationSectionsFields } from "@/components/admin/fields/registration-sections-fields";
+import {
+  VolunteerRoleFields,
+  volunteerRoleErrors,
+  type VolunteerRoleTypeOption,
+} from "@/components/admin/fields/volunteer-role-fields";
+import { SeriesScopeChoice } from "@/components/admin/series-scope-choice";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import type { EventTypeOption } from "@/lib/event-types";
 
-type StringField = Exclude<keyof EventEditInput, "registrationSections">;
+type StringField = Exclude<keyof EventEditInput, "registrationSections" | "volunteerRoles">;
+
+function emptyRole(): EditableVolunteerRole {
+  return {
+    id: null,
+    removal: null,
+    title: "",
+    description: "",
+    shiftStart: "",
+    shiftEnd: "",
+    whatToBring: "",
+    numberNeeded: "1",
+    roleTypeId: "",
+  };
+}
 
 export function EventEditForm({
   eventId,
@@ -35,8 +60,10 @@ export function EventEditForm({
   isCancelled,
   legacyLocation,
   waiverLabel,
-  isPartOfSeries,
+  seriesId,
   eventTypes,
+  roleTypes,
+  signedUpByRoleId,
 }: {
   eventId: number;
   initial: EventEditInput;
@@ -45,29 +72,70 @@ export function EventEditForm({
   legacyLocation: string | null;
   /** "Colorado" / "Georgia" — always derived from the chapter; every event requires it. */
   waiverLabel: string | null;
-  /** The event was created as one of a repeating series. */
-  isPartOfSeries: boolean;
+  /** Set when the event was created as one of a repeating series — saving
+   * then asks "This event only" vs "This and all future events". */
+  seriesId: string | null;
   /** Every event_types row, active and inactive — an already-deactivated
    * type stays selectable so this event's edit form never silently changes it. */
   eventTypes: EventTypeOption[];
+  /** Role types offered for a volunteer role (see the edit page loader). */
+  roleTypes: VolunteerRoleTypeOption[];
+  /** Confirmed signups per existing role id. */
+  signedUpByRoleId: Record<number, number>;
 }) {
   const router = useRouter();
   const [form, setForm] = useState<EventEditInput>(initial);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
-  const [notifyPrompt, setNotifyPrompt] = useState<{ confirmedCount: number } | null>(null);
+  const [notifyPrompt, setNotifyPrompt] = useState<{
+    confirmedCount: number;
+    eventCount: number;
+  } | null>(null);
   // Things the server wants confirmed before it saves (capacity, waiver, past
   // date, registration sections). They describe the form as it was when asked,
   // so any further edit clears them and the admin is asked again on save.
   const [warnings, setWarnings] = useState<EditWarning[] | null>(null);
   const [confirmed, setConfirmed] = useState(false);
+  // Series only: the scope question, asked on every save before anything
+  // else, with the counts for each choice. `scope` is the answer, kept
+  // through the warning/notify follow-ups of the same save.
+  const [scopePrompt, setScopePrompt] = useState<ScopeSummary | null>(null);
+  const [scope, setScope] = useState<EditScope | null>(null);
+  const [applyOccurrenceNote, setApplyOccurrenceNote] = useState(false);
+  // The existing role (by index) whose "Remove" is asking to cancel instead.
+  const [cancelAsk, setCancelAsk] = useState<number | null>(null);
 
   const edit = (updater: (prev: EventEditInput) => EventEditInput) => {
     setForm(updater);
     setWarnings(null);
     setConfirmed(false);
     setNotifyPrompt(null);
+    setScopePrompt(null);
+    setScope(null);
+  };
+
+  const signedUp = (role: EditableVolunteerRole) =>
+    role.id != null ? (signedUpByRoleId[role.id] ?? 0) : 0;
+
+  const updateRole = (index: number, patch: Partial<EditableVolunteerRole>) =>
+    edit((prev) => ({
+      ...prev,
+      volunteerRoles: prev.volunteerRoles.map((r, i) => (i === index ? { ...r, ...patch } : r)),
+    }));
+
+  const removeRole = (index: number) => {
+    const role = form.volunteerRoles[index];
+    if (role.id == null) {
+      edit((prev) => ({
+        ...prev,
+        volunteerRoles: prev.volunteerRoles.filter((_, i) => i !== index),
+      }));
+    } else if (signedUp(role) > 0) {
+      setCancelAsk(index);
+    } else {
+      updateRole(index, { removal: "delete" });
+    }
   };
 
   const setField = (field: StringField) => (value: string) =>
@@ -81,7 +149,11 @@ export function EventEditForm({
         : prev.registrationSections.filter((id) => id !== sectionId),
     }));
 
-  const save = async (notifyAttendees: boolean | null, alreadyConfirmed = confirmed) => {
+  const save = async (
+    notifyAttendees: boolean | null,
+    alreadyConfirmed = confirmed,
+    chosenScope: EditScope | null = scope,
+  ) => {
     setError(null);
 
     // Same-day string comparison — a quick client-side check to catch the
@@ -92,10 +164,30 @@ export function EventEditForm({
       setError("End time must be after the start time");
       return;
     }
+    const roleErrors = form.volunteerRoles.flatMap((role, i) =>
+      role.removal ? [] : volunteerRoleErrors(role, role.title.trim() || `Role ${i + 1}`, signedUp(role)),
+    );
+    if (roleErrors.length > 0) {
+      setError(roleErrors.join(". "));
+      return;
+    }
 
     setIsSaving(true);
     try {
-      const result = await updateEventAction(eventId, form, notifyAttendees, alreadyConfirmed);
+      if (seriesId && chosenScope == null) {
+        const summary = await seriesScopeSummaryAction(eventId);
+        if (!summary.ok) {
+          setError(summary.error);
+          return;
+        }
+        setScopePrompt(summary);
+        return;
+      }
+
+      const result = await updateEventAction(eventId, form, notifyAttendees, alreadyConfirmed, {
+        scope: chosenScope ?? "this",
+        applyOccurrenceNote,
+      });
 
       if (!result.ok) {
         setError(result.error);
@@ -110,7 +202,7 @@ export function EventEditForm({
       }
       setWarnings(null);
       if (result.needsNotifyDecision) {
-        setNotifyPrompt({ confirmedCount: result.confirmedCount });
+        setNotifyPrompt({ confirmedCount: result.confirmedCount, eventCount: result.eventCount });
         return;
       }
 
@@ -146,10 +238,17 @@ export function EventEditForm({
             <CardTitle>Event details</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
-            {isPartOfSeries && (
+            {seriesId && (
               <p className="text-sm text-muted-foreground">
-                This event is part of a repeating series. Changes here apply to this occurrence
-                only.
+                This event is part of a{" "}
+                <Link
+                  href={`/protected/admin/events/series/${seriesId}`}
+                  className="underline underline-offset-4"
+                >
+                  repeating series
+                </Link>
+                . When you save, you&apos;ll choose whether the changes apply to this event only or
+                to this and all future events.
               </p>
             )}
             <div className="grid grid-cols-2 gap-4">
@@ -236,6 +335,152 @@ export function EventEditForm({
             <p className="text-sm text-muted-foreground">
               Waiver: {waiverLabel ?? "not set (this chapter has no waiver state)"}
             </p>
+          </CardContent>
+        </Card>
+
+        <Card className="mt-4">
+          <CardHeader>
+            <CardTitle>Volunteer roles</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            {form.volunteerRoles.length === 0 && (
+              <p className="text-sm text-muted-foreground">No volunteer roles at this event.</p>
+            )}
+            {form.volunteerRoles.map((role, i) => {
+              const count = signedUp(role);
+              const title = role.title.trim() || `Role ${i + 1}`;
+              if (role.removal) {
+                return (
+                  <div
+                    key={role.id ?? `new-${i}`}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed p-3 text-sm"
+                  >
+                    <span className="text-muted-foreground">
+                      <span className="line-through">{title}</span> —{" "}
+                      {role.removal === "delete"
+                        ? "will be deleted when you save."
+                        : count > 0
+                          ? `will be cancelled when you save; ${count} ${count === 1 ? "signup is" : "signups are"} cancelled and emailed.`
+                          : "will be cancelled when you save."}
+                    </span>
+                    <div className="flex gap-2">
+                      {role.removal === "delete" && seriesId && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          title="Use this when other dates in the series have people signed up for this role"
+                          onClick={() => updateRole(i, { removal: "cancel" })}
+                        >
+                          Cancel instead
+                        </Button>
+                      )}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => updateRole(i, { removal: null })}
+                      >
+                        Undo
+                      </Button>
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <div key={role.id ?? `new-${i}`} className="flex flex-col gap-3 rounded-md border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium">Role {i + 1}</span>
+                      {role.id == null ? (
+                        <Badge variant="outline">New</Badge>
+                      ) : (
+                        <Badge variant="secondary">
+                          {count} signed up
+                        </Badge>
+                      )}
+                    </div>
+                    <Button type="button" variant="ghost" size="sm" onClick={() => removeRole(i)}>
+                      Remove
+                    </Button>
+                  </div>
+                  {cancelAsk === i && (
+                    <div
+                      role="alertdialog"
+                      className="flex flex-col gap-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm"
+                    >
+                      <p className="text-amber-700 dark:text-amber-400">
+                        <strong>
+                          {count} {count === 1 ? "volunteer is" : "volunteers are"}
+                        </strong>{" "}
+                        signed up for {title}, so it can&apos;t be deleted. Cancel the role
+                        instead? Their signups are cancelled and they&apos;re emailed when you
+                        save.
+                      </p>
+                      <div className="flex gap-2">
+                        <Button
+                          type="button"
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => {
+                            setCancelAsk(null);
+                            updateRole(i, { removal: "cancel" });
+                          }}
+                        >
+                          Cancel role
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setCancelAsk(null)}
+                        >
+                          Keep role
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                  <VolunteerRoleFields
+                    idPrefix="edit"
+                    index={i}
+                    role={role}
+                    roleTypes={roleTypes}
+                    signedUp={count}
+                    onChange={(field, value) => updateRole(i, { [field]: value })}
+                  />
+                </div>
+              );
+            })}
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() =>
+                edit((prev) => ({ ...prev, volunteerRoles: [...prev.volunteerRoles, emptyRole()] }))
+              }
+            >
+              Add a role
+            </Button>
+          </CardContent>
+        </Card>
+
+        <Card className="mt-4">
+          <CardContent className="flex flex-col gap-4 pt-6">
+            {scopePrompt && (
+              <SeriesScopeChoice
+                summary={scopePrompt}
+                action="edit"
+                busy={isSaving}
+                occurrenceNoteChanged={form.occurrenceNote.trim() !== initial.occurrenceNote.trim()}
+                applyOccurrenceNote={applyOccurrenceNote}
+                onApplyOccurrenceNoteChange={setApplyOccurrenceNote}
+                onChoose={(choice) => {
+                  setScope(choice);
+                  setScopePrompt(null);
+                  void save(null, confirmed, choice);
+                }}
+                onBack={() => setScopePrompt(null)}
+              />
+            )}
 
             {warnings && (
               <div
@@ -277,7 +522,7 @@ export function EventEditForm({
                     onClick={() => {
                       setConfirmed(true);
                       setWarnings(null);
-                      void save(null, true);
+                      void save(null, true, scope);
                     }}
                   >
                     {isSaving ? "Saving..." : "Yes, save these changes"}
@@ -299,8 +544,14 @@ export function EventEditForm({
                 <p className="text-sm text-amber-700 dark:text-amber-400">
                   This changes the date, time, location, or chapter for{" "}
                   <strong>{notifyPrompt.confirmedCount}</strong> confirmed{" "}
-                  {notifyPrompt.confirmedCount === 1 ? "attendee" : "attendees"}. Send them an
-                  update email with a revised calendar invite?
+                  {notifyPrompt.confirmedCount === 1 ? "attendee" : "attendees"}
+                  {notifyPrompt.eventCount > 1 && (
+                    <>
+                      {" "}
+                      across <strong>{notifyPrompt.eventCount}</strong> events
+                    </>
+                  )}
+                  . Send them an update email with a revised calendar invite?
                 </p>
                 <div className="flex gap-2">
                   <Button type="button" disabled={isSaving} onClick={() => save(true)}>
@@ -326,7 +577,7 @@ export function EventEditForm({
             {success && <p className="text-sm text-green-600">Saved.</p>}
           </CardContent>
           <CardFooter className="flex gap-2">
-            {!notifyPrompt && !warnings && (
+            {!notifyPrompt && !warnings && !scopePrompt && (
               <Button type="submit" disabled={isSaving}>
                 {isSaving ? "Saving..." : "Save changes"}
               </Button>
@@ -397,6 +648,14 @@ function WarningText({ warning }: { warning: EditWarning }) {
           Removing <strong>{warning.titles.join(", ")}</strong>: new registrants won&apos;t be
           asked for {warning.titles.length === 1 ? "it" : "them"} any more. Answers people already
           gave stay on their profiles and RSVPs.
+        </>
+      );
+    case "series_capacity":
+      return (
+        <>
+          Capacity {warning.newCapacity} is also below the people already confirmed or holding
+          an offer on <strong>{warning.overDates.join(", ")}</strong>. Nobody is removed there
+          either, and open waitlist offers that no longer fit are withdrawn.
         </>
       );
     case "sections_added":

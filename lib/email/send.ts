@@ -15,6 +15,9 @@ import {
   leadVolunteerSignupChangeEmail,
   reminderEmail,
   volunteerCancellationEmail,
+  volunteerRoleCancelledEmail,
+  volunteerShiftEventCancelledEmail,
+  volunteerEventRestoredEmail,
   volunteerInviteEmail,
   volunteerReminderEmail,
   volunteerSignupConfirmationEmail,
@@ -366,6 +369,9 @@ export async function sendAdminChangeNotificationEmail(params: {
   eventId: number;
   diff: EventChangeDiffEntry[];
   reason?: string | null;
+  /** Where "View event" links, when the event itself is gone (a deleted
+   * series occurrence) — a path under the site URL. */
+  adminPath?: string;
 }): Promise<void> {
   const recipients = (process.env.ADMIN_NOTIFICATION_EMAILS ?? "")
     .split(",")
@@ -381,7 +387,7 @@ export async function sendAdminChangeNotificationEmail(params: {
     action: params.action,
     actorLabel: params.actorLabel,
     eventName: params.eventName,
-    eventAdminUrl: `${getSiteUrl()}/protected/admin/events/${params.eventId}`,
+    eventAdminUrl: `${getSiteUrl()}${params.adminPath ?? `/protected/admin/events/${params.eventId}`}`,
     diff: params.diff,
     reason: params.reason,
   });
@@ -621,6 +627,62 @@ export async function sendVolunteerCancellationEmail({
     text,
     attachments: [buildVolunteerShiftIcsAttachment(ctx, "CANCEL")],
   });
+}
+
+/** Admin cancelled the role itself (lib/admin/event-roles.ts) — METHOD:CANCEL
+ * .ics, same as the volunteer's own cancel. */
+export async function sendVolunteerRoleCancelledEmail({
+  ctx,
+  toEmail,
+}: {
+  ctx: VolunteerShiftEmailContext;
+  toEmail: string;
+}): Promise<void> {
+  const info = buildVolunteerShiftInfo(ctx);
+  const { subject, html, text } = volunteerRoleCancelledEmail(info);
+  await deliverEmail({
+    to: toEmail,
+    subject,
+    html,
+    text,
+    attachments: [buildVolunteerShiftIcsAttachment(ctx, "CANCEL")],
+  });
+}
+
+/** The whole event was cancelled (cancelEventAction) — the reason plus a
+ * METHOD:CANCEL .ics for the volunteer's shift. */
+export async function sendVolunteerShiftEventCancelledEmail({
+  ctx,
+  toEmail,
+  reason,
+}: {
+  ctx: VolunteerShiftEmailContext;
+  toEmail: string;
+  reason: string;
+}): Promise<void> {
+  const info = buildVolunteerShiftInfo(ctx);
+  const { subject, html, text } = volunteerShiftEventCancelledEmail(info, reason);
+  await deliverEmail({
+    to: toEmail,
+    subject,
+    html,
+    text,
+    attachments: [buildVolunteerShiftIcsAttachment(ctx, "CANCEL")],
+  });
+}
+
+/** The event was restored; this volunteer's shift wasn't (restoreEventAction)
+ * — no .ics, they have to sign up again. */
+export async function sendVolunteerEventRestoredEmail({
+  ctx,
+  toEmail,
+}: {
+  ctx: VolunteerShiftEmailContext;
+  toEmail: string;
+}): Promise<void> {
+  const info = buildVolunteerShiftInfo(ctx);
+  const { subject, html, text } = volunteerEventRestoredEmail(info);
+  await deliverEmail({ to: toEmail, subject, html, text });
 }
 
 /** Pre-shift reminder (no .ics — the confirmation already carried it). Sent

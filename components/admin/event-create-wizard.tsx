@@ -33,12 +33,12 @@ import { cn } from "@/lib/utils";
 import { DateTimeFields } from "@/components/admin/fields/datetime-fields";
 import { LeadContactFields } from "@/components/admin/fields/lead-contact-fields";
 import { RegistrationSectionsFields } from "@/components/admin/fields/registration-sections-fields";
+import { VolunteerRoleFields, volunteerRoleErrors } from "@/components/admin/fields/volunteer-role-fields";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 
 const DRAFT_KEY = "admin-event-create-draft";
 const STEP_LABELS = ["Basics", "Details", "Volunteers", "Recurrence", "Review"];
@@ -128,17 +128,7 @@ function step3Errors(form: CreateEventInput): string[] {
     errors.push('Add at least one volunteer role, or switch back to "No"');
   }
   form.volunteerRoles.forEach((role, i) => {
-    const label = role.title.trim() || `Role ${i + 1}`;
-    if (!role.title.trim()) errors.push(`${label}: title is required`);
-    const needed = Number(role.numberNeeded.trim());
-    if (!role.numberNeeded.trim() || !Number.isFinite(needed) || needed < 1) {
-      errors.push(`${label}: number needed must be at least 1`);
-    }
-    if (!role.shiftStart || !role.shiftEnd) {
-      errors.push(`${label}: shift start and end are required`);
-    } else if (role.shiftEnd <= role.shiftStart) {
-      errors.push(`${label}: shift end must be after shift start`);
-    }
+    errors.push(...volunteerRoleErrors(role, role.title.trim() || `Role ${i + 1}`));
   });
   return errors;
 }
@@ -698,107 +688,13 @@ export function EventCreateWizard({
                         Remove
                       </Button>
                     </div>
-                    {roleTypes.length > 0 && (
-                      <div className="grid gap-2">
-                        <Label htmlFor={`role_${i}_role_type`}>Role type</Label>
-                        {/* "Custom / other" bypasses the volunteer_role_types
-                          * catalog entirely (roleTypeId stays ""), which is
-                          * fine today since a role type has no gating
-                          * behavior yet — but volunteer_role_approvals is
-                          * keyed by role_type_id, so once event volunteer
-                          * SIGNUPS get gated by approval, a custom/other role
-                          * has nothing to approve against. Not changed here;
-                          * flagging so that decision (open-to-anyone, or
-                          * retire this option) gets made deliberately then. */}
-                        <Select
-                          id={`role_${i}_role_type`}
-                          value={role.roleTypeId}
-                          onChange={(e) => {
-                            const roleTypeId = e.target.value;
-                            const matched = roleTypes.find((rt) => String(rt.id) === roleTypeId);
-                            setForm((prev) => ({
-                              ...prev,
-                              volunteerRoles: prev.volunteerRoles.map((r, ri) =>
-                                ri === i
-                                  ? {
-                                      ...r,
-                                      roleTypeId,
-                                      title: matched && !r.title.trim() ? matched.name : r.title,
-                                    }
-                                  : r,
-                              ),
-                            }));
-                          }}
-                        >
-                          <option value="">Custom / other (no role type)</option>
-                          {roleTypes.map((rt) => (
-                            <option key={rt.id} value={rt.id}>
-                              {rt.name}
-                            </option>
-                          ))}
-                        </Select>
-                      </div>
-                    )}
-                    <div className="grid gap-2">
-                      <Label htmlFor={`role_${i}_title`}>Title</Label>
-                      <Input
-                        id={`role_${i}_title`}
-                        required
-                        value={role.title}
-                        onChange={(e) => updateRole(i, "title", e.target.value)}
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor={`role_${i}_description`}>Description</Label>
-                      <Textarea
-                        id={`role_${i}_description`}
-                        value={role.description}
-                        onChange={(e) => updateRole(i, "description", e.target.value)}
-                      />
-                    </div>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="grid gap-2">
-                        <Label htmlFor={`role_${i}_shift_start`}>Shift start</Label>
-                        <Input
-                          id={`role_${i}_shift_start`}
-                          type="time"
-                          required
-                          value={role.shiftStart}
-                          onChange={(e) => updateRole(i, "shiftStart", e.target.value)}
-                        />
-                      </div>
-                      <div className="grid gap-2">
-                        <Label htmlFor={`role_${i}_shift_end`}>Shift end</Label>
-                        <Input
-                          id={`role_${i}_shift_end`}
-                          type="time"
-                          required
-                          value={role.shiftEnd}
-                          onChange={(e) => updateRole(i, "shiftEnd", e.target.value)}
-                        />
-                      </div>
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor={`role_${i}_bring`}>What to bring or wear</Label>
-                      <Input
-                        id={`role_${i}_bring`}
-                        placeholder="Optional"
-                        value={role.whatToBring}
-                        onChange={(e) => updateRole(i, "whatToBring", e.target.value)}
-                      />
-                    </div>
-                    <div className="grid gap-2">
-                      <Label htmlFor={`role_${i}_needed`}>Number needed</Label>
-                      <Input
-                        id={`role_${i}_needed`}
-                        type="number"
-                        inputMode="numeric"
-                        min={1}
-                        required
-                        value={role.numberNeeded}
-                        onChange={(e) => updateRole(i, "numberNeeded", e.target.value)}
-                      />
-                    </div>
+                    <VolunteerRoleFields
+                      idPrefix="create"
+                      index={i}
+                      role={role}
+                      roleTypes={roleTypes}
+                      onChange={(field, value) => updateRole(i, field, value)}
+                    />
                   </div>
                 ))}
                 <Button type="button" variant="outline" onClick={addRole}>

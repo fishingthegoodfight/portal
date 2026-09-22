@@ -83,6 +83,8 @@ export function EventRoster({
   virtualAccessNotes,
   volunteerRoles,
   initialVolunteerRoster,
+  seriesId,
+  volunteersCancelledWithEvent,
 }: {
   eventId: number;
   eventCard: EventCardEvent;
@@ -104,6 +106,10 @@ export function EventRoster({
    * event has none. */
   volunteerRoles: VolunteerRoleSummary[];
   initialVolunteerRoster: VolunteerRosterPerson[];
+  /** Set for an occurrence of a repeating series. */
+  seriesId: string | null;
+  /** Volunteer signups the event's cancellation cancelled (0 unless cancelled). */
+  volunteersCancelledWithEvent: number;
 }) {
   const router = useRouter();
   const isCancelled = status === "cancelled";
@@ -495,6 +501,11 @@ export function EventRoster({
           <Button asChild variant="outline">
             <Link href={`/protected/admin/events/${eventId}/edit`}>Edit event</Link>
           </Button>
+          {seriesId && (
+            <Button asChild variant="outline">
+              <Link href={`/protected/admin/events/series/${seriesId}`}>View series</Link>
+            </Button>
+          )}
           <Button asChild variant="outline">
             <Link href={`/protected/admin/events/${eventId}/print`} target="_blank">
               Print roster
@@ -516,12 +527,14 @@ export function EventRoster({
               eventId={eventId}
               eventName={eventCard.name}
               confirmedCount={confirmedCount}
+              volunteersCancelledCount={volunteersCancelledWithEvent}
               onRestored={() => router.refresh()}
             />
           ) : (
             <CancelEventDialog
               eventId={eventId}
               eventName={eventCard.name}
+              seriesId={seriesId}
               onCancelled={() => router.refresh()}
             />
           )}

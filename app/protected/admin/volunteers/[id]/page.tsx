@@ -5,7 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { formatDateInZone } from "@/lib/format-date";
 import { timezoneForChapter } from "@/lib/chapters";
-import { certIsCurrent } from "@/lib/volunteers";
+import { certIsCurrent, VOLUNTEER_STATUS_LABELS, type VolunteerStatus } from "@/lib/volunteers";
 import { VolunteerStatusSelect } from "@/components/admin/volunteer-status-select";
 import { VolunteerRoleApprovals, type RoleTypeForApproval } from "@/components/admin/volunteer-role-approvals";
 import { VolunteerAdminNotes } from "@/components/admin/volunteer-admin-notes";
@@ -75,9 +75,25 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
 
   const name = [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || profile?.email || volunteerId;
   const timeZone = timezoneForChapter(profile?.chapter as string | null | undefined);
+  const status = volunteer.status as VolunteerStatus;
+  const approvedRoleNames = roleTypesForApproval.filter((rt) => rt.activeApprovalId != null).map((rt) => rt.name);
 
   return (
     <div className="flex flex-col gap-6">
+      {approvedRoleNames.length > 0 && status !== "approved" && (
+        <div
+          role="alert"
+          className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400"
+        >
+          <p className="font-semibold">
+            Approved for {approvedRoleNames.join(", ")}, but not an approved volunteer
+          </p>
+          <p>
+            Their status is {VOLUNTEER_STATUS_LABELS[status] ?? status}, so they can&apos;t sign up
+            for any of these roles. Change their status to Approved with the status menu when they&apos;re ready.
+          </p>
+        </div>
+      )}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold">{name}</h1>
@@ -171,6 +187,8 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
         <CardContent>
           <VolunteerRoleApprovals
             volunteerId={volunteerId}
+            volunteerName={name}
+            volunteerStatus={status}
             roleTypes={roleTypesForApproval}
             hasCurrentCert={hasCurrentCert}
           />

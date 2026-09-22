@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { toZonedDateTimeInputs } from "@/lib/timezone";
 import { timezoneForChapter } from "@/lib/chapters";
 import { WAIVER_STATES, waiverStateForChapter } from "@/lib/waivers";
+import { loadActiveRoles, toEditableRole } from "@/lib/admin/event-roles";
 import { EventEditForm } from "@/components/admin/event-edit-form";
 import type { EventTypeOption } from "@/lib/event-types";
 
@@ -16,7 +17,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
   }
 
   const supabase = await createClient();
-  const [{ data: event }, { data: eventTypes }] = await Promise.all([
+  const [{ data: event }, { data: eventTypes }, { data: roleTypes }, roles] = await Promise.all([
     supabase
       .from("events")
       .select(
@@ -30,6 +31,11 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
       .from("event_types")
       .select("id, key, name, default_registration_sections, sort_order, active")
       .order("sort_order", { ascending: true }),
+    supabase
+      .from("volunteer_role_types")
+      .select("id, name, for_chapter_events, active")
+      .order("sort_order", { ascending: true }),
+    loadActiveRoles(supabase, [eventId]),
   ]);
 
   if (!event) {
@@ -44,12 +50,21 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
     ? toZonedDateTimeInputs(new Date(event.ends_at), timezone).time
     : "";
 
+  // Same offer as the create wizard (active, chapter-event role types), plus
+  // any type a role here already uses, so saving never silently drops it.
+  const usedRoleTypeIds = new Set(roles.map((r) => r.role_type_id));
+  const roleTypeOptions = (roleTypes ?? [])
+    .filter((rt) => (rt.for_chapter_events && rt.active) || usedRoleTypeIds.has(rt.id as number))
+    .map((rt) => ({ id: rt.id as number, name: rt.name as string }));
+
   return (
     <EventEditForm
       eventId={event.id}
       isCancelled={event.status === "cancelled"}
-      isPartOfSeries={Boolean(event.series_id)}
+      seriesId={event.series_id}
       eventTypes={(eventTypes ?? []) as EventTypeOption[]}
+      roleTypes={roleTypeOptions}
+      signedUpByRoleId={Object.fromEntries(roles.map((r) => [r.id, r.confirmed]))}
       legacyLocation={
         !event.venue_name && !event.street_address && !event.city && !event.state
           ? event.location
@@ -83,6 +98,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
         time,
         endTime,
         timezone,
+        volunteerRoles: roles.map((r) => toEditableRole(r, timezone)),
       }}
     />
   );

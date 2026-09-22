@@ -130,7 +130,8 @@ async function RsvpLoader({
     .select(
       "id, event_id, role, description, what_to_bring, role_type_id, shift_start, shift_end, slots, slots_taken",
     )
-    .eq("event_id", eventId);
+    .eq("event_id", eventId)
+    .is("cancelled_at", null);
 
   let volunteerSection: React.ReactNode = null;
   if (opportunities && opportunities.length > 0) {

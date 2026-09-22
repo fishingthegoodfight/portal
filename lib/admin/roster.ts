@@ -24,6 +24,8 @@ export type AdminEventSummary = {
   waiver_state: string | null;
   status: string;
   cancellation_reason: string | null;
+  cancelled_at: string | null;
+  series_id: string | null;
 };
 
 export type RosterPerson = {
@@ -130,7 +132,7 @@ export async function loadEventRoster(
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, occurrence_note, virtual_link, virtual_access_notes, capacity, spots_taken, lead_name, lead_phone, custom_email_note, registration_sections, waiver_state, status, cancellation_reason",
+      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, occurrence_note, virtual_link, virtual_access_notes, capacity, spots_taken, lead_name, lead_phone, custom_email_note, registration_sections, waiver_state, status, cancellation_reason, cancelled_at, series_id",
     )
     .eq("id", eventId)
     .maybeSingle();
@@ -254,7 +256,10 @@ export async function loadEventRoster(
   const { data: opportunityRows } = await supabase
     .from("volunteer_opportunities")
     .select("id, role, shift_start, shift_end, slots, slots_taken")
-    .eq("event_id", eventId);
+    .eq("event_id", eventId)
+    // A cancelled role (edit form, "Cancel role") has no signups left and
+    // isn't offered any more.
+    .is("cancelled_at", null);
 
   const opportunities = (opportunityRows ?? []) as {
     id: number;
