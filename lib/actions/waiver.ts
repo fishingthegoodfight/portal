@@ -152,12 +152,16 @@ export async function createWaiverVersionAction(input: {
   if (!title) return { ok: false, error: "A title is required" };
   if (!body) return { ok: false, error: "The waiver text is required" };
 
-  // unique (state, version): retry once if two admins add a version at once.
+  // This form only ever manages the participant waiver (see
+  // app/protected/admin/waivers/page.tsx) — the volunteer waiver is seeded
+  // separately. unique (state, audience, version): retry once if two admins
+  // add a version at once.
   for (let attempt = 0; attempt < 2; attempt++) {
     const { data: latest } = await supabase
       .from("waivers")
       .select("version")
       .eq("state", input.state)
+      .eq("audience", "participant")
       .order("version", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -165,6 +169,7 @@ export async function createWaiverVersionAction(input: {
 
     const { error } = await supabase.from("waivers").insert({
       state: input.state,
+      audience: "participant",
       year,
       version,
       title,

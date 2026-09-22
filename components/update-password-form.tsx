@@ -17,8 +17,14 @@ import { useState } from "react";
 
 export function UpdatePasswordForm({
   className,
+  next,
   ...props
-}: React.ComponentPropsWithoutRef<"div">) {
+}: React.ComponentPropsWithoutRef<"div"> & {
+  /** Where to go once the password is saved — e.g. straight into volunteer
+   * registration for an invite link's set-password step. Falls back to the
+   * events list when unset (a plain "forgot password" reset). */
+  next?: string | null;
+}) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -33,8 +39,7 @@ export function UpdatePasswordForm({
     try {
       const { error } = await supabase.auth.updateUser({ password });
       if (error) throw error;
-      // Update this route to redirect to an authenticated route. The user already has an active session.
-      router.push("/protected/events");
+      router.push(next || "/protected/events");
     } catch (error: unknown) {
       setError(error instanceof Error ? error.message : "An error occurred");
     } finally {

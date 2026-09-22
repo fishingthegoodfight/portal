@@ -2,15 +2,18 @@
 
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
-import { useRouter } from "next/navigation";
 
 export function LogoutButton() {
-  const router = useRouter();
-
   const logout = async () => {
     const supabase = createClient();
     await supabase.auth.signOut();
-    router.push("/auth/login");
+    // A hard navigation, not router.push/refresh: every server component in
+    // the tree (header included) has to be rendered from scratch against the
+    // new (empty) session, with nothing served from the client router cache.
+    // router.refresh() only clears the cache for the route it's called from
+    // and races the still-in-flight signOut — it isn't reliably enough to
+    // guarantee a previous user's data can never flash on screen.
+    window.location.href = "/auth/login";
   };
 
   return <Button onClick={logout}>Logout</Button>;

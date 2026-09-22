@@ -12,11 +12,15 @@ async function NewEventLoader() {
   }
   const userId = data.claims.sub as string;
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("first_name, last_name, email, phone")
-    .eq("id", userId)
-    .maybeSingle();
+  const [{ data: profile }, { data: roleTypes }] = await Promise.all([
+    supabase.from("profiles").select("first_name, last_name, email, phone").eq("id", userId).maybeSingle(),
+    supabase
+      .from("volunteer_role_types")
+      .select("id, name")
+      .eq("for_chapter_events", true)
+      .eq("active", true)
+      .order("sort_order", { ascending: true }),
+  ]);
 
   const leadName = [profile?.first_name, profile?.last_name].filter(Boolean).join(" ");
 
@@ -27,6 +31,7 @@ async function NewEventLoader() {
         leadEmail: profile?.email ?? (data.claims.email as string | undefined) ?? "",
         leadPhone: profile?.phone ?? "",
       }}
+      roleTypes={roleTypes ?? []}
     />
   );
 }

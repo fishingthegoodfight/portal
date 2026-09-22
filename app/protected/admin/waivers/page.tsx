@@ -19,9 +19,12 @@ type WaiverRow = {
 
 async function WaiversLoader() {
   const supabase = await createClient();
+  // Participant waivers only — the volunteer waiver (audience 'volunteer')
+  // is seeded separately and isn't managed from this page.
   const { data, error } = await supabase
     .from("waivers")
     .select("id, state, year, version, title, body_markdown, is_active, created_at")
+    .eq("audience", "participant")
     .order("state", { ascending: true })
     .order("year", { ascending: false })
     .order("version", { ascending: false });

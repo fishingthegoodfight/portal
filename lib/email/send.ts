@@ -13,6 +13,7 @@ import {
   eventUpdateEmail,
   leadParticipantCancelledEmail,
   reminderEmail,
+  volunteerInviteEmail,
   waitlistOfferEmail,
   waitlistOfferExpiredEmail,
   type ReminderKind,
@@ -419,6 +420,26 @@ export async function sendWaitlistOfferExpiredEmail({
   reason?: "capacity";
 }): Promise<void> {
   const { subject, html, text } = waitlistOfferExpiredEmail(buildEventInfo(event), { reason });
+  await deliverEmail({ to: toEmail, subject, html, text });
+}
+
+/**
+ * Sent by the "Invite volunteer" admin action — and its re-send, with the
+ * same copy either way. Throws on failure; the caller decides how to
+ * surface that (the invite still succeeded in creating the row/account).
+ */
+export async function sendVolunteerInviteEmail({
+  toEmail,
+  recipientName,
+  actionUrl,
+  needsPasswordSetup,
+}: {
+  toEmail: string;
+  recipientName: string | null;
+  actionUrl: string;
+  needsPasswordSetup: boolean;
+}): Promise<void> {
+  const { subject, html, text } = volunteerInviteEmail({ recipientName, actionUrl, needsPasswordSetup });
   await deliverEmail({ to: toEmail, subject, html, text });
 }
 

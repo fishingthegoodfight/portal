@@ -41,6 +41,8 @@ const STEP_LABELS = ["Basics", "Details", "Volunteers", "Recurrence", "Review"];
 
 type AdminPrefill = { leadName: string; leadEmail: string; leadPhone: string };
 
+export type ChapterEventRoleType = { id: number; name: string };
+
 function emptyForm(prefill: AdminPrefill): CreateEventInput {
   return {
     chapter: "",
@@ -76,6 +78,7 @@ function emptyVolunteerRole(): VolunteerRoleInput {
     shiftEnd: "",
     whatToBring: "",
     numberNeeded: "1",
+    roleTypeId: "",
   };
 }
 
@@ -147,7 +150,15 @@ function errorsForStep(step: number, form: CreateEventInput): string[] {
   return [];
 }
 
-export function EventCreateWizard({ adminPrefill }: { adminPrefill: AdminPrefill }) {
+export function EventCreateWizard({
+  adminPrefill,
+  roleTypes,
+}: {
+  adminPrefill: AdminPrefill;
+  /** Active volunteer_role_types with for_chapter_events true — the only
+   * ones offered for an event role (see lib/volunteers.ts). */
+  roleTypes: ChapterEventRoleType[];
+}) {
   const router = useRouter();
   const initialForm = useMemo(() => emptyForm(adminPrefill), [adminPrefill]);
 
@@ -454,6 +465,38 @@ export function EventCreateWizard({ adminPrefill }: { adminPrefill: AdminPrefill
                         Remove
                       </Button>
                     </div>
+                    {roleTypes.length > 0 && (
+                      <div className="grid gap-2">
+                        <Label htmlFor={`role_${i}_role_type`}>Role type</Label>
+                        <Select
+                          id={`role_${i}_role_type`}
+                          value={role.roleTypeId}
+                          onChange={(e) => {
+                            const roleTypeId = e.target.value;
+                            const matched = roleTypes.find((rt) => String(rt.id) === roleTypeId);
+                            setForm((prev) => ({
+                              ...prev,
+                              volunteerRoles: prev.volunteerRoles.map((r, ri) =>
+                                ri === i
+                                  ? {
+                                      ...r,
+                                      roleTypeId,
+                                      title: matched && !r.title.trim() ? matched.name : r.title,
+                                    }
+                                  : r,
+                              ),
+                            }));
+                          }}
+                        >
+                          <option value="">Custom / other (no role type)</option>
+                          {roleTypes.map((rt) => (
+                            <option key={rt.id} value={rt.id}>
+                              {rt.name}
+                            </option>
+                          ))}
+                        </Select>
+                      </div>
+                    )}
                     <div className="grid gap-2">
                       <Label htmlFor={`role_${i}_title`}>Title</Label>
                       <Input

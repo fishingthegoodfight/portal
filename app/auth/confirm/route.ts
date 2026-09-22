@@ -19,12 +19,29 @@ export async function GET(request: NextRequest) {
     if (!error) {
       // redirect user to specified redirect URL or root of app
       redirect(next);
-    } else {
-      // redirect the user to an error page with some instructions
-      redirect(`/auth/error?error=${error?.message}`);
     }
+
+    // Invite/recovery tokens are single-use, so a click that fails here
+    // often just means "already redeemed" rather than "never valid" — e.g.
+    // the invited user already opened this same link once (establishing a
+    // session) and is now clicking it again from the same email. If the
+    // browser already carries a usable session, don't show the expired-link
+    // error: just continue on to wherever the link was headed, same as a
+    // successful verify would have.
+    const { data: existingSession } = await supabase.auth.getClaims();
+    if (existingSession?.claims) {
+      redirect(next);
+    }
+
+    // redirect the user to an error page with some instructions — `type`
+    // and `next` (where this link was headed) let that page recognize
+    // e.g. an expired/used volunteer invite and give a specific message
+    // instead of a generic one.
+    redirect(
+      `/auth/error?error=${encodeURIComponent(error.message)}&type=${encodeURIComponent(type)}&next=${encodeURIComponent(next)}`,
+    );
   }
 
   // redirect the user to an error page with some instructions
-  redirect(`/auth/error?error=No token hash or type`);
+  redirect(`/auth/error?error=${encodeURIComponent("No token hash or type")}`);
 }

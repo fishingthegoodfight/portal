@@ -533,6 +533,61 @@ function waitlistSpotRemovedEmail(info: RsvpEmailEventInfo): RenderedEmail {
 }
 
 /**
+ * Sent when an admin invites someone to the volunteer registry — including a
+ * re-send, which uses the same copy. `actionUrl` is either a Supabase invite
+ * link (brand-new account, sets a password on first click) or a plain link
+ * to the registration form (existing account — they just log in as usual).
+ */
+export function volunteerInviteEmail({
+  recipientName,
+  actionUrl,
+  needsPasswordSetup,
+}: {
+  recipientName: string | null;
+  actionUrl: string;
+  /** True whenever the link needs to take them through setting a password
+   * first — a brand-new account, or an earlier invite they never completed —
+   * before landing on the registration form. False only for someone who
+   * already has a working (password-set) account. */
+  needsPasswordSetup: boolean;
+}): RenderedEmail {
+  const subject = "You're invited to volunteer with Fishing the Good Fight";
+  const greeting = recipientName ? `Hi ${escapeHtml(recipientName)},` : "Hi,";
+  const greetingText = recipientName ? `Hi ${recipientName},` : "Hi,";
+  const introHtml = needsPasswordSetup
+    ? "You've been invited to join the volunteer team. Click below to set up your account and complete your volunteer registration."
+    : "You've been invited to join the volunteer team. Click below to complete your volunteer registration.";
+  const introText = needsPasswordSetup
+    ? "You've been invited to join the volunteer team. Follow the link below to set up your account and complete your volunteer registration."
+    : "You've been invited to join the volunteer team. Follow the link below to complete your volunteer registration.";
+  const buttonLabel = needsPasswordSetup ? "Set up your account" : "Complete registration";
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">You're invited to volunteer</p>`,
+      `<p style="margin:0 0 16px;">${greeting}</p>`,
+      `<p style="margin:0 0 16px;">${introHtml}</p>`,
+      `<p style="margin:24px 0 8px;"><a href="${actionUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Questions? Just reply to this email.</p>`,
+    ].join("\n"),
+  );
+
+  const text = [
+    "You're invited to volunteer",
+    "",
+    greetingText,
+    "",
+    introText,
+    "",
+    `${buttonLabel}: ${actionUrl}`,
+    "",
+    "Questions? Just reply to this email.",
+  ].join("\n");
+
+  return { subject, html, text };
+}
+
+/**
  * Internal heads-up to an event's lead (lead_email) when a participant
  * cancels their confirmed RSVP: who cancelled, and whether the freed spot
  * went to someone on the waitlist.

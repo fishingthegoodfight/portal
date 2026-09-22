@@ -25,6 +25,9 @@ export type VolunteerRoleInput = {
   whatToBring: string;
   /** Raw form text. */
   numberNeeded: string;
+  /** volunteer_role_types.id as a string, or "" for a plain free-text role
+   * with no catalog role type behind it. */
+  roleTypeId: string;
 };
 
 export type CreateEventInput = {
@@ -225,6 +228,7 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
         shift_start: zonedDateTimeToUtc(occurrenceDate, role.shiftStart, timezone).toISOString(),
         shift_end: zonedDateTimeToUtc(occurrenceDate, role.shiftEnd, timezone).toISOString(),
         what_to_bring: role.whatToBring.trim() || null,
+        role_type_id: role.roleTypeId ? Number(role.roleTypeId) : null,
       }));
       const { error: volunteerError } = await supabase
         .from("volunteer_opportunities")

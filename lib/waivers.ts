@@ -20,6 +20,17 @@ export function isWaiverState(value: unknown): value is WaiverState {
   return value === "CO" || value === "GA";
 }
 
+/** waivers.audience — participant waivers (RSVP/walk-up) are entirely
+ * separate from volunteer waivers (volunteer registration): different text,
+ * independent version sequences per state (see the 2026-09-22
+ * schema-changes.sql entry). */
+export const WAIVER_AUDIENCES = { participant: "Participant", volunteer: "Volunteer" } as const;
+export type WaiverAudience = keyof typeof WAIVER_AUDIENCES;
+
+export function isWaiverAudience(value: unknown): value is WaiverAudience {
+  return value === "participant" || value === "volunteer";
+}
+
 /** The waiver state a chapter maps to (CO for Denver/CO Springs, GA for
  * Atlanta/Rome), or null for an unknown chapter. */
 export function waiverStateForChapter(chapter: string | null | undefined): WaiverState | null {
@@ -36,6 +47,19 @@ export type ActiveWaiver = {
   body_markdown: string;
 };
 
+/** The event's calendar year in its own timezone, or — for flows with no
+ * event (volunteer registration) — the current calendar year in a given
+ * timezone. Same Intl-based logic as eventYear below. */
+function yearInZone(instant: Date, timeZone: string): number {
+  return Number(new Intl.DateTimeFormat("en-US", { year: "numeric", timeZone }).format(instant));
+}
+
+/** The current calendar year in a timezone — used by the volunteer waiver
+ * (signed once per calendar year, not tied to any event). */
+export function currentYearInZone(timeZone: string): number {
+  return yearInZone(new Date(), timeZone);
+}
+
 /** The subset of an event the waiver logic needs. */
 export type WaiverEvent = {
   chapter: string | null;
@@ -47,9 +71,7 @@ export type WaiverEvent = {
 /** The event's calendar year in its own timezone — an event at 11pm on Dec 31
  * local time is still that year, whatever UTC says. */
 export function eventYear(startsAt: string, timeZone: string): number {
-  return Number(
-    new Intl.DateTimeFormat("en-US", { year: "numeric", timeZone }).format(new Date(startsAt)),
-  );
+  return yearInZone(new Date(startsAt), timeZone);
 }
 
 /** events.waiver_state, falling back to the chapter's state for a row that
@@ -60,17 +82,21 @@ export function waiverStateForEvent(event: WaiverEvent): WaiverState | null {
     : waiverStateForChapter(event.chapter);
 }
 
-/** Highest-version active waiver for a state + year, or null if none exists. */
+/** Highest-version active waiver for a state + year + audience (defaults to
+ * 'participant', the only audience that existed before the 2026-09-22
+ * volunteer waiver), or null if none exists. */
 export async function loadActiveWaiver(
   supabase: SupabaseClient,
   state: WaiverState,
   year: number,
+  audience: WaiverAudience = "participant",
 ): Promise<ActiveWaiver | null> {
   const { data } = await supabase
     .from("waivers")
     .select("id, state, year, version, title, body_markdown")
     .eq("state", state)
     .eq("year", year)
+    .eq("audience", audience)
     .eq("is_active", true)
     .order("version", { ascending: false })
     .limit(1)
@@ -83,7 +109,9 @@ export type WaiverRequirement =
   | { kind: "no_waiver"; state: WaiverState; year: number }
   | { kind: "ok"; state: WaiverState; year: number; waiver: ActiveWaiver };
 
-/** Which waiver an event calls for (independent of who is signing it). */
+/** Which waiver an event calls for (independent of who is signing it).
+ * Always the 'participant' audience — an event's registration waiver is
+ * never the volunteer one. */
 export async function resolveEventWaiver(
   supabase: SupabaseClient,
   event: WaiverEvent,
@@ -91,7 +119,23 @@ export async function resolveEventWaiver(
   const state = waiverStateForEvent(event);
   if (!state) return { kind: "no_state" };
   const year = eventYear(event.starts_at, event.timezone);
-  const waiver = await loadActiveWaiver(supabase, state, year);
+  const waiver = await loadActiveWaiver(supabase, state, year, "participant");
+  return waiver ? { kind: "ok", state, year, waiver } : { kind: "no_waiver", state, year };
+}
+
+/** Which waiver a volunteer registration calls for: the active 'volunteer'
+ * waiver for their home chapter's state, for the current calendar year (in
+ * that state's timezone) — signed once per calendar year, not tied to any
+ * event. */
+export async function resolveVolunteerWaiver(
+  supabase: SupabaseClient,
+  homeChapter: string | null | undefined,
+  timeZone: string,
+): Promise<WaiverRequirement> {
+  const state = waiverStateForChapter(homeChapter);
+  if (!state) return { kind: "no_state" };
+  const year = currentYearInZone(timeZone);
+  const waiver = await loadActiveWaiver(supabase, state, year, "volunteer");
   return waiver ? { kind: "ok", state, year, waiver } : { kind: "no_waiver", state, year };
 }
 
@@ -136,23 +180,22 @@ export function waiverHeading(state: WaiverState, year: number): string {
   return `${year} ${WAIVER_STATES[state]} waiver`;
 }
 
-export async function waiverInfoForUser(
+/** Shared by waiverInfoForUser and waiverInfoForVolunteer: turns a resolved
+ * requirement plus a signature lookup into what the signing UI needs. */
+async function waiverInfoFromRequirement(
   supabase: SupabaseClient,
-  event: WaiverEvent,
-  /** Null when the signer has no account yet (a brand-new walk-up). */
+  requirement: WaiverRequirement,
   userId: string | null,
+  timeZone: string,
+  noStateMessage: string,
 ): Promise<WaiverInfo> {
-  const requirement = await resolveEventWaiver(supabase, event);
   if (requirement.kind === "no_state") {
-    return {
-      status: "unavailable",
-      message: "This event requires a waiver but no waiver state is set for it. Please contact an organizer.",
-    };
+    return { status: "unavailable", message: noStateMessage };
   }
   if (requirement.kind === "no_waiver") {
     return {
       status: "unavailable",
-      message: `This event requires a waiver, but no ${requirement.year} ${WAIVER_STATES[requirement.state]} waiver has been published yet. Please contact an organizer.`,
+      message: `This requires a waiver, but no ${requirement.year} ${WAIVER_STATES[requirement.state]} waiver has been published yet. Please contact an organizer.`,
     };
   }
 
@@ -160,7 +203,7 @@ export async function waiverInfoForUser(
   if (signature) {
     return {
       status: "signed",
-      label: signedLabel(requirement.waiver, signature.signed_at, event.timezone),
+      label: signedLabel(requirement.waiver, signature.signed_at, timeZone),
     };
   }
   return {
@@ -170,4 +213,41 @@ export async function waiverInfoForUser(
     bodyMarkdown: requirement.waiver.body_markdown,
     heading: waiverHeading(requirement.state, requirement.year),
   };
+}
+
+export async function waiverInfoForUser(
+  supabase: SupabaseClient,
+  event: WaiverEvent,
+  /** Null when the signer has no account yet (a brand-new walk-up). */
+  userId: string | null,
+): Promise<WaiverInfo> {
+  const requirement = await resolveEventWaiver(supabase, event);
+  return waiverInfoFromRequirement(
+    supabase,
+    requirement,
+    userId,
+    event.timezone,
+    "This event requires a waiver but no waiver state is set for it. Please contact an organizer.",
+  );
+}
+
+/** What the volunteer registration form needs to know about the volunteer
+ * liability waiver for this person's chosen home chapter. `timeZone` is the
+ * chapter's own zone (lib/chapters.ts timezoneForChapter) — the volunteer
+ * waiver year is the current calendar year there, like the participant
+ * waiver's year is the event's own calendar year in its zone. */
+export async function waiverInfoForVolunteer(
+  supabase: SupabaseClient,
+  homeChapter: string | null | undefined,
+  timeZone: string,
+  userId: string,
+): Promise<WaiverInfo> {
+  const requirement = await resolveVolunteerWaiver(supabase, homeChapter, timeZone);
+  return waiverInfoFromRequirement(
+    supabase,
+    requirement,
+    userId,
+    timeZone,
+    "Volunteer registration requires a waiver, but your home chapter isn't set to one we recognize. Please contact an organizer.",
+  );
 }

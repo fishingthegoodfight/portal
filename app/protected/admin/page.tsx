@@ -72,6 +72,9 @@ export default function AdminEventsIndexPage() {
         </div>
         <div className="flex gap-2">
           <Button asChild variant="outline">
+            <Link href="/protected/admin/volunteers">Volunteers</Link>
+          </Button>
+          <Button asChild variant="outline">
             <Link href="/protected/admin/waivers">Waivers</Link>
           </Button>
           <Button asChild>

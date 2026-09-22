@@ -1978,3 +1978,354 @@ update public.rsvps r
    and e.status = 'scheduled'
    and e.starts_at > now()
    and r.dietary_notes is distinct from public.dietary_note_from_profile(p.dietary_notes);
+
+-- =============================================================================
+-- 2026-09-22 — Volunteer registry: role types, approvals, registration
+-- =============================================================================
+-- Builds the volunteer registry (volunteers, volunteer_role_types,
+-- volunteer_role_approvals, volunteer_certifications), the invite +
+-- registration flow, and the admin screens for all of it. Does NOT build
+-- event volunteer signups (the existing volunteer_opportunities /
+-- volunteer_signups tables are untouched beyond a new role_type_id column)
+-- or the health history form (volunteers.health_history_outstanding is set
+-- true at registration as a placeholder; the form itself is a future entry).
+--
+-- Design note on admin_notes: the brief calls for an `admin_notes` column on
+-- `volunteers`, readable/writable only by admins with
+-- profiles.can_view_volunteer_screening, "enforced in RLS, not just the UI".
+-- Postgres RLS policies are row-scoped, not column-scoped — a SELECT policy
+-- either returns a whole row or none of it, so a flag-gated column can't be
+-- hidden from *some* admins on the same row via a table-level policy (and
+-- Supabase's shared `authenticated` role rules out column GRANTs, which are
+-- role-scoped, not per-user). admin_notes is therefore split into its own
+-- one-row-per-volunteer table, `volunteer_screening_notes`, with its own RLS
+-- policy gated on can_view_volunteer_screening() — the only way this is
+-- actually enforced at the database layer rather than trusted to the UI.
+
+-- ---- Waivers: participant vs. volunteer -------------------------------------
+-- Existing rows default to 'participant' (unchanged behavior). The prior
+-- unique (state, version) constraint is replaced with (state, audience,
+-- version) so a state can have independent version sequences per audience —
+-- e.g. CO participant v3 and CO volunteer v1 coexisting.
+alter table public.waivers
+  add column if not exists audience text not null default 'participant'
+    check (audience in ('participant', 'volunteer'));
+
+alter table public.waivers drop constraint if exists waivers_state_version_key;
+alter table public.waivers
+  add constraint waivers_state_audience_version_key unique (state, audience, version);
+
+drop index if exists waivers_state_year_idx;
+create index waivers_state_year_idx
+  on public.waivers (state, audience, year, version desc)
+  where is_active;
+
+-- ---- Profile columns for the volunteer registration form --------------------
+alter table public.profiles
+  add column if not exists tshirt_size text,
+  add column if not exists favorite_snack text,
+  add column if not exists favorite_na_beverage text,
+  add column if not exists skill_interests text[] not null default '{}'::text[],
+  add column if not exists skill_interests_other text,
+  add column if not exists program_interests text[] not null default '{}'::text[],
+  add column if not exists can_view_volunteer_screening boolean not null default false;
+
+-- Mirrors is_admin(): SECURITY DEFINER so RLS policies (below) can call it
+-- from a `volunteer_screening_notes` policy without recursing into
+-- `profiles` under RLS.
+create or replace function public.can_view_volunteer_screening(p_user_id uuid default auth.uid())
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce(
+    (select can_view_volunteer_screening from public.profiles where id = p_user_id),
+    false
+  );
+$function$;
+
+-- ---- Role types ---------------------------------------------------------
+create table public.volunteer_role_types (
+  id bigserial primary key,
+  key text not null unique,
+  name text not null,
+  description text,
+  for_retreats boolean not null default false,
+  for_chapter_events boolean not null default false,
+  requires_cert boolean not null default false,
+  sort_order integer not null default 0,
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+insert into public.volunteer_role_types
+  (key, name, for_retreats, for_chapter_events, requires_cert, sort_order)
+values
+  ('retreat_lead', 'Retreat Lead', true, false, true, 10),
+  ('logistics_coordinator', 'Logistics Coordinator', true, false, true, 20),
+  ('lead_fly_fishing_instructor', 'Lead Fly Fishing Instructor', true, false, true, 30),
+  ('fishing_instructor', 'Fishing Instructor', true, true, false, 40),
+  ('mens_night_lead', 'Men''s Night Lead', false, true, false, 50),
+  ('fish_a_long_lead', 'Fish A-Long Lead', false, true, false, 60),
+  ('fly_tying_lead', 'Fly Tying Lead', false, true, false, 70),
+  ('community_engagement_event_lead', 'Community Engagement Event Lead', false, true, false, 80),
+  ('other_chapter_program_lead', 'Other Chapter Program Lead', false, true, false, 90),
+  ('program_community_engagement_support', 'Program/Community Engagement Support', false, true, false, 100)
+on conflict (key) do nothing;
+
+alter table public.volunteer_role_types enable row level security;
+
+-- Reference data used by the event builder and the registry — readable and
+-- writable by any admin (deactivating/reordering isn't screening-sensitive).
+-- No DELETE policy or grant anywhere: the admin UI only ever offers
+-- add/edit/reorder/deactivate, never delete, since a role type with
+-- approvals or opportunities attached must never lose its row.
+create policy volunteer_role_types_admin_all on public.volunteer_role_types
+  for all to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+revoke all on public.volunteer_role_types from anon;
+grant select, insert, update on public.volunteer_role_types to authenticated;
+grant usage, select on sequence public.volunteer_role_types_id_seq to authenticated;
+grant all on public.volunteer_role_types to service_role;
+grant usage, select on sequence public.volunteer_role_types_id_seq to service_role;
+
+-- ---- Volunteers -----------------------------------------------------------
+create table public.volunteers (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  status text not null default 'invited'
+    check (status in ('invited', 'registered', 'approved', 'inactive', 'declined')),
+  invited_at timestamptz,
+  registered_at timestamptz,
+  approved_at timestamptz,
+  health_history_outstanding boolean not null default false,
+  is_18_plus boolean,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.volunteers enable row level security;
+
+create policy volunteers_select_own on public.volunteers
+  for select to authenticated
+  using (user_id = auth.uid());
+
+create policy volunteers_select_admin on public.volunteers
+  for select to authenticated
+  using (public.is_admin());
+
+-- Deliberately NO "volunteer can update their own row" policy: status,
+-- approved_at etc. carry meaning (an approval) that must never be settable
+-- by a direct client UPDATE on an arbitrary column — RLS is row-scoped, so a
+-- blanket "own row" UPDATE policy would let a volunteer PATCH their own
+-- status straight to 'approved'. The registration form's own transition
+-- (invited/registered -> registered) instead goes through the
+-- SECURITY DEFINER function below, the same reasoning rsvp_to_event /
+-- cancel_rsvp already apply to rsvps. Any admin can still update any row
+-- directly (status changes, backfill) — that data isn't screening-sensitive.
+create policy volunteers_update_admin on public.volunteers
+  for update to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+create policy volunteers_insert_admin on public.volunteers
+  for insert to authenticated
+  with check (public.is_admin());
+
+revoke all on public.volunteers from anon;
+grant select, insert, update on public.volunteers to authenticated;
+grant all on public.volunteers to service_role;
+
+-- The volunteer registration form's only write to `volunteers`: moves an
+-- invited (or already-registered, for a resubmit) row to 'registered'.
+-- Refuses if p_is_18_plus is false or the row isn't in a state that should
+-- transition (e.g. 'approved', 'inactive', 'declined') — the caller's own
+-- validation should never let either happen, this is the DB-enforced
+-- backstop.
+create or replace function public.complete_volunteer_registration(p_is_18_plus boolean)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if not p_is_18_plus then
+    raise exception 'Must confirm 18 years of age or older';
+  end if;
+
+  update public.volunteers
+     set status = 'registered',
+         registered_at = coalesce(registered_at, now()),
+         is_18_plus = true,
+         health_history_outstanding = true,
+         updated_at = now()
+   where user_id = auth.uid()
+     and status in ('invited', 'registered');
+
+  if not found then
+    raise exception 'No volunteer invitation found for this account';
+  end if;
+end $function$;
+
+revoke all on function public.complete_volunteer_registration(boolean) from public, anon;
+grant execute on function public.complete_volunteer_registration(boolean) to authenticated;
+
+-- ---- Screening-only notes (see the design note at the top of this entry) ----
+create table public.volunteer_screening_notes (
+  volunteer_id uuid primary key references public.volunteers(user_id) on delete cascade,
+  admin_notes text,
+  updated_by uuid references auth.users(id),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.volunteer_screening_notes enable row level security;
+
+create policy volunteer_screening_notes_admin on public.volunteer_screening_notes
+  for all to authenticated
+  using (public.is_admin() and public.can_view_volunteer_screening())
+  with check (public.is_admin() and public.can_view_volunteer_screening());
+
+revoke all on public.volunteer_screening_notes from anon;
+grant select, insert, update on public.volunteer_screening_notes to authenticated;
+grant all on public.volunteer_screening_notes to service_role;
+
+-- ---- Role approvals -------------------------------------------------------
+create table public.volunteer_role_approvals (
+  id bigserial primary key,
+  volunteer_id uuid not null references public.volunteers(user_id) on delete cascade,
+  role_type_id bigint not null references public.volunteer_role_types(id),
+  approved_by uuid references auth.users(id),
+  approved_at timestamptz not null default now(),
+  revoked_by uuid references auth.users(id),
+  revoked_at timestamptz
+);
+
+-- At most one ACTIVE (unrevoked) approval per (volunteer, role type) — a
+-- revoke-then-reapprove is a fresh row, which this partial index allows
+-- since the earlier row's revoked_at is no longer null.
+create unique index volunteer_role_approvals_active_idx
+  on public.volunteer_role_approvals (volunteer_id, role_type_id)
+  where revoked_at is null;
+
+create index volunteer_role_approvals_volunteer_idx
+  on public.volunteer_role_approvals (volunteer_id);
+
+alter table public.volunteer_role_approvals enable row level security;
+
+-- Admin-only both ways — revoking sets revoked_by/revoked_at (UPDATE), the
+-- row itself is never deleted (no DELETE policy or grant).
+create policy volunteer_role_approvals_admin_select on public.volunteer_role_approvals
+  for select to authenticated
+  using (public.is_admin());
+
+create policy volunteer_role_approvals_admin_insert on public.volunteer_role_approvals
+  for insert to authenticated
+  with check (public.is_admin());
+
+create policy volunteer_role_approvals_admin_update on public.volunteer_role_approvals
+  for update to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+revoke all on public.volunteer_role_approvals from anon;
+grant select, insert, update on public.volunteer_role_approvals to authenticated;
+grant usage, select on sequence public.volunteer_role_approvals_id_seq to authenticated;
+grant all on public.volunteer_role_approvals to service_role;
+grant usage, select on sequence public.volunteer_role_approvals_id_seq to service_role;
+
+-- ---- Certifications -------------------------------------------------------
+create table public.volunteer_certifications (
+  id bigserial primary key,
+  volunteer_id uuid not null references public.volunteers(user_id) on delete cascade,
+  kind text not null default 'first_aid_cpr_aed',
+  file_path text,
+  issued_on date,
+  expires_on date,
+  verified_by uuid references auth.users(id),
+  verified_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create index volunteer_certifications_volunteer_idx
+  on public.volunteer_certifications (volunteer_id);
+
+alter table public.volunteer_certifications enable row level security;
+
+create policy volunteer_certifications_select_own on public.volunteer_certifications
+  for select to authenticated
+  using (volunteer_id = auth.uid());
+
+create policy volunteer_certifications_select_admin on public.volunteer_certifications
+  for select to authenticated
+  using (public.is_admin());
+
+-- verified_by/verified_at must stay null on a volunteer's own insert — those
+-- are only ever set by an admin (the separate admin policy below has no such
+-- restriction), so a volunteer can never self-verify their own upload.
+create policy volunteer_certifications_insert_own on public.volunteer_certifications
+  for insert to authenticated
+  with check (volunteer_id = auth.uid() and verified_by is null and verified_at is null);
+
+create policy volunteer_certifications_insert_admin on public.volunteer_certifications
+  for insert to authenticated
+  with check (public.is_admin());
+
+-- Own UPDATE lets a volunteer fix a typo before it's verified; admin UPDATE
+-- is how verified_by/verified_at get set.
+-- Same guard as the insert policy above: a volunteer's own update can never
+-- leave verified_by/verified_at set (so they can't self-verify by editing an
+-- existing row either); the admin policy below is the only path that sets them.
+create policy volunteer_certifications_update_own on public.volunteer_certifications
+  for update to authenticated
+  using (volunteer_id = auth.uid())
+  with check (volunteer_id = auth.uid() and verified_by is null and verified_at is null);
+
+create policy volunteer_certifications_update_admin on public.volunteer_certifications
+  for update to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+revoke all on public.volunteer_certifications from anon;
+grant select, insert, update on public.volunteer_certifications to authenticated;
+grant usage, select on sequence public.volunteer_certifications_id_seq to authenticated;
+grant all on public.volunteer_certifications to service_role;
+grant usage, select on sequence public.volunteer_certifications_id_seq to service_role;
+
+-- Private bucket: a volunteer can upload/read only their own files (path
+-- convention `${volunteer_id}/...`), admins can read all. No update/delete
+-- policy — re-uploading is a new object/row, matching "optional at
+-- registration" rather than an editable one.
+insert into storage.buckets (id, name, public)
+values ('volunteer-certifications', 'volunteer-certifications', false)
+on conflict (id) do nothing;
+
+create policy volunteer_certifications_storage_own_read on storage.objects
+  for select to authenticated
+  using (
+    bucket_id = 'volunteer-certifications'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+create policy volunteer_certifications_storage_own_insert on storage.objects
+  for insert to authenticated
+  with check (
+    bucket_id = 'volunteer-certifications'
+    and (storage.foldername(name))[1] = auth.uid()::text
+  );
+
+create policy volunteer_certifications_storage_admin_read on storage.objects
+  for select to authenticated
+  using (
+    bucket_id = 'volunteer-certifications'
+    and public.is_admin()
+  );
+
+-- ---- Event volunteer roles: link to a role type ------------------------
+-- Nullable, and existing free-text rows are left alone — the event builder's
+-- volunteer step now also offers picking a role type (filtered to
+-- for_chapter_events + active), but a role can still be pure free text.
+alter table public.volunteer_opportunities
+  add column if not exists role_type_id bigint references public.volunteer_role_types(id);
