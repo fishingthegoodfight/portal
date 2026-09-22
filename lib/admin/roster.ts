@@ -12,6 +12,8 @@ export type AdminEventSummary = {
   timezone: string;
   location: string | null;
   description: string | null;
+  virtual_link: string | null;
+  virtual_access_notes: string | null;
   capacity: number | null;
   spots_taken: number | null;
   lead_name: string | null;
@@ -101,7 +103,7 @@ export async function loadEventRoster(
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken, lead_name, lead_phone, custom_email_note, registration_sections, waiver_state, status, cancellation_reason",
+      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, virtual_link, virtual_access_notes, capacity, spots_taken, lead_name, lead_phone, custom_email_note, registration_sections, waiver_state, status, cancellation_reason",
     )
     .eq("id", eventId)
     .maybeSingle();

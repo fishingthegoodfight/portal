@@ -2329,3 +2329,61 @@ create policy volunteer_certifications_storage_admin_read on storage.objects
 -- for_chapter_events + active), but a role can still be pure free text.
 alter table public.volunteer_opportunities
   add column if not exists role_type_id bigint references public.volunteer_role_types(id);
+
+-- =============================================================================
+-- 2026-09-22 — Virtual events, no-local-chapter rename, event Zoom details,
+-- Outreach -> Community Engagement rename
+-- =============================================================================
+-- Four small, independent changes bundled together since they touched the
+-- same review pass:
+--  - events.virtual_link / events.virtual_access_notes: per-event Zoom/
+--    meeting details, shown on the event page only to someone with a
+--    confirmed RSVP and included in the confirmation/reminder emails and the
+--    .ics (see lib/email/ics.ts, lib/email/send.ts). Kept as plain columns
+--    on `events` rather than a new table — see the comment on IcsEventInput
+--    in lib/email/ics.ts for where a reusable per-event-type default would
+--    plug in later without reworking this.
+--  - The "Virtual" event chapter and "No local chapter" participant chapter
+--    both resolve to the Colorado waiver by app-level default (the
+--    deliberate-default comment on waiverStateForChapter in lib/waivers.ts
+--    explains why) — the trigger below is the matching DB-level backstop for
+--    a direct/bulk insert that skips the app.
+--  - profiles.chapter's existing "not local to any chapter" sentinel is
+--    renamed from 'Not local to a chapter' to 'No local chapter' (same
+--    column, same concept — just a clearer label going forward).
+--  - "Outreach Events" (a volunteer program-interest value) and any
+--    'Outreach' events.event_type rows are renamed to their "Community
+--    Engagement" equivalents, matching the event-type rename already in
+--    lib/event-types.ts.
+
+alter table public.events
+  add column if not exists virtual_link text,
+  add column if not exists virtual_access_notes text;
+
+-- Matches waiverStateForChapter's deliberate CO default in lib/waivers.ts —
+-- keep the two in sync if that default ever changes.
+create or replace function public.default_event_waiver_state()
+returns trigger
+language plpgsql
+as $function$
+begin
+  if new.waiver_state is null then
+    new.waiver_state := case
+      when new.chapter in ('Denver', 'CO Springs', 'Colorado Springs', 'Virtual') then 'CO'
+      when new.chapter in ('Atlanta', 'Rome') then 'GA'
+    end;
+  end if;
+  return new;
+end $function$;
+
+update public.profiles
+  set chapter = 'No local chapter'
+  where chapter = 'Not local to a chapter';
+
+update public.events
+  set event_type = 'Community Engagement'
+  where event_type = 'Outreach';
+
+update public.profiles
+  set program_interests = array_replace(program_interests, 'Outreach Events', 'Community Engagement Events')
+  where 'Outreach Events' = any(program_interests);

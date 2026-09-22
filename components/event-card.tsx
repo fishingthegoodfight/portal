@@ -25,6 +25,12 @@ export type EventCardEvent = {
    * other status pill (Going/Waitlisted/Full) since none of those still
    * apply. Optional since most callers show only scheduled events. */
   cancelled?: boolean;
+  /** Zoom/meeting link + access notes. Only ever set by a caller that has
+   * already confirmed this viewer holds a confirmed RSVP (see the RSVP page
+   * loader) — omitted entirely (not just falsy) everywhere else, so there's
+   * nothing here to leak. */
+  virtualLink?: string | null;
+  virtualAccessNotes?: string | null;
 };
 
 /**
@@ -110,15 +116,33 @@ export function EventCard({
             )}
             {event.chapter && (
               <span className="text-xs text-muted-foreground">
-                {event.chapter} chapter
+                {event.chapter === "Virtual" ? "Virtual" : `${event.chapter} chapter`}
               </span>
             )}
           </div>
         </div>
       </CardHeader>
-      {event.description && (
-        <CardContent>
-          <p className="text-sm text-muted-foreground">{event.description}</p>
+      {(event.description || event.virtualLink) && (
+        <CardContent className="flex flex-col gap-3">
+          {event.description && (
+            <p className="text-sm text-muted-foreground">{event.description}</p>
+          )}
+          {event.virtualLink && (
+            <p className="text-sm">
+              <strong>Join online:</strong>{" "}
+              <a
+                href={event.virtualLink}
+                target="_blank"
+                rel="noreferrer"
+                className="text-green-700 underline underline-offset-4 dark:text-green-500"
+              >
+                {event.virtualLink}
+              </a>
+              {event.virtualAccessNotes && (
+                <span className="block text-muted-foreground">{event.virtualAccessNotes}</span>
+              )}
+            </p>
+          )}
         </CardContent>
       )}
       {(action || spotsLeftLabel) && (

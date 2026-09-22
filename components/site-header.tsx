@@ -52,11 +52,10 @@ async function HeaderContent() {
   }
 
   const userId = claims.sub as string;
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("is_admin")
-    .eq("id", userId)
-    .maybeSingle();
+  const [{ data: profile }, { data: volunteer }] = await Promise.all([
+    supabase.from("profiles").select("is_admin").eq("id", userId).maybeSingle(),
+    supabase.from("volunteers").select("user_id").eq("user_id", userId).maybeSingle(),
+  ]);
 
   return (
     <>
@@ -66,6 +65,7 @@ async function HeaderContent() {
         </Link>
         <NavLink href="/protected/events">Events</NavLink>
         <NavLink href="/protected/profile">Profile</NavLink>
+        {volunteer && <NavLink href="/protected/volunteer">Volunteer</NavLink>}
         {profile?.is_admin && <NavLink href="/protected/admin">Admin</NavLink>}
       </div>
       <div className="flex items-center gap-4">

@@ -1,6 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { CHAPTERS } from "@/lib/chapters";
+import { CHAPTERS, NOT_LOCAL_CHAPTER, VIRTUAL_CHAPTER } from "@/lib/chapters";
 import { formatDateInZone } from "@/lib/format-date";
 
 /**
@@ -32,8 +32,18 @@ export function isWaiverAudience(value: unknown): value is WaiverAudience {
 }
 
 /** The waiver state a chapter maps to (CO for Denver/CO Springs, GA for
- * Atlanta/Rome), or null for an unknown chapter. */
+ * Atlanta/Rome), or null for an unknown chapter.
+ *
+ * DELIBERATE DEFAULT: a virtual event (events.chapter = VIRTUAL_CHAPTER) and
+ * a volunteer with no local chapter (profiles.chapter = NOT_LOCAL_CHAPTER)
+ * both resolve to Colorado, because FTGF is a Colorado nonprofit — every
+ * event and every volunteer needs *some* waiver on file, and CO is the one
+ * jurisdiction that always applies to the org itself. To change this
+ * default, edit the case below (and the matching one in
+ * lib/chapters.ts#timezoneForChapter, which needs to stay in sync since the
+ * waiver's year is computed in this same timezone). */
 export function waiverStateForChapter(chapter: string | null | undefined): WaiverState | null {
+  if (chapter === VIRTUAL_CHAPTER || chapter === NOT_LOCAL_CHAPTER) return "CO";
   const state = CHAPTERS.find((c) => c.name === chapter)?.state;
   return isWaiverState(state) ? state : null;
 }

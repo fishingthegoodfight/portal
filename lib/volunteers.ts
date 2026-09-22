@@ -54,7 +54,7 @@ export const PROGRAM_INTERESTS = [
   "Fly Tying Nights",
   "Men's Nights",
   "Social Events",
-  "Outreach Events",
+  "Community Engagement Events",
 ] as const;
 
 export const TSHIRT_SIZES = ["XS", "S", "M", "L", "XL", "XXL", "XXXL"] as const;

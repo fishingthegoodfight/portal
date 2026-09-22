@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { RegistrationFieldInput } from "@/components/registration-fields";
-import { CHAPTERS, NOT_LOCAL_CHAPTER } from "@/lib/chapters";
+import { HomeChapterField } from "@/components/chapter-select";
 import { formatPhoneNumber, formatPostalCode } from "@/lib/phone";
 import {
   columnValuesFromProfile,
@@ -167,8 +167,8 @@ export function ProfileForm({
     setSuccess(false);
   };
 
-  const updateChapter = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    setProfile((prev) => ({ ...prev, chapter: e.target.value }));
+  const updateChapter = (value: string) => {
+    setProfile((prev) => ({ ...prev, chapter: value }));
     setSuccess(false);
   };
 
@@ -301,18 +301,7 @@ export function ProfileForm({
               onChange={updatePhoneField}
             />
           </div>
-          <div className="grid gap-2">
-            <Label htmlFor="chapter">Chapter</Label>
-            <Select id="chapter" value={profile.chapter} onChange={updateChapter}>
-              <option value="">Select a chapter</option>
-              {CHAPTERS.map((chapter) => (
-                <option key={chapter.name} value={chapter.name}>
-                  {chapter.name}, {chapter.state}
-                </option>
-              ))}
-              <option value={NOT_LOCAL_CHAPTER}>{NOT_LOCAL_CHAPTER}</option>
-            </Select>
-          </div>
+          <HomeChapterField idPrefix="profile" value={profile.chapter} onChange={updateChapter} required={false} />
           <div className="grid gap-2">
             <Label htmlFor="address_line1">Address line 1</Label>
             <Input

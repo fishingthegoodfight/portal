@@ -22,7 +22,7 @@ import { expireExcessOffers, offerFreeSpots } from "@/lib/waitlist";
 import { capacityError, parseCapacity } from "@/lib/event-capacity";
 import { EVENT_TYPES } from "@/lib/event-types";
 import { composeLocation, isLocationEmpty, locationErrors } from "@/lib/event-location";
-import { CHAPTERS } from "@/lib/chapters";
+import { CHAPTERS, isVirtualChapter } from "@/lib/chapters";
 import {
   isWaiverState,
   resolveEventWaiver,
@@ -42,6 +42,8 @@ type EventRow = {
   street_address: string | null;
   city: string | null;
   state: string | null;
+  virtual_link: string | null;
+  virtual_access_notes: string | null;
   capacity: number | null;
   lead_name: string | null;
   lead_phone: string | null;
@@ -59,7 +61,7 @@ type EventRow = {
 };
 
 const EVENT_COLUMNS =
-  "id, name, event_type, description, location, venue_name, street_address, city, state, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason";
+  "id, name, event_type, description, location, venue_name, street_address, city, state, virtual_link, virtual_access_notes, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason";
 
 async function loadEvent(
   supabase: SupabaseServerClient,
@@ -185,6 +187,8 @@ function toEmailEvent(event: EventRow, icsSequence: number): RsvpEmailEvent {
     lead_phone: event.lead_phone,
     lead_email: event.lead_email,
     custom_email_note: event.custom_email_note,
+    virtual_link: event.virtual_link,
+    virtual_access_notes: event.virtual_access_notes,
     ics_sequence: icsSequence,
   };
 }
@@ -210,6 +214,7 @@ function buildDiff(before: EventRow, after: EventRow): EventChangeDiffEntry[] {
   push("Chapter", before.chapter ?? "", after.chapter ?? "");
   push("Description", before.description ?? "", after.description ?? "");
   push("Location", before.location ?? "", after.location ?? "");
+  push("Meeting link", before.virtual_link ?? "", after.virtual_link ?? "");
   push("Capacity", capacityLabel(before.capacity), capacityLabel(after.capacity));
   push("Lead name", before.lead_name ?? "", after.lead_name ?? "");
   push("Lead phone", before.lead_phone ?? "", after.lead_phone ?? "");
@@ -245,6 +250,9 @@ export type EventEditInput = {
   streetAddress: string;
   city: string;
   state: string;
+  /** Required, ignored otherwise, when chapter is VIRTUAL_CHAPTER. */
+  virtualLink: string;
+  virtualAccessNotes: string;
   /** Raw form text — "" means unlimited, otherwise at least 1 (lib/event-capacity.ts). */
   capacity: string;
   leadName: string;
@@ -400,16 +408,25 @@ export async function updateEventAction(
 
   // The chapter also decides the waiver: its state is never a separate
   // choice, it always follows the chapter.
-  if (!CHAPTERS.some((c) => c.name === input.chapter)) {
+  if (!CHAPTERS.some((c) => c.name === input.chapter) && !isVirtualChapter(input.chapter)) {
     return { ok: false, error: "Choose a chapter" };
   }
   const waiverState = waiverStateForChapter(input.chapter);
+  const isVirtual = isVirtualChapter(input.chapter);
 
   // Same four fields and rule as the create wizard. An older event that only
-  // has free text keeps it if the admin leaves all four blank.
-  const locationProblems = locationErrors(input, { allowLegacyEmpty: true });
-  if (locationProblems.length > 0) return { ok: false, error: locationProblems.join("; ") };
-  const keepLegacyLocation = isLocationEmpty(input);
+  // has free text keeps it if the admin leaves all four blank. A virtual
+  // event skips physical-location validation entirely and needs a meeting
+  // link instead.
+  const virtualLink = input.virtualLink.trim();
+  const virtualAccessNotes = input.virtualAccessNotes.trim();
+  if (isVirtual) {
+    if (!virtualLink) return { ok: false, error: "A meeting link is required for a virtual event" };
+  } else {
+    const locationProblems = locationErrors(input, { allowLegacyEmpty: true });
+    if (locationProblems.length > 0) return { ok: false, error: locationProblems.join("; ") };
+  }
+  const keepLegacyLocation = !isVirtual && isLocationEmpty(input);
 
   const newStarts = zonedDateTimeToUtc(input.date, input.time, input.timezone);
 
@@ -427,11 +444,20 @@ export async function updateEventAction(
     event_type: input.eventType,
     chapter: input.chapter,
     description: input.description.trim() || null,
-    location: keepLegacyLocation ? before.location : composeLocation(input),
-    venue_name: keepLegacyLocation ? before.venue_name : input.venueName.trim(),
-    street_address: keepLegacyLocation ? before.street_address : input.streetAddress.trim(),
-    city: keepLegacyLocation ? before.city : input.city.trim(),
-    state: keepLegacyLocation ? before.state : input.state.trim(),
+    // Physical location and virtual details are mutually exclusive — moving
+    // an event to/from "Virtual" clears whichever side no longer applies
+    // instead of leaving a stale address or link behind.
+    location: isVirtual ? null : keepLegacyLocation ? before.location : composeLocation(input),
+    venue_name: isVirtual ? null : keepLegacyLocation ? before.venue_name : input.venueName.trim(),
+    street_address: isVirtual
+      ? null
+      : keepLegacyLocation
+        ? before.street_address
+        : input.streetAddress.trim(),
+    city: isVirtual ? null : keepLegacyLocation ? before.city : input.city.trim(),
+    state: isVirtual ? null : keepLegacyLocation ? before.state : input.state.trim(),
+    virtual_link: isVirtual ? virtualLink : null,
+    virtual_access_notes: isVirtual ? virtualAccessNotes || null : null,
     capacity,
     lead_name: input.leadName.trim() || null,
     lead_phone: input.leadPhone.trim() || null,
@@ -445,13 +471,18 @@ export async function updateEventAction(
   };
 
   // A chapter change counts like a location change: attendees are offered the
-  // "notify" choice for it too.
+  // "notify" choice for it too. A changed meeting link is the virtual
+  // equivalent of a changed physical location — same treatment, so the .ics
+  // (LOCATION/DESCRIPTION — see lib/email/ics.ts) gets updated and attendees
+  // can be told.
   const chapterChanged = (before.chapter ?? null) !== (after.chapter ?? null);
+  const virtualLinkChanged = (before.virtual_link ?? null) !== (after.virtual_link ?? null);
   const dateTimeOrLocationChanged =
     before.starts_at !== after.starts_at ||
     (before.ends_at ?? null) !== (after.ends_at ?? null) ||
     (before.location ?? null) !== (after.location ?? null) ||
-    chapterChanged;
+    chapterChanged ||
+    virtualLinkChanged;
 
   // Anything the admin should confirm first — nothing is written until they do.
   if (!confirmed) {
@@ -550,6 +581,8 @@ export async function updateEventAction(
       street_address: after.street_address,
       city: after.city,
       state: after.state,
+      virtual_link: after.virtual_link,
+      virtual_access_notes: after.virtual_access_notes,
       capacity: after.capacity,
       lead_name: after.lead_name,
       lead_phone: after.lead_phone,

@@ -1,7 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
-import { CHAPTERS, timezoneForChapter } from "@/lib/chapters";
+import { CHAPTERS, NOT_LOCAL_CHAPTER, timezoneForChapter } from "@/lib/chapters";
 import { formatPostalCode } from "@/lib/phone";
 import {
   resolveVolunteerWaiver,
@@ -98,7 +98,7 @@ export async function submitVolunteerRegistrationAction(
   if (!emergencyContactName || !emergencyContactPhone) {
     return { ok: false, error: "Emergency contact name and phone are required" };
   }
-  if (!CHAPTERS.some((c) => c.name === homeChapter)) {
+  if (!CHAPTERS.some((c) => c.name === homeChapter) && homeChapter !== NOT_LOCAL_CHAPTER) {
     return { ok: false, error: "Choose a home chapter" };
   }
   if (!TSHIRT_SIZES.includes(tshirtSize as (typeof TSHIRT_SIZES)[number])) {

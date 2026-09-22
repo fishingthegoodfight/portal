@@ -20,7 +20,9 @@ import {
 import { capacityError } from "@/lib/event-capacity";
 import { ChapterField } from "@/components/admin/fields/chapter-field";
 import { LocationFields } from "@/components/admin/fields/location-fields";
+import { VirtualEventFields } from "@/components/admin/fields/virtual-event-fields";
 import { locationErrors } from "@/lib/event-location";
+import { isVirtualChapter } from "@/lib/chapters";
 import { defaultRegistrationSectionsFor } from "@/lib/event-types";
 import { formatEventDateRange } from "@/lib/format-date";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
@@ -56,6 +58,8 @@ function emptyForm(prefill: AdminPrefill): CreateEventInput {
     streetAddress: "",
     city: "",
     state: "",
+    virtualLink: "",
+    virtualAccessNotes: "",
     description: "",
     capacity: "",
     leadName: prefill.leadName,
@@ -104,7 +108,11 @@ function step1Errors(form: CreateEventInput): string[] {
 
 function step2Errors(form: CreateEventInput): string[] {
   const errors: string[] = [];
-  errors.push(...locationErrors(form));
+  if (isVirtualChapter(form.chapter)) {
+    if (!form.virtualLink.trim()) errors.push("A meeting link is required for a virtual event");
+  } else {
+    errors.push(...locationErrors(form));
+  }
   const capacityProblem = capacityError(form.capacity);
   if (capacityProblem) errors.push(capacityProblem);
   return errors;
@@ -392,11 +400,21 @@ export function EventCreateWizard({
 
         {step === 2 && (
           <div className="flex flex-col gap-4">
-            <LocationFields
-              idPrefix="create"
-              value={form}
-              onChange={(field, value) => setField(field)(value)}
-            />
+            {isVirtualChapter(form.chapter) ? (
+              <VirtualEventFields
+                idPrefix="create"
+                virtualLink={form.virtualLink}
+                virtualAccessNotes={form.virtualAccessNotes}
+                onChangeLink={setField("virtualLink")}
+                onChangeAccessNotes={setField("virtualAccessNotes")}
+              />
+            ) : (
+              <LocationFields
+                idPrefix="create"
+                value={form}
+                onChange={(field, value) => setField(field)(value)}
+              />
+            )}
 
             <DescriptionField
               idPrefix="create"
@@ -626,12 +644,16 @@ export function EventCreateWizard({
             </ReviewSection>
 
             <ReviewSection title="Details" onEdit={() => goToStep(2)}>
-              <ReviewRow
-                label="Location"
-                value={[form.venueName, form.streetAddress, `${form.city}, ${form.state}`]
-                  .filter(Boolean)
-                  .join(", ")}
-              />
+              {isVirtualChapter(form.chapter) ? (
+                <ReviewRow label="Meeting link" value={form.virtualLink || "—"} />
+              ) : (
+                <ReviewRow
+                  label="Location"
+                  value={[form.venueName, form.streetAddress, `${form.city}, ${form.state}`]
+                    .filter(Boolean)
+                    .join(", ")}
+                />
+              )}
               <ReviewRow label="Description" value={form.description || "—"} />
               <ReviewRow label="Capacity" value={form.capacity.trim() || "Unlimited"} />
               <ReviewRow

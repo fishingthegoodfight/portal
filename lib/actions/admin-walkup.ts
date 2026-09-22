@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireAdmin } from "@/lib/admin/require-admin";
+import { CHAPTERS, NOT_LOCAL_CHAPTER } from "@/lib/chapters";
 import { waiverInfoForUser } from "@/lib/waivers";
 import {
   collectSectionUpdates,
@@ -46,6 +47,10 @@ export async function addWalkupRsvpAction(input: {
   emergencyContactName: string;
   emergencyContactPhone: string;
   directoryOptIn: boolean;
+  /** Their home chapter, or "" if not given at the desk — optional, same as
+   * on the profile page. Only ever filled in when the profile doesn't
+   * already have one on file (see below), never overwritten. */
+  chapter?: string;
   /** Typed at the check-in table when the event has a waiver they haven't
    * signed yet; ignored when they already have a valid signature. */
   waiverName?: string;
@@ -65,6 +70,13 @@ export async function addWalkupRsvpAction(input: {
   const phone = input.phone.trim();
   const emergencyContactName = input.emergencyContactName.trim();
   const emergencyContactPhone = input.emergencyContactPhone.trim();
+  // Optional and picked from a closed dropdown — a value outside that set
+  // (a hand-rolled request) is silently dropped rather than rejected, same
+  // as leaving the field blank.
+  const chapter =
+    input.chapter && (CHAPTERS.some((c) => c.name === input.chapter) || input.chapter === NOT_LOCAL_CHAPTER)
+      ? input.chapter
+      : null;
 
   if (!firstName || !lastName) return { ok: false, error: "Name is required" };
   if (!email) return { ok: false, error: "Email is required" };
@@ -145,13 +157,21 @@ export async function addWalkupRsvpAction(input: {
     profileId = existingProfile.id as string;
     wasExistingProfile = true;
 
-    // Same rule the RSVP form follows: an already-complete section is left
+    // Same rule the RSVP form follows: an already-complete field is left
     // alone rather than overwritten with what was typed at the walk-up desk.
     const hasEmergencyContactOnFile = Boolean(
       (existingProfile.emergency_contact as string | null)?.trim() &&
       (existingProfile.emergency_phone as string | null)?.trim(),
     );
+    const hasChapterOnFile = Boolean((existingProfile.chapter as string | null)?.trim());
+    const fillIn: Record<string, string> = {};
     if (!hasEmergencyContactOnFile) {
+      fillIn.emergency_contact = emergencyContactName;
+      fillIn.emergency_phone = emergencyContactPhone;
+    }
+    if (!hasChapterOnFile && chapter) fillIn.chapter = chapter;
+
+    if (Object.keys(fillIn).length > 0) {
       let adminClient: ReturnType<typeof createAdminClient>;
       try {
         adminClient = createAdminClient();
@@ -167,10 +187,7 @@ export async function addWalkupRsvpAction(input: {
       // below.
       const { error: updateError } = await adminClient
         .from("profiles")
-        .update({
-          emergency_contact: emergencyContactName,
-          emergency_phone: emergencyContactPhone,
-        })
+        .update(fillIn)
         .eq("id", profileId);
       if (updateError) {
         return { ok: false, error: updateError.message };
@@ -211,6 +228,7 @@ export async function addWalkupRsvpAction(input: {
         phone,
         emergency_contact: emergencyContactName,
         emergency_phone: emergencyContactPhone,
+        chapter,
         directory_opt_in: input.directoryOptIn,
         ...columnValuesFromProfile(sectionUpdates),
       })

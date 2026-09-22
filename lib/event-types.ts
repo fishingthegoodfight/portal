@@ -4,6 +4,8 @@ export const EVENT_TYPES = [
   "Fish A-Long",
   "Fly Fishing Education",
   "Men's Night",
+  "Virtual Men's Night",
+  "Off the Water",
   "Social Event",
   "Other",
 ] as const;

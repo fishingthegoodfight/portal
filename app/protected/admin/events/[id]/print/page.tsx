@@ -39,6 +39,12 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
             {formatEventDateRange(event.starts_at, event.ends_at, event.timezone)}
             {event.location ? ` · ${event.location}` : ""}
           </p>
+          {event.virtual_link && (
+            <p className="text-sm text-muted-foreground">
+              Join online: {event.virtual_link}
+              {event.virtual_access_notes ? ` — ${event.virtual_access_notes}` : ""}
+            </p>
+          )}
           <p className="text-sm text-muted-foreground">
             {roster.length} on roster
             {dietary.collected && dietary.notAnsweredCount > 0

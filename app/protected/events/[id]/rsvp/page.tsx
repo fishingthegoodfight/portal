@@ -36,7 +36,7 @@ async function RsvpLoader({
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken, is_published, registration_sections, status, cancellation_reason, waiver_state",
+      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, capacity, spots_taken, is_published, registration_sections, status, cancellation_reason, waiver_state, virtual_link, virtual_access_notes",
     )
     .eq("id", eventId)
     .maybeSingle();
@@ -143,6 +143,11 @@ async function RsvpLoader({
         capacity: event.capacity,
         spots_taken: (event.spots_taken ?? 0) + offeredCount,
         registration_sections: event.registration_sections ?? [],
+        // Only ever sent to the browser for a confirmed RSVP — never
+        // publicly, and never for waitlisted/offered (see the matching rule
+        // in lib/email/send.ts for the email side of this).
+        virtualLink: activeRsvp?.status === "confirmed" ? event.virtual_link : null,
+        virtualAccessNotes: activeRsvp?.status === "confirmed" ? event.virtual_access_notes : null,
       }}
       profile={{
         first_name: profile?.first_name ?? "",

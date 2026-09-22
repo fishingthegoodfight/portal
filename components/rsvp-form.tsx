@@ -55,6 +55,9 @@ type EventSummary = {
   capacity: number | null;
   spots_taken: number | null;
   registration_sections: string[];
+  /** Only ever populated server-side for a confirmed RSVP — see the loader. */
+  virtualLink?: string | null;
+  virtualAccessNotes?: string | null;
 };
 
 type ProfileSummary = {

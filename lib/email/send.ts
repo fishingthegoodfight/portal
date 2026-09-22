@@ -123,6 +123,13 @@ export type RsvpEmailEvent = {
   lead_phone: string | null;
   lead_email: string | null;
   custom_email_note: string | null;
+  /** Zoom/meeting link + access notes (passcode, dial-in, etc.) — shown only
+   * to someone with a confirmed RSVP, never publicly, and never to a
+   * waitlisted or offered person. Every send function below decides whether
+   * to surface these via the `includeVirtual` argument to buildEventInfo /
+   * buildIcsAttachment; the raw column values are otherwise unused. */
+  virtual_link: string | null;
+  virtual_access_notes: string | null;
   /** events.ics_sequence as of the write that triggered this send — the
    * caller is responsible for bumping and persisting it first when the
    * calendar entry actually changed (date/time/location edit, or a
@@ -130,7 +137,9 @@ export type RsvpEmailEvent = {
   ics_sequence: number;
 };
 
-function buildEventInfo(event: RsvpEmailEvent): RsvpEmailEventInfo {
+function buildEventInfo(event: RsvpEmailEvent, includeVirtual: boolean): RsvpEmailEventInfo {
+  const virtualLink = includeVirtual ? event.virtual_link : null;
+  const virtualAccessNotes = includeVirtual ? event.virtual_access_notes : null;
   const icsEvent = {
     id: event.id,
     name: event.name,
@@ -138,6 +147,8 @@ function buildEventInfo(event: RsvpEmailEvent): RsvpEmailEventInfo {
     endsAt: event.ends_at,
     timezone: event.timezone,
     location: event.location,
+    virtualLink,
+    virtualAccessNotes,
   };
 
   return {
@@ -150,12 +161,15 @@ function buildEventInfo(event: RsvpEmailEvent): RsvpEmailEventInfo {
     customNote: event.custom_email_note,
     eventUrl: `${getSiteUrl()}/protected/events/${event.id}/rsvp`,
     googleCalendarUrl: buildGoogleCalendarLink(icsEvent),
+    virtualLink,
+    virtualAccessNotes,
   };
 }
 
 function buildIcsAttachment(
   event: RsvpEmailEvent,
   method: "REQUEST" | "CANCEL",
+  includeVirtual: boolean,
 ): { filename: string; content: string; contentType: string } {
   const ics = buildEventIcs({
     method,
@@ -167,6 +181,8 @@ function buildIcsAttachment(
       endsAt: event.ends_at,
       timezone: event.timezone,
       location: event.location,
+      virtualLink: includeVirtual ? event.virtual_link : null,
+      virtualAccessNotes: includeVirtual ? event.virtual_access_notes : null,
     },
   });
   return {
@@ -190,7 +206,9 @@ export async function sendRsvpConfirmationEmail({
   toEmail: string;
   status: "confirmed" | "waitlisted";
 }): Promise<void> {
-  const info = buildEventInfo(event);
+  // Virtual details are for a confirmed RSVP only — never for waitlisted.
+  const includeVirtual = status === "confirmed";
+  const info = buildEventInfo(event, includeVirtual);
   const { subject, html, text } = confirmationEmail(info, status);
 
   await deliverEmail({
@@ -198,7 +216,7 @@ export async function sendRsvpConfirmationEmail({
     subject,
     html,
     text,
-    attachments: [buildIcsAttachment(event, "REQUEST")],
+    attachments: [buildIcsAttachment(event, "REQUEST", includeVirtual)],
   });
 }
 
@@ -214,7 +232,7 @@ export async function sendRsvpCancellationEmail({
   event: RsvpEmailEvent;
   toEmail: string;
 }): Promise<void> {
-  const info = buildEventInfo(event);
+  const info = buildEventInfo(event, false);
   const { subject, html, text } = cancellationEmail(info);
 
   await deliverEmail({
@@ -222,7 +240,7 @@ export async function sendRsvpCancellationEmail({
     subject,
     html,
     text,
-    attachments: [buildIcsAttachment(event, "CANCEL")],
+    attachments: [buildIcsAttachment(event, "CANCEL", false)],
   });
 }
 
@@ -231,7 +249,7 @@ export async function sendRsvpCancellationEmail({
  * cancel flow can show an exact preview before requiring confirmation.
  */
 export function previewEventCancellationEmail(event: RsvpEmailEvent, reason: string) {
-  return eventCancellationEmail(buildEventInfo(event), reason);
+  return eventCancellationEmail(buildEventInfo(event, false), reason);
 }
 
 /**
@@ -249,7 +267,7 @@ export async function sendEventCancellationEmail({
   toEmail: string;
   reason: string;
 }): Promise<void> {
-  const info = buildEventInfo(event);
+  const info = buildEventInfo(event, false);
   const { subject, html, text } = eventCancellationEmail(info, reason);
 
   await deliverEmail({
@@ -257,14 +275,16 @@ export async function sendEventCancellationEmail({
     subject,
     html,
     text,
-    attachments: [buildIcsAttachment(event, "CANCEL")],
+    attachments: [buildIcsAttachment(event, "CANCEL", false)],
   });
 }
 
 /**
  * Sent to confirmed attendees when an admin edit changes the date, time, or
  * location and the admin opts to notify them. Carries a revised
- * METHOD:REQUEST .ics at the bumped `event.ics_sequence`.
+ * METHOD:REQUEST .ics at the bumped `event.ics_sequence` — including an
+ * updated meeting link if that's what changed (every recipient here already
+ * holds a confirmed RSVP, per confirmedAttendees in lib/actions/admin-event.ts).
  */
 export async function sendEventUpdateEmail({
   event,
@@ -277,7 +297,7 @@ export async function sendEventUpdateEmail({
    * this attendee still has to sign it — the email then says so. */
   newWaiverStateName?: string;
 }): Promise<void> {
-  const info = buildEventInfo(event);
+  const info = buildEventInfo(event, false);
   const { subject, html, text } = eventUpdateEmail(info, { newWaiverStateName });
 
   await deliverEmail({
@@ -285,14 +305,15 @@ export async function sendEventUpdateEmail({
     subject,
     html,
     text,
-    attachments: [buildIcsAttachment(event, "REQUEST")],
+    attachments: [buildIcsAttachment(event, "REQUEST", true)],
   });
 }
 
 /**
  * Sent to confirmed attendees when a previously-cancelled event is
  * restored, opted into by the admin. Carries a fresh METHOD:REQUEST .ics at
- * the bumped `event.ics_sequence`.
+ * the bumped `event.ics_sequence` (every recipient here holds a confirmed
+ * RSVP, per confirmedRsvpEmails in lib/actions/admin-event.ts).
  */
 export async function sendEventRestoredEmail({
   event,
@@ -301,7 +322,7 @@ export async function sendEventRestoredEmail({
   event: RsvpEmailEvent;
   toEmail: string;
 }): Promise<void> {
-  const info = buildEventInfo(event);
+  const info = buildEventInfo(event, false);
   const { subject, html, text } = eventRestoredEmail(info);
 
   await deliverEmail({
@@ -309,7 +330,7 @@ export async function sendEventRestoredEmail({
     subject,
     html,
     text,
-    attachments: [buildIcsAttachment(event, "REQUEST")],
+    attachments: [buildIcsAttachment(event, "REQUEST", true)],
   });
 }
 
@@ -366,7 +387,9 @@ export async function sendAdminChangeNotificationEmail(params: {
 }
 
 /** Pre-event reminder (no .ics). Throws on failure — the cron caller catches
- * per participant so one bad send doesn't stop the batch. */
+ * per participant so one bad send doesn't stop the batch. Always confirmed
+ * RSVPs only (see app/api/cron/reminders/route.ts), so virtual details are
+ * always included. */
 export async function sendReminderEmail({
   event,
   toEmail,
@@ -376,7 +399,7 @@ export async function sendReminderEmail({
   toEmail: string;
   kind: ReminderKind;
 }): Promise<void> {
-  const { subject, html, text } = reminderEmail(buildEventInfo(event), kind);
+  const { subject, html, text } = reminderEmail(buildEventInfo(event, true), kind);
 
   await deliverEmail({
     to: toEmail,
@@ -401,7 +424,7 @@ export async function sendWaitlistOfferEmail({
   expiresAt: string;
 }): Promise<void> {
   const { subject, html, text } = waitlistOfferEmail(
-    buildEventInfo(event),
+    buildEventInfo(event, false),
     formatEventInstant(expiresAt, event.timezone),
   );
   await deliverEmail({ to: toEmail, subject, html, text });
@@ -419,7 +442,7 @@ export async function sendWaitlistOfferExpiredEmail({
    * (default: it simply lapsed, as the cron reports). */
   reason?: "capacity";
 }): Promise<void> {
-  const { subject, html, text } = waitlistOfferExpiredEmail(buildEventInfo(event), { reason });
+  const { subject, html, text } = waitlistOfferExpiredEmail(buildEventInfo(event, false), { reason });
   await deliverEmail({ to: toEmail, subject, html, text });
 }
 

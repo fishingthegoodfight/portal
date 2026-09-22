@@ -18,7 +18,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, name, event_type, series_id, description, location, venue_name, street_address, city, state, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, starts_at, ends_at, timezone, chapter, status, waiver_state",
+      "id, name, event_type, series_id, description, location, venue_name, street_address, city, state, virtual_link, virtual_access_notes, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, starts_at, ends_at, timezone, chapter, status, waiver_state",
     )
     .eq("id", eventId)
     .maybeSingle();
@@ -60,6 +60,8 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
         streetAddress: event.street_address ?? "",
         city: event.city ?? "",
         state: event.state ?? "",
+        virtualLink: event.virtual_link ?? "",
+        virtualAccessNotes: event.virtual_access_notes ?? "",
         capacity: event.capacity != null ? String(event.capacity) : "",
         leadName: event.lead_name ?? "",
         leadPhone: event.lead_phone ?? "",

@@ -16,7 +16,16 @@ export const CHAPTERS: Chapter[] = [
 ];
 
 // Stored in profiles.chapter for members not local to any chapter above.
-export const NOT_LOCAL_CHAPTER = "Not local to a chapter";
+export const NOT_LOCAL_CHAPTER = "No local chapter";
+
+// Stored in events.chapter for an event with no physical chapter — offered
+// alongside CHAPTERS on the event create/edit forms only (never as a
+// person's own chapter, so it's kept out of the CHAPTERS list itself).
+export const VIRTUAL_CHAPTER = "Virtual";
+
+export function isVirtualChapter(chapter: string | null | undefined): boolean {
+  return chapter === VIRTUAL_CHAPTER;
+}
 
 /**
  * Distinct timezones any chapter runs events in, as select options for the
@@ -37,8 +46,11 @@ export const TIMEZONE_OPTIONS: { value: string; label: string }[] = Array.from(
 
 /** The default timezone for a given chapter name — used to seed a new
  * event's timezone field, or as a fallback if an event's own timezone is
- * somehow unset. */
+ * somehow unset. Virtual events and members with no local chapter fall back
+ * to Colorado's zone, same deliberate default as waiverStateForChapter in
+ * lib/waivers.ts (keep the two in sync). */
 export function timezoneForChapter(chapter: string | null | undefined): string {
+  if (chapter === VIRTUAL_CHAPTER || chapter === NOT_LOCAL_CHAPTER) return "America/Denver";
   return CHAPTERS.find((c) => c.name === chapter)?.timezone ?? TIMEZONE_OPTIONS[0]?.value ?? "America/Denver";
 }
 
@@ -82,6 +94,7 @@ export const CHAPTER_FILTERS: ChapterFilter[] = [
       chapters: [name],
     })),
   ),
+  { slug: "virtual", label: "Virtual", chapters: [VIRTUAL_CHAPTER] },
 ];
 
 /** Look up a filter pill by its slug (query-param value); null if unknown. */

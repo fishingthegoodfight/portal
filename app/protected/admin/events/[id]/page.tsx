@@ -35,6 +35,8 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
         // Open offers hold a spot, so count them as taken on the card.
         spots_taken: (event.spots_taken ?? 0) + offeredCount,
       }}
+      virtualLink={event.virtual_link}
+      virtualAccessNotes={event.virtual_access_notes}
       status={event.status}
       cancellationReason={event.cancellation_reason}
       initialRoster={roster}

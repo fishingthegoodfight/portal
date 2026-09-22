@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import { createClient } from "@/lib/supabase/server";
 import { actorLabel, requireAdmin } from "@/lib/admin/require-admin";
-import { CHAPTERS, timezoneForChapter } from "@/lib/chapters";
+import { CHAPTERS, isVirtualChapter, timezoneForChapter } from "@/lib/chapters";
 import { EVENT_TYPES } from "@/lib/event-types";
 import { formatEventDateRange } from "@/lib/format-date";
 import { generateRecurrenceDates, type RecurrenceFrequency } from "@/lib/admin/recurrence";
@@ -47,6 +47,9 @@ export type CreateEventInput = {
   streetAddress: string;
   city: string;
   state: string;
+  /** Required, ignored otherwise, when chapter is VIRTUAL_CHAPTER. */
+  virtualLink: string;
+  virtualAccessNotes: string;
   description: string;
   /** Raw form text — blank means unlimited; otherwise at least 1. */
   capacity: string;
@@ -87,7 +90,7 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
   // --- Step 1: Basics ---
   const title = input.title.trim();
   if (!title) return { ok: false, error: "Title is required" };
-  if (!CHAPTERS.some((c) => c.name === input.chapter)) {
+  if (!CHAPTERS.some((c) => c.name === input.chapter) && !isVirtualChapter(input.chapter)) {
     return { ok: false, error: "Choose a chapter" };
   }
   if (!EVENT_TYPES.includes(input.eventType as (typeof EVENT_TYPES)[number])) {
@@ -110,12 +113,19 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
   }
 
   // --- Step 2: Details ---
-  const venueName = input.venueName.trim();
-  const streetAddress = input.streetAddress.trim();
-  const city = input.city.trim();
-  const state = input.state.trim();
-  const locationProblems = locationErrors(input);
-  if (locationProblems.length > 0) return { ok: false, error: locationProblems.join("; ") };
+  const isVirtual = isVirtualChapter(input.chapter);
+  const venueName = isVirtual ? "" : input.venueName.trim();
+  const streetAddress = isVirtual ? "" : input.streetAddress.trim();
+  const city = isVirtual ? "" : input.city.trim();
+  const state = isVirtual ? "" : input.state.trim();
+  const virtualLink = isVirtual ? input.virtualLink.trim() : "";
+  const virtualAccessNotes = isVirtual ? input.virtualAccessNotes.trim() : "";
+  if (isVirtual) {
+    if (!virtualLink) return { ok: false, error: "A meeting link is required for a virtual event" };
+  } else {
+    const locationProblems = locationErrors(input);
+    if (locationProblems.length > 0) return { ok: false, error: locationProblems.join("; ") };
+  }
   const capacityProblem = capacityError(input.capacity);
   if (capacityProblem) return { ok: false, error: capacityProblem };
   const capacity = parseCapacity(input.capacity);
@@ -123,9 +133,11 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
     REGISTRATION_SECTIONS.filter((s) => !s.alwaysRequired && !s.profileOnly).map((s) => s.id),
   );
   const registrationSections = input.registrationSections.filter((id) => validSectionIds.has(id));
-  // Never a choice: the waiver state always follows the chapter.
+  // Never a choice: the waiver state always follows the chapter. A virtual
+  // event resolves to Colorado — see the deliberate-default comment on
+  // waiverStateForChapter in lib/waivers.ts.
   const waiverState = waiverStateForChapter(input.chapter);
-  const location = composeLocation(input);
+  const location = isVirtual ? null : composeLocation(input);
 
   // --- Step 3: Volunteers ---
   const roles = input.volunteersNeeded ? input.volunteerRoles : [];
@@ -187,6 +199,8 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
         city,
         state,
         location,
+        virtual_link: virtualLink || null,
+        virtual_access_notes: virtualAccessNotes || null,
         capacity,
         spots_taken: 0,
         lead_name: input.leadName.trim() || null,
@@ -259,7 +273,9 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
       { label: "Chapter", before: "", after: input.chapter },
       { label: "Event type", before: "", after: input.eventType },
       { label: "When", before: "", after: whenSummary },
-      { label: "Location", before: "", after: location ?? "" },
+      isVirtual
+        ? { label: "Meeting link", before: "", after: virtualLink }
+        : { label: "Location", before: "", after: location ?? "" },
       { label: "Capacity", before: "", after: capacity == null ? "Unlimited" : String(capacity) },
     ];
     if (roles.length > 0) {

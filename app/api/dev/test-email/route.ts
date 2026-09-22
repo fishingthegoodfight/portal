@@ -52,7 +52,7 @@ export async function GET(request: NextRequest) {
   const { data: event, error } = await supabase
     .from("events")
     .select(
-      "id, name, starts_at, ends_at, timezone, location, lead_name, lead_phone, lead_email, custom_email_note, ics_sequence",
+      "id, name, starts_at, ends_at, timezone, location, lead_name, lead_phone, lead_email, custom_email_note, virtual_link, virtual_access_notes, ics_sequence",
     )
     .eq("id", eventId)
     .maybeSingle();

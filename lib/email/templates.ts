@@ -18,6 +18,12 @@ export type RsvpEmailEventInfo = {
   customNote: string | null;
   eventUrl: string;
   googleCalendarUrl: string;
+  /** Only ever set by the caller (lib/email/send.ts) for someone with a
+   * confirmed RSVP — never for waitlisted/offered. Rendered only by
+   * confirmationEmail and reminderEmail; see the "Include them in" bullet
+   * this was built for. */
+  virtualLink: string | null;
+  virtualAccessNotes: string | null;
 };
 
 export type RenderedEmail = {
@@ -78,6 +84,25 @@ function leadSectionText(info: RsvpEmailEventInfo): string {
   return `Day-of questions? ${contact}`;
 }
 
+function virtualSectionHtml(info: RsvpEmailEventInfo): string {
+  if (!info.virtualLink) return "";
+  return [
+    `<p style="margin:0 0 4px;"><strong>Join online:</strong> <a href="${escapeHtml(info.virtualLink)}" style="color:#166534;">${escapeHtml(info.virtualLink)}</a></p>`,
+    info.virtualAccessNotes
+      ? `<p style="margin:0 0 16px;">${htmlWithLineBreaks(info.virtualAccessNotes)}</p>`
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function virtualSectionText(info: RsvpEmailEventInfo): string {
+  if (!info.virtualLink) return "";
+  return [`Join online: ${info.virtualLink}`, info.virtualAccessNotes ?? ""]
+    .filter(Boolean)
+    .join("\n");
+}
+
 export function confirmationEmail(
   info: RsvpEmailEventInfo,
   status: "confirmed" | "waitlisted",
@@ -105,6 +130,7 @@ export function confirmationEmail(
       info.location
         ? `<p style="margin:0 0 16px;"><strong>Where:</strong> ${escapeHtml(info.location)}</p>`
         : "",
+      virtualSectionHtml(info),
       leadSectionHtml(info),
       info.customNote ? `<p style="margin:0 0 16px;">${htmlWithLineBreaks(info.customNote)}</p>` : "",
       `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">View event</a></p>`,
@@ -122,6 +148,7 @@ export function confirmationEmail(
     "",
     `When: ${info.dateRange}`,
     info.location ? `Where: ${info.location}` : "",
+    virtualSectionText(info),
     leadSectionText(info),
     info.customNote ?? "",
     "",
@@ -399,6 +426,7 @@ export function reminderEmail(info: RsvpEmailEventInfo, kind: ReminderKind): Ren
       info.location
         ? `<p style="margin:0 0 16px;"><strong>Where:</strong> ${escapeHtml(info.location)}</p>`
         : "",
+      virtualSectionHtml(info),
       leadSectionHtml(info),
       info.customNote ? `<p style="margin:0 0 16px;">${htmlWithLineBreaks(info.customNote)}</p>` : "",
       `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">View event</a></p>`,
@@ -415,6 +443,7 @@ export function reminderEmail(info: RsvpEmailEventInfo, kind: ReminderKind): Ren
     "",
     `When: ${info.dateRange}`,
     info.location ? `Where: ${info.location}` : "",
+    virtualSectionText(info),
     leadSectionText(info),
     info.customNote ?? "",
     "",

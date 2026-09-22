@@ -19,6 +19,8 @@ import {
 } from "@/components/admin/fields/event-text-fields";
 import { LeadContactFields } from "@/components/admin/fields/lead-contact-fields";
 import { LocationFields } from "@/components/admin/fields/location-fields";
+import { VirtualEventFields } from "@/components/admin/fields/virtual-event-fields";
+import { isVirtualChapter } from "@/lib/chapters";
 import { RegistrationSectionsFields } from "@/components/admin/fields/registration-sections-fields";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -166,13 +168,23 @@ export function EventEditForm({
               onChangeTimezone={setField("timezone")}
             />
 
-            <LocationFields
-              idPrefix="edit"
-              value={form}
-              onChange={(field, value) => setField(field)(value)}
-              required={false}
-              legacyLocation={legacyLocation}
-            />
+            {isVirtualChapter(form.chapter) ? (
+              <VirtualEventFields
+                idPrefix="edit"
+                virtualLink={form.virtualLink}
+                virtualAccessNotes={form.virtualAccessNotes}
+                onChangeLink={setField("virtualLink")}
+                onChangeAccessNotes={setField("virtualAccessNotes")}
+              />
+            ) : (
+              <LocationFields
+                idPrefix="edit"
+                value={form}
+                onChange={(field, value) => setField(field)(value)}
+                required={false}
+                legacyLocation={legacyLocation}
+              />
+            )}
 
             <DescriptionField
               idPrefix="edit"

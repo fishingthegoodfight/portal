@@ -22,6 +22,13 @@ export type IcsEventInput = {
   endsAt: string | null;
   timezone: string;
   location: string | null;
+  /** Zoom/meeting link — becomes the ICS LOCATION when there's no physical
+   * location (a virtual event has none), and always appears in the
+   * DESCRIPTION alongside virtualAccessNotes so it's visible in the calendar
+   * entry when the event starts. Callers only ever pass this for someone
+   * with a confirmed RSVP — see lib/email/send.ts. */
+  virtualLink?: string | null;
+  virtualAccessNotes?: string | null;
 };
 
 function pad(n: number, len = 2): string {
@@ -159,6 +166,12 @@ export function buildEventIcs({
   const uid = icsUidForEvent(event.id);
   const dtstamp = formatIcsDateTimeUTC(new Date());
   const status = method === "CANCEL" ? "CANCELLED" : "CONFIRMED";
+  // A virtual event has no physical location, so the link fills LOCATION too
+  // — the two are mutually exclusive per event (see admin-event.ts).
+  const location = event.location || event.virtualLink || null;
+  const description = event.virtualLink
+    ? [event.virtualLink, event.virtualAccessNotes].filter(Boolean).join("\n\n")
+    : null;
 
   const lines = [
     "BEGIN:VCALENDAR",
@@ -173,9 +186,8 @@ export function buildEventIcs({
     `DTSTART;TZID=${event.timezone}:${formatIcsDateTimeInZone(start, event.timezone)}`,
     `DTEND;TZID=${event.timezone}:${formatIcsDateTimeInZone(end, event.timezone)}`,
     foldIcsLine(`SUMMARY:${escapeIcsText(event.name)}`),
-    ...(event.location
-      ? [foldIcsLine(`LOCATION:${escapeIcsText(event.location)}`)]
-      : []),
+    ...(location ? [foldIcsLine(`LOCATION:${escapeIcsText(location)}`)] : []),
+    ...(description ? [foldIcsLine(`DESCRIPTION:${escapeIcsText(description)}`)] : []),
     `SEQUENCE:${sequence}`,
     `STATUS:${status}`,
     "END:VEVENT",
@@ -199,7 +211,11 @@ export function buildGoogleCalendarLink(event: IcsEventInput): string {
     dates: `${formatIcsDateTimeUTC(start)}/${formatIcsDateTimeUTC(end)}`,
     ctz: event.timezone,
   });
-  if (event.location) params.set("location", event.location);
+  const location = event.location || event.virtualLink || null;
+  if (location) params.set("location", location);
+  if (event.virtualLink && event.virtualAccessNotes) {
+    params.set("details", event.virtualAccessNotes);
+  }
 
   return `https://calendar.google.com/calendar/render?${params.toString()}`;
 }

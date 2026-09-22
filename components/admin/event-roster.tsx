@@ -24,6 +24,7 @@ import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/componen
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RegistrationFieldInput } from "@/components/registration-fields";
+import { HomeChapterField } from "@/components/chapter-select";
 import { formatPhoneNumber } from "@/lib/phone";
 import {
   dietaryDisplay,
@@ -49,6 +50,7 @@ type WalkupFormState = {
   emergencyContactName: string;
   emergencyContactPhone: string;
   directoryOptIn: boolean;
+  chapter: string;
 };
 
 const EMPTY_WALKUP_FORM: WalkupFormState = {
@@ -59,6 +61,7 @@ const EMPTY_WALKUP_FORM: WalkupFormState = {
   emergencyContactName: "",
   emergencyContactPhone: "",
   directoryOptIn: false,
+  chapter: "",
 };
 
 export function EventRoster({
@@ -71,6 +74,8 @@ export function EventRoster({
   waiver,
   dietary,
   registrationSectionIds,
+  virtualLink,
+  virtualAccessNotes,
 }: {
   eventId: number;
   eventCard: EventCardEvent;
@@ -83,6 +88,11 @@ export function EventRoster({
   /** The event's registration_sections ids — the walk-up form collects the
    * same sections the RSVP form would. */
   registrationSectionIds: string[];
+  /** Shown to the admin regardless of their own RSVP status — unlike
+   * EventCardEvent's virtualLink (participant-facing, gated to a confirmed
+   * RSVP), an admin managing the event always sees it. */
+  virtualLink: string | null;
+  virtualAccessNotes: string | null;
 }) {
   const router = useRouter();
   const isCancelled = status === "cancelled";
@@ -324,6 +334,7 @@ export function EventRoster({
       emergencyContactName: walkupForm.emergencyContactName,
       emergencyContactPhone: walkupForm.emergencyContactPhone,
       directoryOptIn: walkupForm.directoryOptIn,
+      chapter: walkupForm.chapter,
       waiverName: walkupSign.name,
       waiverAgreed: walkupSign.agreed,
       sections: sectionValues,
@@ -348,6 +359,10 @@ export function EventRoster({
   return (
     <div className="flex flex-col gap-6">
       <EventCard event={eventCard} rsvpStatus={null} />
+
+      {virtualLink && (
+        <VirtualLinkCard link={virtualLink} accessNotes={virtualAccessNotes} />
+      )}
 
       {isCancelled && (
         <div className="rounded-md border border-red-500/50 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-400">
@@ -619,6 +634,12 @@ export function EventRoster({
                     />
                   </div>
                 </div>
+                <HomeChapterField
+                  idPrefix="walkup"
+                  value={walkupForm.chapter}
+                  onChange={(value) => setWalkupForm((prev) => ({ ...prev, chapter: value }))}
+                  required={false}
+                />
                 <RegistrationFieldInput
                   field={DIRECTORY_FIELD}
                   value={walkupForm.directoryOptIn ? "true" : "false"}
@@ -685,6 +706,49 @@ export function EventRoster({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Read-only Zoom/meeting link + access notes for the admin managing the
+ * event, with a one-tap copy — the lead is often starting the call from a
+ * phone on the day of, and shouldn't have to open the Edit form to find it.
+ */
+function VirtualLinkCard({
+  link,
+  accessNotes,
+}: {
+  link: string;
+  accessNotes: string | null;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API unavailable (e.g. no secure context) — the link is
+      // still right there to select and copy by hand.
+    }
+  };
+
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-2 py-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <span className="text-xs text-muted-foreground">Virtual event link</span>
+            <p className="truncate text-sm">{link}</p>
+          </div>
+          <Button type="button" variant="outline" size="sm" onClick={copy}>
+            {copied ? "Copied" : "Copy"}
+          </Button>
+        </div>
+        {accessNotes && <p className="text-sm text-muted-foreground">{accessNotes}</p>}
+      </CardContent>
+    </Card>
   );
 }
 

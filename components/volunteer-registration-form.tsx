@@ -9,7 +9,7 @@ import {
   submitVolunteerRegistrationAction,
   type SubmitVolunteerRegistrationInput,
 } from "@/lib/actions/volunteer-register";
-import { CHAPTERS } from "@/lib/chapters";
+import { HomeChapterField } from "@/components/chapter-select";
 import { US_STATES } from "@/lib/us-states";
 import { formatPhoneNumber, formatPostalCode } from "@/lib/phone";
 import { PROGRAM_INTERESTS, SKILL_INTERESTS, TSHIRT_SIZES } from "@/lib/volunteers";
@@ -68,7 +68,6 @@ export function VolunteerRegistrationForm({
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
 
   // Re-resolve the waiver whenever the home chapter changes — it depends on
   // the chapter's state, chosen live on this form (there's no event to
@@ -116,7 +115,6 @@ export function VolunteerRegistrationForm({
     e.preventDefault();
     setError(null);
     setCertError(null);
-    setSuccess(false);
 
     if (waiverNeedsInput(waiverInfo, waiverSign)) {
       setError("You must agree to and sign the volunteer waiver.");
@@ -176,7 +174,10 @@ export function VolunteerRegistrationForm({
       setError(result.error);
       return;
     }
-    setSuccess(true);
+    // Don't leave the person on the form — send them to the volunteer home
+    // page, which shows the success message (it reads ?saved=1) along with
+    // their status, roles, and what's still outstanding.
+    router.push("/protected/volunteer?saved=1");
     router.refresh();
   };
 
@@ -282,22 +283,11 @@ export function VolunteerRegistrationForm({
               />
             </div>
           </div>
-          <div className="grid gap-2">
-            <Label htmlFor="v_chapter">Home chapter</Label>
-            <Select
-              id="v_chapter"
-              required
-              value={profile.chapter}
-              onChange={(e) => setProfile((prev) => ({ ...prev, chapter: e.target.value }))}
-            >
-              <option value="">Select a chapter</option>
-              {CHAPTERS.map((chapter) => (
-                <option key={chapter.name} value={chapter.name}>
-                  {chapter.name}, {chapter.state}
-                </option>
-              ))}
-            </Select>
-          </div>
+          <HomeChapterField
+            idPrefix="v"
+            value={profile.chapter}
+            onChange={(value) => setProfile((prev) => ({ ...prev, chapter: value }))}
+          />
           <div className="grid grid-cols-3 gap-4">
             <div className="grid gap-2">
               <Label htmlFor="v_tshirt">T-shirt size</Label>
@@ -467,7 +457,6 @@ export function VolunteerRegistrationForm({
 
       <div className="flex flex-col gap-3">
         {error && <p className="text-sm text-red-500">{error}</p>}
-        {success && <p className="text-sm text-green-600">Registration saved — thank you!</p>}
         <div>
           <Button type="submit" disabled={isSubmitting || certUploading}>
             {isSubmitting || certUploading
