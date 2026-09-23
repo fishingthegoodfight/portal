@@ -202,7 +202,10 @@ function buildIcsAttachment(
     },
   });
   return {
-    filename: method === "CANCEL" ? "cancel.ics" : "event.ics",
+    // A status, not an instruction: the email never asks anyone to do
+    // anything with a cancellation .ics (see the calendar lines in
+    // lib/email/templates.ts) — Outlook applies it; most others ignore it.
+    filename: method === "CANCEL" ? "cancelled-event.ics" : "event.ics",
     content: Buffer.from(ics, "utf-8").toString("base64"),
     contentType: `text/calendar; method=${method}; charset=UTF-8`,
   };
@@ -462,7 +465,16 @@ export async function sendWaitlistOfferExpiredEmail({
   reason?: "capacity";
 }): Promise<void> {
   const { subject, html, text } = waitlistOfferExpiredEmail(buildEventInfo(event, false), { reason });
-  await deliverEmail({ to: toEmail, subject, html, text });
+  await deliverEmail({
+    to: toEmail,
+    subject,
+    html,
+    text,
+    // A lapsed offer takes them off the waitlist, whose confirmation carried
+    // a REQUEST for this UID — so a CANCEL for clients that honor one. Not
+    // for "capacity": they're still on the waitlist.
+    attachments: reason === "capacity" ? undefined : [buildIcsAttachment(event, "CANCEL", false)],
+  });
 }
 
 /**
@@ -574,11 +586,12 @@ function buildVolunteerShiftIcsAttachment(
 ): { filename: string; content: string; contentType: string } {
   const ics = buildEventIcs({
     method,
-    // No persisted sequence counter for a shift (shift-time edits don't
-    // trigger a re-notification, out of scope here) — 0 for the original
-    // REQUEST, 1 for the CANCEL, enough for a calendar client to tell the
-    // CANCEL is the newer state for this UID.
-    sequence: method === "CANCEL" ? 1 : 0,
+    // No persisted sequence counter for a shift, so it's derived from the
+    // clock: every later send for this UID carries a higher SEQUENCE. (A
+    // fixed 0/1 made a re-signup's REQUEST older than the earlier CANCEL, so
+    // strict clients like Outlook ignored it.) Seconds since 2026 fit an
+    // iCalendar integer for decades.
+    sequence: Math.floor((Date.now() - Date.UTC(2026, 0, 1)) / 1000),
     uid: icsUidForVolunteerShift(ctx.opportunityId),
     event: {
       id: ctx.opportunityId,
@@ -592,7 +605,7 @@ function buildVolunteerShiftIcsAttachment(
     },
   });
   return {
-    filename: method === "CANCEL" ? "cancel.ics" : "shift.ics",
+    filename: method === "CANCEL" ? "cancelled-shift.ics" : "shift.ics",
     content: Buffer.from(ics, "utf-8").toString("base64"),
     contentType: `text/calendar; method=${method}; charset=UTF-8`,
   };

@@ -30,6 +30,7 @@ export function CancelEventDialog({
   seriesId = null,
   initialScope = null,
   label = "Cancel event",
+  triggerSize = "default",
   onCancelled,
 }: {
   eventId: number;
@@ -41,6 +42,8 @@ export function CancelEventDialog({
    * upcoming"). */
   initialScope?: EditScope | null;
   label?: string;
+  /** Size of the trigger button, to match the row it sits in. */
+  triggerSize?: "default" | "sm";
   onCancelled: () => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -113,7 +116,7 @@ export function CancelEventDialog({
 
   if (!isOpen) {
     return (
-      <Button variant="destructive" onClick={open}>
+      <Button variant="destructive" size={triggerSize} onClick={open}>
         {label}
       </Button>
     );
@@ -176,7 +179,8 @@ export function CancelEventDialog({
                     {preview.recipientCount === 1 ? "attendee" : "attendees"}
                   </strong>
                   {preview.eventCount > 1 && " across those events (each gets their own event's date)"}
-                  , each with a calendar update that clears the event.
+                  . The email asks them to delete it from their calendar if they&apos;d added
+                  it — calendars aren&apos;t updated automatically.
                 </p>
                 <p className="text-sm">
                   {preview.volunteerCount > 0 ? (
@@ -185,9 +189,9 @@ export function CancelEventDialog({
                         {preview.volunteerCount} volunteer{" "}
                         {preview.volunteerCount === 1 ? "signup" : "signups"}
                       </strong>{" "}
-                      will be cancelled too. Each volunteer is emailed the same reason with a
-                      calendar update that clears their shift. Restoring the event later
-                      won&apos;t bring their shifts back.
+                      will be cancelled too. Each volunteer is emailed the same reason and asked
+                      to delete the shift from their calendar if they&apos;d added it. Restoring
+                      the event later won&apos;t bring their shifts back.
                     </>
                   ) : (
                     "No volunteers are signed up."

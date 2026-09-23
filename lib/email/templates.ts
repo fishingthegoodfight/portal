@@ -123,6 +123,34 @@ function occurrenceNoteSectionText(info: RsvpEmailEventInfo): string {
   return info.occurrenceNote ? `Note: ${info.occurrenceNote}` : "";
 }
 
+/*
+ * Calendar lines. These deliberately promise no automation, because none is
+ * reliable: Gmail only offers an "Add to calendar" prompt for the attached
+ * .ics; the Google Calendar link creates a separate entry that nothing can
+ * change or remove remotely; and most clients ignore a cancellation .ics from
+ * a third-party sender (Outlook honors it, so it's still attached — but never
+ * mentioned). So: adding says how to add it, and a cancellation just asks
+ * them to delete it themselves if they'd added it.
+ */
+
+/** "<lead> open the attached event.ics file, or use Add to Google Calendar." */
+function calendarAddHtml(lead: string, googleCalendarUrl: string, file: string): string {
+  return `<p style="margin:8px 0 16px;font-size:13px;color:#57534e;">${escapeHtml(lead)} open the attached <strong>${escapeHtml(file)}</strong> file, or use <a href="${googleCalendarUrl}" style="color:#166534;">Add to Google Calendar</a>.</p>`;
+}
+
+function calendarAddText(lead: string, googleCalendarUrl: string, file: string): string {
+  return `${lead} open the attached ${file} file, or use Add to Google Calendar: ${googleCalendarUrl}`;
+}
+
+/** "If you added this event to your calendar, please delete it." */
+function calendarDeleteHtml(what: string): string {
+  return `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">If you added ${escapeHtml(what)} to your calendar, please delete it.</p>`;
+}
+
+function calendarDeleteText(what: string): string {
+  return `If you added ${what} to your calendar, please delete it.`;
+}
+
 export function confirmationEmail(
   info: RsvpEmailEventInfo,
   status: "confirmed" | "waitlisted",
@@ -155,7 +183,7 @@ export function confirmationEmail(
       leadSectionHtml(info),
       info.customNote ? `<p style="margin:0 0 16px;">${htmlWithLineBreaks(info.customNote)}</p>` : "",
       `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">View event</a></p>`,
-      `<p style="margin:8px 0 16px;font-size:13px;"><a href="${info.googleCalendarUrl}" style="color:#166534;">Add to Google Calendar</a></p>`,
+      calendarAddHtml("To add it to your calendar,", info.googleCalendarUrl, "event.ics"),
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Need to cancel? Visit the event page above and click "Cancel RSVP."</p>`,
     ]
       .filter(Boolean)
@@ -175,7 +203,7 @@ export function confirmationEmail(
     info.customNote ?? "",
     "",
     `Event page: ${info.eventUrl}`,
-    `Add to Google Calendar: ${info.googleCalendarUrl}`,
+    calendarAddText("To add it to your calendar,", info.googleCalendarUrl, "event.ics"),
     "",
     `Need to cancel? Visit the event page and click "Cancel RSVP."`,
   ]
@@ -193,6 +221,7 @@ export function cancellationEmail(info: RsvpEmailEventInfo): RenderedEmail {
     [
       `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">Your RSVP has been cancelled</p>`,
       `<p style="margin:0 0 16px;">You're no longer registered for <strong>${name}</strong> (${escapeHtml(info.dateRange)}).</p>`,
+      calendarDeleteHtml("this event"),
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Changed your mind? <a href="${info.eventUrl}" style="color:#166534;">RSVP again</a>.</p>`,
     ].join("\n"),
   );
@@ -201,6 +230,8 @@ export function cancellationEmail(info: RsvpEmailEventInfo): RenderedEmail {
     "Your RSVP has been cancelled",
     "",
     `You're no longer registered for ${info.name} (${info.dateRange}).`,
+    "",
+    calendarDeleteText("this event"),
     "",
     `Changed your mind? RSVP again: ${info.eventUrl}`,
   ].join("\n");
@@ -227,6 +258,7 @@ export function eventCancellationEmail(
       `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">This event has been cancelled</p>`,
       `<p style="margin:0 0 16px;"><strong>${name}</strong> (${escapeHtml(info.dateRange)}${escapeHtml(whereSuffix)}) has been cancelled.</p>`,
       `<p style="margin:0 0 16px;"><strong>Reason:</strong> ${htmlWithLineBreaks(reason)}</p>`,
+      calendarDeleteHtml("this event"),
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Sorry for the inconvenience — we hope to see you at a future event.</p>`,
     ].join("\n"),
   );
@@ -238,6 +270,8 @@ export function eventCancellationEmail(
     "",
     `Reason: ${reason}`,
     "",
+    calendarDeleteText("this event"),
+    "",
     "Sorry for the inconvenience — we hope to see you at a future event.",
   ].join("\n");
 
@@ -247,8 +281,8 @@ export function eventCancellationEmail(
 /**
  * Sent to confirmed attendees when an edit changes the date, time, or
  * location. Carries a revised .ics (same UID, bumped SEQUENCE — see
- * lib/email/ics.ts) so the attendee's existing calendar entry updates in
- * place instead of duplicating.
+ * lib/email/ics.ts), which clients that process updates apply in place; the
+ * copy doesn't rely on that (see the calendar lines above).
  */
 export function eventUpdateEmail(
   info: RsvpEmailEventInfo,
@@ -288,8 +322,11 @@ export function eventUpdateEmail(
         : "",
       leadSectionHtml(info),
       `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
-      `<p style="margin:8px 0 16px;font-size:13px;"><a href="${info.googleCalendarUrl}" style="color:#166534;">Add to Google Calendar</a></p>`,
-      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">A calendar update is attached so your existing invite refreshes instead of duplicating.</p>`,
+      calendarAddHtml(
+        "If it's on your calendar, delete the old entry and add the updated one:",
+        info.googleCalendarUrl,
+        "event.ics",
+      ),
     ]
       .filter(Boolean)
       .join("\n"),
@@ -306,7 +343,11 @@ export function eventUpdateEmail(
     leadSectionText(info),
     "",
     `Event page: ${info.eventUrl}`,
-    `Add to Google Calendar: ${info.googleCalendarUrl}`,
+    calendarAddText(
+      "If it's on your calendar, delete the old entry and add the updated one:",
+      info.googleCalendarUrl,
+      "event.ics",
+    ),
   ]
     .filter(Boolean)
     .join("\n");
@@ -317,7 +358,7 @@ export function eventUpdateEmail(
 /**
  * Sent to confirmed attendees when a previously-cancelled event is
  * restored. Carries a fresh METHOD:REQUEST .ics at the bumped
- * `ics_sequence` so it reappears on the calendars it was cleared from.
+ * `ics_sequence`, for adding it back.
  */
 export function eventRestoredEmail(info: RsvpEmailEventInfo): RenderedEmail {
   const name = escapeHtml(info.name);
@@ -333,8 +374,11 @@ export function eventRestoredEmail(info: RsvpEmailEventInfo): RenderedEmail {
         : "",
       leadSectionHtml(info),
       `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">View event</a></p>`,
-      `<p style="margin:8px 0 16px;font-size:13px;"><a href="${info.googleCalendarUrl}" style="color:#166534;">Add to Google Calendar</a></p>`,
-      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">A calendar update is attached so it reappears on your calendar automatically.</p>`,
+      calendarAddHtml(
+        "If you'd removed it from your calendar, add it back:",
+        info.googleCalendarUrl,
+        "event.ics",
+      ),
     ]
       .filter(Boolean)
       .join("\n"),
@@ -350,7 +394,11 @@ export function eventRestoredEmail(info: RsvpEmailEventInfo): RenderedEmail {
     leadSectionText(info),
     "",
     `Event page: ${info.eventUrl}`,
-    `Add to Google Calendar: ${info.googleCalendarUrl}`,
+    calendarAddText(
+      "If you'd removed it from your calendar, add it back:",
+      info.googleCalendarUrl,
+      "event.ics",
+    ),
   ]
     .filter(Boolean)
     .join("\n");
@@ -544,6 +592,7 @@ export function waitlistOfferExpiredEmail(
     [
       `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">Your spot offer has lapsed</p>`,
       `<p style="margin:0 0 16px;">The spot we were holding for you at <strong>${name}</strong> (${escapeHtml(info.dateRange)}) wasn't claimed in time, so it's been offered to the next person on the waitlist. You're no longer on the waitlist.</p>`,
+      calendarDeleteHtml("this event"),
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Still want to come? You can <a href="${info.eventUrl}" style="color:#166534;">join the waitlist again</a> — you'll go to the back of the line.</p>`,
     ].join("\n"),
   );
@@ -552,6 +601,8 @@ export function waitlistOfferExpiredEmail(
     "Your spot offer has lapsed",
     "",
     `The spot we were holding for you at ${info.name} (${info.dateRange}) wasn't claimed in time, so it's been offered to the next person on the waitlist. You're no longer on the waitlist.`,
+    "",
+    calendarDeleteText("this event"),
     "",
     `Still want to come? Join the waitlist again (you'll go to the back of the line): ${info.eventUrl}`,
   ].join("\n");
@@ -568,6 +619,7 @@ function waitlistSpotRemovedEmail(info: RsvpEmailEventInfo): RenderedEmail {
       `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">Your spot is no longer available</p>`,
       `<p style="margin:0 0 16px;">The capacity for <strong>${name}</strong> (${escapeHtml(info.dateRange)}) was reduced, so the spot we were holding for you is no longer available.</p>`,
       `<p style="margin:0 0 16px;">You're back on the waitlist, in your original place, and we'll email you if a spot opens up.</p>`,
+      `<p style="margin:0 0 16px;font-size:13px;color:#57534e;">If you added this event to your calendar, you don't have a confirmed spot yet — you may want to delete it until one opens up.</p>`,
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Don't want to stay on the waitlist? Open the <a href="${info.eventUrl}" style="color:#166534;">event page</a> and click "Leave waitlist."</p>`,
     ].join("\n"),
   );
@@ -578,6 +630,8 @@ function waitlistSpotRemovedEmail(info: RsvpEmailEventInfo): RenderedEmail {
     `The capacity for ${info.name} (${info.dateRange}) was reduced, so the spot we were holding for you is no longer available.`,
     "",
     "You're back on the waitlist, in your original place, and we'll email you if a spot opens up.",
+    "",
+    "If you added this event to your calendar, you don't have a confirmed spot yet — you may want to delete it until one opens up.",
     "",
     `Don't want to stay on the waitlist? Open the event page and click "Leave waitlist": ${info.eventUrl}`,
   ].join("\n");
@@ -765,7 +819,7 @@ export function volunteerSignupConfirmationEmail(info: VolunteerShiftEmailInfo):
       info.description ? `<p style="margin:0 0 16px;">${htmlWithLineBreaks(info.description)}</p>` : "",
       leadSectionHtml(info),
       `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">View event</a></p>`,
-      `<p style="margin:8px 0 16px;font-size:13px;"><a href="${info.googleCalendarUrl}" style="color:#166534;">Add to Google Calendar</a></p>`,
+      calendarAddHtml("To add your shift to your calendar,", info.googleCalendarUrl, "shift.ics"),
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Can't make it? Visit the event page above and cancel your volunteer signup.</p>`,
     ]
       .filter(Boolean)
@@ -784,7 +838,7 @@ export function volunteerSignupConfirmationEmail(info: VolunteerShiftEmailInfo):
     leadSectionText(info),
     "",
     `Event page: ${info.eventUrl}`,
-    `Add to Google Calendar: ${info.googleCalendarUrl}`,
+    calendarAddText("To add your shift to your calendar,", info.googleCalendarUrl, "shift.ics"),
     "",
     "Can't make it? Visit the event page and cancel your volunteer signup.",
   ]
@@ -803,6 +857,7 @@ export function volunteerCancellationEmail(info: VolunteerShiftEmailInfo): Rende
     [
       `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">Your volunteer signup has been cancelled</p>`,
       `<p style="margin:0 0 16px;">You're no longer signed up for <strong>${escapeHtml(info.role)}</strong> at <strong>${escapeHtml(info.eventName)}</strong> (${escapeHtml(info.shiftDateRange)}).</p>`,
+      calendarDeleteHtml("this shift"),
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Changed your mind? <a href="${info.eventUrl}" style="color:#166534;">Sign up again</a> if a spot is still open.</p>`,
     ].join("\n"),
   );
@@ -811,6 +866,8 @@ export function volunteerCancellationEmail(info: VolunteerShiftEmailInfo): Rende
     "Your volunteer signup has been cancelled",
     "",
     `You're no longer signed up for ${info.role} at ${info.eventName} (${info.shiftDateRange}).`,
+    "",
+    calendarDeleteText("this shift"),
     "",
     `Changed your mind? Sign up again if a spot is still open: ${info.eventUrl}`,
   ].join("\n");
@@ -829,6 +886,7 @@ export function volunteerRoleCancelledEmail(info: VolunteerShiftEmailInfo): Rend
     [
       `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">A volunteer role you signed up for was cancelled</p>`,
       `<p style="margin:0 0 16px;">The organizers cancelled <strong>${escapeHtml(info.role)}</strong> at <strong>${escapeHtml(info.eventName)}</strong> (${escapeHtml(info.shiftDateRange)}), so your signup for it has been cancelled. Thank you for offering your time.</p>`,
+      calendarDeleteHtml("this shift"),
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">You can see any other open volunteer roles on the <a href="${info.eventUrl}" style="color:#166534;">event page</a>.</p>`,
     ].join("\n"),
   );
@@ -837,6 +895,8 @@ export function volunteerRoleCancelledEmail(info: VolunteerShiftEmailInfo): Rend
     "A volunteer role you signed up for was cancelled",
     "",
     `The organizers cancelled ${info.role} at ${info.eventName} (${info.shiftDateRange}), so your signup for it has been cancelled. Thank you for offering your time.`,
+    "",
+    calendarDeleteText("this shift"),
     "",
     `Any other open volunteer roles are on the event page: ${info.eventUrl}`,
   ].join("\n");
@@ -858,7 +918,8 @@ export function volunteerShiftEventCancelledEmail(
       `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">${escapeHtml(info.eventName)} has been cancelled</p>`,
       `<p style="margin:0 0 16px;">Your volunteer shift as <strong>${escapeHtml(info.role)}</strong> (${escapeHtml(info.shiftDateRange)}) is cancelled along with it — please don't come in for it.</p>`,
       `<p style="margin:0 0 16px;"><strong>Reason:</strong> ${htmlWithLineBreaks(reason)}</p>`,
-      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Thank you for offering your time. The attached calendar update removes the shift from your calendar.</p>`,
+      calendarDeleteHtml("this shift"),
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Thank you for offering your time.</p>`,
     ].join("\n"),
   );
 
@@ -869,7 +930,9 @@ export function volunteerShiftEventCancelledEmail(
     "",
     `Reason: ${reason}`,
     "",
-    "Thank you for offering your time. The attached calendar update removes the shift from your calendar.",
+    calendarDeleteText("this shift"),
+    "",
+    "Thank you for offering your time.",
   ].join("\n");
 
   return { subject, html, text };
@@ -989,7 +1052,10 @@ export function switchedToVolunteeringEmail(
       info.description ? `<p style="margin:0 0 16px;">${htmlWithLineBreaks(info.description)}</p>` : "",
       leadSectionHtml(info),
       `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">View event</a></p>`,
-      `<p style="margin:8px 0 16px;font-size:13px;"><a href="${info.googleCalendarUrl}" style="color:#166534;">Add to Google Calendar</a></p>`,
+      calendarAddHtml("To add your shift to your calendar,", info.googleCalendarUrl, "shift.ics"),
+      previousRsvpStatus
+        ? `<p style="margin:0 0 16px;font-size:13px;color:#57534e;">If you added the event itself to your calendar when you RSVP'd, please delete that entry — your shift is a separate one.</p>`
+        : "",
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Can't make it? Visit the event page above and cancel your volunteer signup.</p>`,
     ]
       .filter(Boolean)
@@ -1008,7 +1074,10 @@ export function switchedToVolunteeringEmail(
     leadSectionText(info),
     "",
     `Event page: ${info.eventUrl}`,
-    `Add to Google Calendar: ${info.googleCalendarUrl}`,
+    calendarAddText("To add your shift to your calendar,", info.googleCalendarUrl, "shift.ics"),
+    previousRsvpStatus
+      ? "If you added the event itself to your calendar when you RSVP'd, please delete that entry — your shift is a separate one."
+      : "",
     "",
     "Can't make it? Visit the event page and cancel your volunteer signup.",
   ]
@@ -1045,7 +1114,8 @@ export function switchedToAttendingEmail(
       leadSectionHtml(info),
       info.customNote ? `<p style="margin:0 0 16px;">${htmlWithLineBreaks(info.customNote)}</p>` : "",
       `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">View event</a></p>`,
-      `<p style="margin:8px 0 16px;font-size:13px;"><a href="${info.googleCalendarUrl}" style="color:#166534;">Add to Google Calendar</a></p>`,
+      calendarAddHtml("To add the event to your calendar,", info.googleCalendarUrl, "event.ics"),
+      `<p style="margin:0 0 16px;font-size:13px;color:#57534e;">If you added your volunteer ${cancelledShifts.length === 1 ? "shift" : "shifts"} to your calendar, please delete ${cancelledShifts.length === 1 ? "it" : "them"}.</p>`,
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Need to cancel? Visit the event page above and click "Cancel RSVP."</p>`,
     ]
       .filter(Boolean)
@@ -1065,7 +1135,8 @@ export function switchedToAttendingEmail(
     info.customNote ?? "",
     "",
     `Event page: ${info.eventUrl}`,
-    `Add to Google Calendar: ${info.googleCalendarUrl}`,
+    calendarAddText("To add the event to your calendar,", info.googleCalendarUrl, "event.ics"),
+    `If you added your volunteer ${cancelledShifts.length === 1 ? "shift" : "shifts"} to your calendar, please delete ${cancelledShifts.length === 1 ? "it" : "them"}.`,
     "",
     `Need to cancel? Visit the event page and click "Cancel RSVP."`,
   ]

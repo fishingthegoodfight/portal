@@ -569,39 +569,12 @@ export function EventRoster({
         <StatTile label="Waitlist" value={waitlist.length} />
       </div>
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <Input
-          placeholder="Search by name, email, or phone"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="sm:max-w-xs"
-        />
-        <div className="flex flex-wrap gap-2">
-          <Button asChild variant="outline">
-            <Link href={`/protected/admin/events/${eventId}/edit`}>Edit event</Link>
-          </Button>
-          {seriesId && (
-            <Button asChild variant="outline">
-              <Link href={`/protected/admin/events/series/${seriesId}`}>View series</Link>
-            </Button>
-          )}
-          <Button asChild variant="outline">
-            <Link href={`/protected/admin/events/${eventId}/print`} target="_blank">
-              Print roster
-            </Link>
-          </Button>
-          <SaveAsTemplateButton
-            eventId={eventId}
-            eventName={eventCard.name}
-            eventChapter={eventCard.chapter}
-          />
-          {!isCancelled && <Button onClick={openWalkupForm}>Add walk-up</Button>}
-          {!isCancelled && volunteerRoles.length > 0 && (
-            <Button variant="outline" onClick={openAddVolunteerForm}>
-              Add volunteer
-            </Button>
-          )}
-          {isCancelled ? (
+      {/* Actions, grouped: what a lead does at the door (primary, large,
+        * full width on a phone), then managing the event itself, then the
+        * destructive one set apart. Search gets its own full-width row. */}
+      <div className="flex flex-col gap-3 rounded-md border p-3">
+        {isCancelled ? (
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
             <RestoreEventDialog
               eventId={eventId}
               eventName={eventCard.name}
@@ -609,16 +582,64 @@ export function EventRoster({
               volunteersCancelledCount={volunteersCancelledWithEvent}
               onRestored={() => router.refresh()}
             />
-          ) : (
-            <CancelEventDialog
-              eventId={eventId}
-              eventName={eventCard.name}
-              seriesId={seriesId}
-              onCancelled={() => router.refresh()}
-            />
+            <span className="text-sm text-muted-foreground">
+              Cancelled — restore it to add people again.
+            </span>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-2 sm:flex sm:flex-wrap">
+            <Button className="h-11 sm:px-6" onClick={openWalkupForm}>
+              Add walk-up
+            </Button>
+            {volunteerRoles.length > 0 && (
+              <Button className="h-11 sm:px-6" variant="outline" onClick={openAddVolunteerForm}>
+                Add volunteer
+              </Button>
+            )}
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2 border-t pt-3">
+          <Button asChild variant="outline" size="sm">
+            <Link href={`/protected/admin/events/${eventId}/edit`}>Edit event</Link>
+          </Button>
+          <Button asChild variant="outline" size="sm">
+            <Link href={`/protected/admin/events/${eventId}/print`} target="_blank">
+              Print roster
+            </Link>
+          </Button>
+          {seriesId && (
+            <Button asChild variant="outline" size="sm">
+              <Link href={`/protected/admin/events/series/${seriesId}`}>View series</Link>
+            </Button>
+          )}
+          <SaveAsTemplateButton
+            eventId={eventId}
+            eventName={eventCard.name}
+            eventChapter={eventCard.chapter}
+          />
+          {!isCancelled && (
+            <div className="ml-auto">
+              <CancelEventDialog
+                eventId={eventId}
+                eventName={eventCard.name}
+                seriesId={seriesId}
+                triggerSize="sm"
+                onCancelled={() => router.refresh()}
+              />
+            </div>
           )}
         </div>
       </div>
+
+      <Input
+        type="search"
+        placeholder="Search by name, email, or phone"
+        aria-label="Search the roster"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        className="h-11 w-full"
+      />
 
       <div
         className={cn(

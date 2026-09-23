@@ -51,14 +51,15 @@ export function SaveAsTemplateButton({
 
   if (!isOpen) {
     return (
-      <Button type="button" variant="outline" onClick={open}>
+      <Button type="button" variant="outline" size="sm" onClick={open}>
         Save as template
       </Button>
     );
   }
 
+  // Full width when it opens inside a row of buttons (the event page).
   return (
-    <Card>
+    <Card className="w-full basis-full">
       <CardHeader>
         <CardTitle>Save as template</CardTitle>
       </CardHeader>
