@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { actorLabel, requireAdmin } from "@/lib/admin/require-admin";
 import { formatEventDateRange } from "@/lib/format-date";
+import { normalizeSlug, publicEventPath, slugError } from "@/lib/event-slug";
 import { toZonedDateTimeInputs, zonedDateTimeToUtc } from "@/lib/timezone";
 import {
   cancelEventVolunteerSignups,
@@ -74,10 +75,12 @@ type EventRow = {
   cancellation_reason: string | null;
   cancelled_at: string | null;
   series_id: string | null;
+  /** The public URL's /events/<slug> — see lib/event-slug.ts. */
+  slug: string;
 };
 
 const EVENT_COLUMNS =
-  "id, name, event_type, description, occurrence_note, location, venue_name, street_address, city, state, virtual_link, virtual_access_notes, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason, cancelled_at, series_id";
+  "id, slug, name, event_type, description, occurrence_note, location, venue_name, street_address, city, state, virtual_link, virtual_access_notes, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason, cancelled_at, series_id";
 
 async function loadEvent(
   supabase: SupabaseServerClient,
@@ -244,6 +247,7 @@ function buildDiff(before: EventRow, after: EventRow): EventChangeDiffEntry[] {
   };
 
   push("Title", before.name, after.name);
+  push("Public link", publicEventPath(before.slug), publicEventPath(after.slug));
   push("Event type", before.event_type ?? "", after.event_type ?? "");
   push("Chapter", before.chapter ?? "", after.chapter ?? "");
   push("Description", before.description ?? "", after.description ?? "");
@@ -303,6 +307,10 @@ export type EventEditInput = {
    * alwaysRequired section applies to every event regardless and isn't part
    * of this list. */
   registrationSections: string[];
+  /** The public page's /events/<slug>. Normalized and validated on save; a
+   * changed slug keeps the old one redirecting. Never carried to other
+   * events in a series. */
+  slug: string;
   /** "YYYY-MM-DD" */
   date: string;
   /** "HH:MM", 24-hour */
@@ -537,6 +545,9 @@ function eventUpdateColumns(row: EventRow, icsSequence: number) {
     starts_at: row.starts_at,
     ends_at: row.ends_at,
     timezone: row.timezone,
+    // Unchanged for every row but the one being edited (later occurrences
+    // keep their own); the events_slug_guard trigger retires a changed one.
+    slug: row.slug,
     ics_sequence: icsSequence,
     updated_at: new Date().toISOString(),
   };
@@ -587,6 +598,25 @@ export async function updateEventAction(
   const name = input.name.trim();
   if (!name) return { ok: false, error: "Title is required" };
   if (!input.date || !input.time) return { ok: false, error: "Date and time are required" };
+
+  // Blank means "keep it" — a slug is never removed (printed links).
+  const slug = normalizeSlug(input.slug) || before.slug;
+  if (slug !== before.slug) {
+    const slugProblem = slugError(slug);
+    if (slugProblem) return { ok: false, error: slugProblem };
+    const [{ data: takenByEvent }, { data: takenByAlias }] = await Promise.all([
+      supabase.from("events").select("id").eq("slug", slug).neq("id", eventId).maybeSingle(),
+      supabase
+        .from("event_slug_aliases")
+        .select("event_id")
+        .eq("slug", slug)
+        .neq("event_id", eventId)
+        .maybeSingle(),
+    ]);
+    if (takenByEvent || takenByAlias) {
+      return { ok: false, error: `The link /events/${slug} is already used by another event` };
+    }
+  }
   if (!input.timezone) return { ok: false, error: "Time zone is required" };
 
   // One rule with the create wizard: blank = unlimited, otherwise at least 1.
@@ -675,6 +705,7 @@ export async function updateEventAction(
     starts_at: newStarts.toISOString(),
     ends_at: newEnds ? newEnds.toISOString() : null,
     timezone: input.timezone,
+    slug,
   };
 
   // A chapter change counts like a location change: attendees are offered the
@@ -857,7 +888,13 @@ export async function updateEventAction(
     .from("events")
     .update(eventUpdateColumns(after, newSequence))
     .eq("id", eventId);
-  if (updateError) return { ok: false, error: updateError.message };
+  if (updateError) {
+    // 23505: the slug was taken between the check above and this write.
+    if (updateError.code === "23505") {
+      return { ok: false, error: `The link /events/${slug} is already used by another event` };
+    }
+    return { ok: false, error: updateError.message };
+  }
   await settleCapacity(before, after);
 
   const laterSequences = new Map<number, number>();

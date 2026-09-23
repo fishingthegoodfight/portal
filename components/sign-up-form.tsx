@@ -16,6 +16,7 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { RegistrationFieldInput } from "@/components/registration-fields";
+import { withNext } from "@/lib/safe-next";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 
 const DIRECTORY_FIELD = REGISTRATION_SECTIONS.find((s) => s.id === "directory")!
@@ -23,8 +24,13 @@ const DIRECTORY_FIELD = REGISTRATION_SECTIONS.find((s) => s.id === "directory")!
 
 export function SignUpForm({
   className,
+  next,
   ...props
-}: React.ComponentPropsWithoutRef<"div">) {
+}: React.ComponentPropsWithoutRef<"div"> & {
+  /** Where to go once the account is ready (already checked with safeNext),
+   * e.g. the RSVP page of the public event they came from. */
+  next: string | null;
+}) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [repeatPassword, setRepeatPassword] = useState("");
@@ -45,21 +51,32 @@ export function SignUpForm({
     }
 
     try {
-      const { error } = await supabase.auth.signUp({
+      const destination = next ?? "/protected/events";
+      const { data, error } = await supabase.auth.signUp({
         email,
         password,
         options: {
-          emailRedirectTo: `${window.location.origin}/protected/events`,
-          // Read by the handle_new_user trigger into profiles.directory_opt_in.
-          data: { directory_opt_in: directoryOptIn === "true" },
+          emailRedirectTo: `${window.location.origin}${destination}`,
+          data: {
+            // Read by the handle_new_user trigger into profiles.directory_opt_in.
+            directory_opt_in: directoryOptIn === "true",
+            // Where they were headed, saved ON THE ACCOUNT so it survives the
+            // email-confirmation round trip whatever the confirmation link
+            // carries, even opened on another device: /auth/confirm (and the
+            // login form, as a fallback) read it back, then clear it.
+            ...(next ? { return_to: next } : {}),
+          },
         },
       });
       if (error) throw error;
       // Hard navigation: if email confirmation is off, signUp establishes a
       // session immediately, same as signInWithPassword — see the comments
       // in login-form.tsx / logout-button.tsx for why this can't be
-      // router.push/refresh.
-      window.location.href = "/auth/sign-up-success";
+      // router.push/refresh. With a session there's nothing to confirm, so
+      // go straight on.
+      window.location.href = data.session
+        ? destination
+        : withNext("/auth/sign-up-success", next);
     } catch (error: unknown) {
       setError(error instanceof Error ? error.message : "An error occurred");
     } finally {
@@ -124,7 +141,7 @@ export function SignUpForm({
             </div>
             <div className="mt-4 text-center text-sm">
               Already have an account?{" "}
-              <Link href="/auth/login" className="underline underline-offset-4">
+              <Link href={withNext("/auth/login", next)} className="underline underline-offset-4">
                 Login
               </Link>
             </div>

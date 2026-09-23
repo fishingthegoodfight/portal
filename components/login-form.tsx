@@ -15,10 +15,17 @@ import { Label } from "@/components/ui/label";
 import Link from "next/link";
 import { useState } from "react";
 
+import { safeNext, withNext } from "@/lib/safe-next";
+
 export function LoginForm({
   className,
+  next,
   ...props
-}: React.ComponentPropsWithoutRef<"div">) {
+}: React.ComponentPropsWithoutRef<"div"> & {
+  /** Where to go after signing in (already checked with safeNext), e.g. the
+   * RSVP page of the public event they came from. */
+  next: string | null;
+}) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -31,16 +38,24 @@ export function LoginForm({
     setError(null);
 
     try {
-      const { error } = await supabase.auth.signInWithPassword({
+      const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
       if (error) throw error;
+      // No ?next= (e.g. they confirmed their email on their phone, then came
+      // to sign in here): fall back to where they were headed when they
+      // signed up — saved on the account (see sign-up-form.tsx). Cleared
+      // once used, so it only applies the first time.
+      const savedReturnTo = safeNext(data.user?.user_metadata?.return_to);
+      if (data.user?.user_metadata?.return_to) {
+        await supabase.auth.updateUser({ data: { return_to: null } }).catch(() => undefined);
+      }
       // Hard navigation, not router.push/refresh: guarantees every server
       // component (header included) renders fresh against the new session
       // instead of risking a previous user's cached page/layout data. See
       // the matching comment in logout-button.tsx.
-      window.location.href = "/protected/events";
+      window.location.href = next ?? savedReturnTo ?? "/protected/events";
     } catch (error: unknown) {
       setError(error instanceof Error ? error.message : "An error occurred");
     } finally {
@@ -54,7 +69,9 @@ export function LoginForm({
         <CardHeader>
           <CardTitle className="text-2xl">Login</CardTitle>
           <CardDescription>
-            Enter your email below to login to your account
+            {next
+              ? "Sign in to continue — you'll go right back to where you were."
+              : "Enter your email below to login to your account"}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -97,7 +114,7 @@ export function LoginForm({
             <div className="mt-4 text-center text-sm">
               Don&apos;t have an account?{" "}
               <Link
-                href="/auth/sign-up"
+                href={withNext("/auth/sign-up", next)}
                 className="underline underline-offset-4"
               >
                 Sign up

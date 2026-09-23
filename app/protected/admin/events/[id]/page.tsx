@@ -6,6 +6,9 @@ import { loadEventRoster } from "@/lib/admin/roster";
 import { countSignupsCancelledWithEvent } from "@/lib/admin/event-roles";
 import { formatEventDateRange } from "@/lib/format-date";
 import { EventRoster } from "@/components/admin/event-roster";
+import { ShareEventCard } from "@/components/admin/share-event-card";
+import { publicEventPath } from "@/lib/event-slug";
+import { getSiteUrl } from "@/lib/site-url";
 
 async function AdminEventLoader({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -55,6 +58,14 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
       initialVolunteerRoster={volunteerRoster}
       seriesId={event.series_id}
       volunteersCancelledWithEvent={volunteersCancelledWithEvent}
+      shareCard={
+        <ShareEventCard
+          url={`${getSiteUrl()}${publicEventPath(event.slug)}`}
+          slug={event.slug}
+          published={Boolean(event.is_published)}
+          cancelled={event.status === "cancelled"}
+        />
+      }
     />
   );
 }

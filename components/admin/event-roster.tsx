@@ -89,6 +89,7 @@ export function EventRoster({
   initialVolunteerRoster,
   seriesId,
   volunteersCancelledWithEvent,
+  shareCard,
 }: {
   eventId: number;
   eventCard: EventCardEvent;
@@ -114,6 +115,9 @@ export function EventRoster({
   seriesId: string | null;
   /** Volunteer signups the event's cancellation cancelled (0 unless cancelled). */
   volunteersCancelledWithEvent: number;
+  /** The "Share" block (public link + QR) — built by the server page, which
+   * knows the site URL. */
+  shareCard?: React.ReactNode;
 }) {
   const router = useRouter();
   const isCancelled = status === "cancelled";
@@ -555,6 +559,8 @@ export function EventRoster({
           {cancellationReason && <p className="mt-1">Reason: {cancellationReason}</p>}
         </div>
       )}
+
+      {shareCard}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatTile label="Capacity" value={eventCard.capacity ?? "—"} />

@@ -3912,3 +3912,231 @@ grant execute on function public.event_offered_counts(bigint[]) to authenticated
 grant execute on function public.admin_upsert_walkup_rsvp(bigint, uuid, boolean) to authenticated;
 grant execute on function public.admin_offer_spot(bigint) to authenticated;
 grant execute on function public.admin_remove_rsvp(bigint) to authenticated;
+
+-- =============================================================================
+-- 2026-09-23 — Public event pages: anonymous read access, URL slugs
+-- =============================================================================
+-- /events/[slug] is readable without logging in, so anon needs to read
+-- events — but only published ones, and never the meeting link.
+--
+-- 1. Rows: a new SELECT policy for the anon role only, limited to published
+--    events that are scheduled or cancelled (a cancelled event's page shows
+--    the cancellation). Unpublished events stay invisible, so their public
+--    page 404s. The existing authenticated/admin policies are untouched.
+--
+-- 2. Columns: anon loses table-wide SELECT on events and gets it back on an
+--    explicit column list instead (column-level privileges). virtual_link,
+--    virtual_access_notes, the lead's contact details, the email-only note,
+--    series/waiver internals and every column added in future are simply
+--    not granted — Postgres refuses the query ("permission denied for table
+--    events") if anon asks for them, including via select=* through the
+--    API. This doesn't depend on the app selecting the right columns: it
+--    holds for anyone with the public key. (Signed-in users are unaffected;
+--    the public page itself always reads as anon — lib/public-events.ts.)
+--    Anon also loses any write privilege on events it may have had by
+--    default (RLS already blocked writes; this is belt and braces).
+--
+-- 3. Slugs: events.slug, e.g. "knot-just-fly-tying-night-oct-2-a1b2" —
+--    title + the date in the event's own time zone + 4 random hex chars.
+--    Set by a trigger on insert when not given (every creation path — the
+--    wizard, series, anything future — gets one), backfilled for existing
+--    rows, and NEVER regenerated: renaming or moving an event keeps its
+--    link. An admin can change it on the edit form; the previous slug is
+--    kept in event_slug_aliases so printed links still resolve (the page
+--    redirects to the current slug), and no event can take a slug another
+--    event has used. It always contains a letter, so /events/123 is always
+--    unambiguously an old numeric-id URL (still supported, redirecting).
+--
+-- 4. event_offered_counts goes back to anon (revoked earlier today): the
+--    public page's "spots remaining" subtracts open waitlist offers, same as
+--    the signed-in pages. It returns only counts per event.
+--
+-- To check the column lock after running this (in the SQL editor):
+--   set role anon;
+--   select id, name, slug from public.events limit 1;   -- works
+--   select virtual_link from public.events limit 1;     -- permission denied
+--   reset role;
+
+-- ---- Slugs --------------------------------------------------------------------
+
+alter table public.events add column if not exists slug text;
+
+create table if not exists public.event_slug_aliases (
+  slug text primary key,
+  event_id bigint not null references public.events(id) on delete cascade,
+  retired_at timestamptz not null default now()
+);
+create index if not exists event_slug_aliases_event_idx on public.event_slug_aliases (event_id);
+
+-- "Knot Just Fly-Tying Night!" -> "knot-just-fly-tying-night"
+create or replace function public.slugify_event_title(p_title text)
+returns text
+language sql
+immutable
+set search_path to 'public'
+as $function$
+  select btrim(regexp_replace(lower(coalesce(p_title, '')), '[^a-z0-9]+', '-', 'g'), '-');
+$function$;
+
+-- A fresh, unused slug: title (cut at a word boundary to ~48 chars) + the
+-- event's local date ("oct-2") + 4 random hex chars, retried until it's
+-- used by no event and no retired alias.
+create or replace function public.generate_event_slug(p_name text, p_starts_at timestamptz, p_timezone text)
+returns text
+language plpgsql
+volatile
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_title text := public.slugify_event_title(p_name);
+  v_base text;
+  v_candidate text;
+begin
+  if length(v_title) > 48 then
+    v_title := btrim(regexp_replace(left(v_title, 49), '-[^-]*$', ''), '-');
+  end if;
+  v_base := concat_ws(
+    '-',
+    nullif(v_title, ''),
+    lower(to_char(p_starts_at at time zone coalesce(p_timezone, 'America/Denver'), 'Mon-FMDD'))
+  );
+  loop
+    v_candidate := v_base || '-' || substr(md5(random()::text || clock_timestamp()::text), 1, 4);
+    exit when not exists (select 1 from public.events where slug = v_candidate)
+          and not exists (select 1 from public.event_slug_aliases where slug = v_candidate);
+  end loop;
+  return v_candidate;
+end $function$;
+
+-- Insert: generate one if none given. Update: a slug is never cleared
+-- (null/blank keeps the old one), and a change retires the old slug into
+-- event_slug_aliases. SECURITY DEFINER so it can write the alias table,
+-- which nobody else can. Unique-violation errcode for a slug another event
+-- has used, so the app reports it the same way as the unique index.
+create or replace function public.events_slug_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if tg_op = 'INSERT' then
+    if new.slug is null or btrim(new.slug) = '' then
+      new.slug := public.generate_event_slug(new.name, new.starts_at, new.timezone);
+    end if;
+  else
+    if new.slug is null or btrim(new.slug) = '' then
+      new.slug := old.slug;
+    end if;
+  end if;
+
+  if tg_op = 'UPDATE' and new.slug is not distinct from old.slug then
+    return new;
+  end if;
+
+  if exists (
+    select 1 from public.event_slug_aliases
+     where slug = new.slug and event_id is distinct from new.id
+  ) then
+    raise exception 'That link was used by another event' using errcode = '23505';
+  end if;
+
+  if tg_op = 'UPDATE' then
+    -- Taking back one of its own old slugs: it's current again, not an alias.
+    delete from public.event_slug_aliases where slug = new.slug and event_id = new.id;
+    if old.slug is not null then
+      insert into public.event_slug_aliases (slug, event_id)
+      values (old.slug, new.id)
+      on conflict (slug) do nothing;
+    end if;
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists events_slug_guard on public.events;
+create trigger events_slug_guard
+  before insert or update of slug on public.events
+  for each row execute function public.events_slug_guard();
+
+-- Backfill (the trigger sees old.slug null here, so nothing is aliased).
+update public.events
+   set slug = public.generate_event_slug(name, starts_at, timezone)
+ where slug is null;
+
+alter table public.events alter column slug set not null;
+create unique index if not exists events_slug_key on public.events (slug);
+alter table public.events drop constraint if exists events_slug_format;
+alter table public.events
+  add constraint events_slug_format check (
+    slug ~ '^[a-z0-9]+(-[a-z0-9]+)*$'
+    and slug ~ '[a-z]'
+    and length(slug) between 3 and 80
+  );
+
+revoke all on function public.slugify_event_title(text) from public, anon, authenticated;
+revoke all on function public.generate_event_slug(text, timestamptz, text) from public, anon, authenticated;
+revoke all on function public.events_slug_guard() from public, anon, authenticated;
+grant execute on function public.slugify_event_title(text) to service_role;
+grant execute on function public.generate_event_slug(text, timestamptz, text) to service_role;
+
+-- Anyone may look up a retired slug of a published event (it only maps to an
+-- event id; the event itself is then subject to the policies below). Admins
+-- see all. Written only by events_slug_guard.
+alter table public.event_slug_aliases enable row level security;
+
+drop policy if exists event_slug_aliases_select_published on public.event_slug_aliases;
+create policy event_slug_aliases_select_published on public.event_slug_aliases
+  for select to anon, authenticated
+  using (
+    exists (
+      select 1 from public.events e
+       where e.id = event_slug_aliases.event_id
+         and coalesce(e.is_published, false)
+    )
+  );
+
+drop policy if exists event_slug_aliases_select_admin on public.event_slug_aliases;
+create policy event_slug_aliases_select_admin on public.event_slug_aliases
+  for select to authenticated
+  using (public.is_admin());
+
+revoke all on public.event_slug_aliases from anon, authenticated;
+grant select on public.event_slug_aliases to anon, authenticated;
+grant all on public.event_slug_aliases to service_role;
+
+-- ---- Anonymous read access to events -------------------------------------------
+
+drop policy if exists events_select_public on public.events;
+create policy events_select_public on public.events
+  for select to anon
+  using (
+    coalesce(is_published, false)
+    and coalesce(status, 'scheduled') in ('scheduled', 'cancelled')
+  );
+
+revoke all on public.events from anon;
+grant select (
+  id,
+  slug,
+  name,
+  chapter,
+  event_type,
+  starts_at,
+  ends_at,
+  timezone,
+  location,
+  venue_name,
+  street_address,
+  city,
+  state,
+  description,
+  occurrence_note,
+  capacity,
+  spots_taken,
+  is_published,
+  status,
+  cancellation_reason
+) on public.events to anon;
+
+grant execute on function public.event_offered_counts(bigint[]) to anon;

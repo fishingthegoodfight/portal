@@ -1,14 +1,7 @@
 import { Suspense } from "react";
 
 import { UpdatePasswordForm } from "@/components/update-password-form";
-
-// Only ever follow our own /protected/... paths — a bare prefix check keeps
-// this from becoming an open redirect via a `next` like "https://evil.example"
-// or "//evil.example". Same rule as app/protected/profile/page.tsx's return_to.
-function safeNext(value: string | undefined): string | null {
-  if (!value) return null;
-  return value.startsWith("/protected/") ? value : null;
-}
+import { safeNext } from "@/lib/safe-next";
 
 async function UpdatePasswordFormLoader({
   searchParams,

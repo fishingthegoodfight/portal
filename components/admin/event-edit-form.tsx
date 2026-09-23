@@ -38,6 +38,8 @@ import { Button } from "@/components/ui/button";
 import { RevealPanel } from "@/components/reveal-panel";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import type { EventTypeOption } from "@/lib/event-types";
+import { Label } from "@/components/ui/label";
+import { normalizeSlug, slugError } from "@/lib/event-slug";
 
 type StringField = Exclude<keyof EventEditInput, "registrationSections" | "volunteerRoles">;
 
@@ -57,6 +59,7 @@ function emptyRole(): EditableVolunteerRole {
 
 export function EventEditForm({
   eventId,
+  publicUrlBase,
   initial,
   isCancelled,
   legacyLocation,
@@ -67,6 +70,8 @@ export function EventEditForm({
   signedUpByRoleId,
 }: {
   eventId: number;
+  /** "https://…/events/" — shown in front of the slug field. */
+  publicUrlBase: string;
   initial: EventEditInput;
   isCancelled: boolean;
   /** Free-text location of an event that predates the structured fields. */
@@ -262,6 +267,12 @@ export function EventEditForm({
               />
             </div>
             <TitleField idPrefix="edit" value={form.name} onChange={setField("name")} />
+            <PublicLinkField
+              base={publicUrlBase}
+              value={form.slug}
+              original={initial.slug}
+              onChange={setField("slug")}
+            />
 
             <DateTimeFields
               idPrefix="edit"
@@ -599,6 +610,49 @@ export function EventEditForm({
           </CardFooter>
         </Card>
       </form>
+    </div>
+  );
+}
+
+/** The public page's slug. Normalized as it's typed (lowercase, dashes);
+ * the old link keeps working after a change, which the hint says so an
+ * admin isn't afraid to fix a typo. Never part of a series-wide edit. */
+function PublicLinkField({
+  base,
+  value,
+  original,
+  onChange,
+}: {
+  base: string;
+  value: string;
+  original: string;
+  onChange: (value: string) => void;
+}) {
+  const problem = value ? slugError(value) : null;
+  return (
+    <div className="grid gap-2">
+      <Label htmlFor="edit_slug">Public link</Label>
+      <div className="flex items-center rounded-md border border-input focus-within:ring-2 focus-within:ring-ring">
+        <span className="hidden whitespace-nowrap pl-3 text-sm text-muted-foreground sm:inline">
+          {base}
+        </span>
+        <input
+          id="edit_slug"
+          className="h-9 w-full min-w-0 rounded-md bg-transparent px-2 text-sm outline-none"
+          value={value}
+          placeholder={original}
+          onChange={(e) => onChange(e.target.value.toLowerCase().replace(/[^a-z0-9-]+/g, "-"))}
+          onBlur={() => onChange(normalizeSlug(value) || original)}
+          spellCheck={false}
+          autoCapitalize="off"
+        />
+      </div>
+      <p className={problem ? "text-xs text-red-500" : "text-xs text-muted-foreground"}>
+        {problem ??
+          (value !== original
+            ? `The old link (/events/${original}) will keep working and send people here.`
+            : "Printed and shared links use this. Changing it keeps the old link working.")}
+      </p>
     </div>
   );
 }

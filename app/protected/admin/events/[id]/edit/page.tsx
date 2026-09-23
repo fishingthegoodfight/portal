@@ -8,6 +8,7 @@ import { WAIVER_STATES, waiverStateForChapter } from "@/lib/waivers";
 import { loadActiveRoles, toEditableRole } from "@/lib/admin/event-roles";
 import { EventEditForm } from "@/components/admin/event-edit-form";
 import type { EventTypeOption } from "@/lib/event-types";
+import { getSiteUrl } from "@/lib/site-url";
 
 async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -21,7 +22,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
     supabase
       .from("events")
       .select(
-        "id, name, event_type, series_id, description, occurrence_note, location, venue_name, street_address, city, state, virtual_link, virtual_access_notes, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, starts_at, ends_at, timezone, chapter, status, waiver_state",
+        "id, slug, name, event_type, series_id, description, occurrence_note, location, venue_name, street_address, city, state, virtual_link, virtual_access_notes, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, starts_at, ends_at, timezone, chapter, status, waiver_state",
       )
       .eq("id", eventId)
       .maybeSingle(),
@@ -60,6 +61,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
   return (
     <EventEditForm
       eventId={event.id}
+      publicUrlBase={`${getSiteUrl()}/events/`}
       isCancelled={event.status === "cancelled"}
       seriesId={event.series_id}
       eventTypes={(eventTypes ?? []) as EventTypeOption[]}
@@ -78,6 +80,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
       }
       initial={{
         name: event.name,
+        slug: event.slug ?? "",
         eventType: event.event_type ?? "",
         chapter: event.chapter ?? "",
         description: event.description ?? "",

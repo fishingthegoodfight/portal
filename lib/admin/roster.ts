@@ -5,6 +5,8 @@ import { profileValueFromColumn, REGISTRATION_SECTIONS } from "@/lib/registratio
 
 export type AdminEventSummary = {
   id: number;
+  slug: string;
+  is_published: boolean | null;
   name: string;
   chapter: string | null;
   event_type: string | null;
@@ -157,7 +159,7 @@ export async function loadEventRoster(
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, occurrence_note, virtual_link, virtual_access_notes, capacity, spots_taken, lead_name, lead_phone, custom_email_note, registration_sections, waiver_state, status, cancellation_reason, cancelled_at, series_id",
+      "id, slug, is_published, name, chapter, event_type, starts_at, ends_at, timezone, location, description, occurrence_note, virtual_link, virtual_access_notes, capacity, spots_taken, lead_name, lead_phone, custom_email_note, registration_sections, waiver_state, status, cancellation_reason, cancelled_at, series_id",
     )
     .eq("id", eventId)
     .maybeSingle();
