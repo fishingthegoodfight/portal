@@ -5,7 +5,11 @@ import { createClient } from "@/lib/supabase/server";
 import { loadEventRoster } from "@/lib/admin/roster";
 import { formatEventDateRange } from "@/lib/format-date";
 import { PrintButton } from "@/components/admin/print-button";
-import { dietaryDisplay } from "@/lib/registration-sections";
+import {
+  dietaryDisplay,
+  rosterAnswerSections,
+  rosterSectionAnswer,
+} from "@/lib/registration-sections";
 
 /** Restrictions text, "No restrictions", or a bold marker for no answer. */
 function DietaryCell({ note, collected }: { note: string | null; collected: boolean }) {
@@ -29,6 +33,12 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
     notFound();
   }
   const { event, roster, dietary, volunteerRoster } = data;
+  // The event's own sections (dietary, sizing, …) — one column each on both
+  // the participant and volunteer tables.
+  const answerSections = rosterAnswerSections(event.registration_sections);
+  // Participants' Dietary column comes from their RSVP copy (above); these
+  // are the event's other sections, shown the same way for both tables.
+  const otherSections = answerSections.filter((section) => section.id !== "dietary");
 
   // Grouped by role, preserving the roster's existing role-then-name sort
   // (see loadEventRoster) — Map insertion order matches first-seen role order.
@@ -71,6 +81,11 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
             <th className="py-2 pr-3 font-semibold">Phone</th>
             <th className="py-2 pr-3 font-semibold">Emergency contact</th>
             <th className="py-2 pr-3 font-semibold">Dietary</th>
+            {otherSections.map((section) => (
+              <th key={section.id} className="py-2 pr-3 font-semibold">
+                {section.title}
+              </th>
+            ))}
             <th className="py-2 pr-3 font-semibold">Waiver</th>
             <th className="w-10 py-2 font-semibold">✓</th>
           </tr>
@@ -90,6 +105,11 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
                 <td className="py-2 pr-3">
                   <DietaryCell note={person.dietaryNotes} collected={dietary.collected} />
                 </td>
+                {otherSections.map((section) => (
+                  <td key={section.id} className="py-2 pr-3">
+                    {rosterSectionAnswer(section, person.profileFields) ?? <strong>NOT ANSWERED</strong>}
+                  </td>
+                ))}
                 <td className="py-2 pr-3">
                   {person.waiverSignedOn ? person.waiverSignedOn : <strong>NOT SIGNED</strong>}
                 </td>
@@ -111,13 +131,19 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
             <table key={role} className="w-full border-collapse text-sm print:text-xs">
               <thead>
                 <tr className="border-b-2 border-black text-left">
-                  <th className="py-2 pr-3 font-semibold" colSpan={4}>
+                  <th className="py-2 pr-3 font-semibold" colSpan={5 + answerSections.length}>
                     {role}
                   </th>
                 </tr>
                 <tr className="border-b border-neutral-400 text-left">
                   <th className="py-1 pr-3 font-semibold">Name</th>
                   <th className="py-1 pr-3 font-semibold">Phone</th>
+                  <th className="py-1 pr-3 font-semibold">Emergency contact</th>
+                  {answerSections.map((section) => (
+                    <th key={section.id} className="py-1 pr-3 font-semibold">
+                      {section.id === "dietary" ? "Dietary" : section.title}
+                    </th>
+                  ))}
                   <th className="py-1 pr-3 font-semibold">Shift</th>
                   <th className="w-10 py-1 font-semibold">✓</th>
                 </tr>
@@ -129,6 +155,21 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
                       {person.firstName} {person.lastName}
                     </td>
                     <td className="py-2 pr-3">{person.phone || "—"}</td>
+                    <td className="py-2 pr-3">
+                      {[person.emergencyContact, person.emergencyPhone].filter(Boolean).join(" · ") ||
+                        "—"}
+                    </td>
+                    {answerSections.map((section) => (
+                      <td key={section.id} className="py-2 pr-3">
+                        {section.id === "dietary" ? (
+                          <DietaryCell note={person.profileFields.dietary_notes || null} collected />
+                        ) : (
+                          (rosterSectionAnswer(section, person.profileFields) ?? (
+                            <strong>NOT ANSWERED</strong>
+                          ))
+                        )}
+                      </td>
+                    ))}
                     <td className="py-2 pr-3">{person.shiftLabel}</td>
                     <td className="py-2">
                       <span className="inline-block h-4 w-4 border border-black" aria-hidden />

@@ -22,6 +22,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { EventCard } from "@/components/event-card";
+import { RevealPanel } from "@/components/reveal-panel";
 import { RegistrationSectionField } from "@/components/registration-section-field";
 import {
   EMPTY_WAIVER_SIGN,
@@ -93,6 +94,7 @@ export function RsvpForm({
   offerExpiresLabel,
   offerLapsed,
   waiver,
+  volunteerShifts = [],
 }: {
   userId: string;
   event: EventSummary;
@@ -109,6 +111,9 @@ export function RsvpForm({
   offerLapsed: boolean;
   /** Where this person stands on the event's waiver (every event has one). */
   waiver: WaiverInfo;
+  /** Their confirmed volunteer shifts at this event ("Role, time"), when
+   * they have no RSVP — RSVPing is then a "Switch to attending". */
+  volunteerShifts?: string[];
 }) {
   const router = useRouter();
   // Seeded from the profile so a partially-complete section (e.g. a name but
@@ -126,6 +131,10 @@ export function RsvpForm({
   const [editingSectionIds, setEditingSectionIds] = useState<Set<string>>(() => new Set());
   const [waiverSign, setWaiverSign] = useState<WaiverSignState>(EMPTY_WAIVER_SIGN);
   const [error, setError] = useState<string | null>(null);
+  // Shifts that RSVPing would cancel (from the page, or from the server if it
+  // was stale), and whether the "Switch to attending?" confirmation is open.
+  const [switchShifts, setSwitchShifts] = useState<string[]>(volunteerShifts);
+  const [confirmingSwitch, setConfirmingSwitch] = useState(false);
 
   const activeSections = sectionsForEvent(event.registration_sections);
 
@@ -250,6 +259,17 @@ export function RsvpForm({
     // the form is submitted another way (e.g. Enter). Cancel is the only
     // action available from that state.
     if (hasActiveRsvp) return;
+    // A volunteer here confirms the switch first (attend or volunteer, never
+    // both); the confirmation's own button submits with the switch.
+    if (switchShifts.length > 0) {
+      setError(null);
+      setConfirmingSwitch(true);
+      return;
+    }
+    await submitRsvp(false);
+  };
+
+  const submitRsvp = async (switchFromVolunteering: boolean) => {
     setError(null);
     if (incompleteRequiredSection) {
       // Belt-and-suspenders: the submit button is disabled for this case
@@ -289,8 +309,16 @@ export function RsvpForm({
         if (!signed.ok) throw new Error(signed.error);
       }
 
-      const result = await confirmRsvpAction(event.id, dietaryNotes);
-      if (!result.ok) throw new Error(result.error);
+      const result = await confirmRsvpAction(event.id, dietaryNotes, { switchFromVolunteering });
+      if (!result.ok) {
+        if ("needsSwitch" in result) {
+          // Signed up to volunteer since the page loaded — confirm the switch.
+          setSwitchShifts(result.shifts);
+          setConfirmingSwitch(true);
+          return;
+        }
+        throw new Error(result.error);
+      }
 
       const rsvpStatus = result.status === "waitlisted" ? "waitlisted" : "confirmed";
       const params = new URLSearchParams({
@@ -466,8 +494,53 @@ export function RsvpForm({
                 spot opens up.
               </p>
             )}
+            {!hasActiveRsvp && switchShifts.length > 0 && !confirmingSwitch && (
+              <p className="text-sm text-muted-foreground">
+                You&apos;re signed up to volunteer here ({switchShifts.join("; ")}). You can attend
+                or volunteer, not both — RSVPing switches you to attending.
+              </p>
+            )}
+            {!hasActiveRsvp && confirmingSwitch && (
+              <RevealPanel
+                aria-label="Switch to attending?"
+                className="flex flex-col gap-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm"
+              >
+                <p className="text-amber-700 dark:text-amber-400">
+                  <span className="font-medium">Switch to attending?</span> Your volunteer{" "}
+                  {switchShifts.length === 1 ? "shift" : "shifts"} ({switchShifts.join("; ")}) will
+                  be cancelled so someone else can take{" "}
+                  {switchShifts.length === 1 ? "it" : "them"}, and you&apos;ll be RSVP&apos;d to
+                  attend instead. We&apos;ll email you the details.
+                  {isFull &&
+                    " This event is full right now, so switching won't work until a spot opens up — your shift stays as it is."}
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={isSubmitting || hasMissingRequired}
+                    onClick={() => void submitRsvp(true)}
+                  >
+                    {isSubmitting ? "Switching..." : "Switch to attending"}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={isSubmitting}
+                    onClick={() => setConfirmingSwitch(false)}
+                  >
+                    Keep volunteering
+                  </Button>
+                </div>
+              </RevealPanel>
+            )}
             {updateMessage && <p className="text-sm text-green-600">{updateMessage}</p>}
-            {error && <p className="text-sm text-red-500">{error}</p>}
+            {error && (
+              <RevealPanel role="alert" revealKey={error} className="text-sm text-red-500">
+                {error}
+              </RevealPanel>
+            )}
           </CardContent>
           <CardFooter className="flex gap-2">
             {hasActiveRsvp ? (
@@ -525,15 +598,17 @@ export function RsvpForm({
             ) : (
               <Button
                 type="submit"
-                disabled={isSubmitting || hasMissingRequired}
+                disabled={isSubmitting || hasMissingRequired || confirmingSwitch}
               >
-                {isSubmitting
-                  ? isFull
-                    ? "Joining..."
-                    : "Submitting..."
-                  : isFull
-                    ? "Join waitlist"
-                    : "RSVP"}
+                {confirmingSwitch
+                  ? "Confirm above"
+                  : isSubmitting
+                    ? isFull
+                      ? "Joining..."
+                      : "Submitting..."
+                    : isFull
+                      ? "Join waitlist"
+                      : "RSVP"}
               </Button>
             )}
           </CardFooter>

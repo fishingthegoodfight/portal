@@ -6,6 +6,7 @@ import Link from "next/link";
 
 import { cancelVolunteerSignupAction } from "@/lib/actions/volunteer-signup";
 import { Button } from "@/components/ui/button";
+import { RevealPanel } from "@/components/reveal-panel";
 
 export type VolunteerShift = {
   opportunityId: number;
@@ -82,7 +83,11 @@ export function VolunteerShiftsList({
 
   return (
     <div className="flex flex-col gap-2">
-      {error && <p className="text-sm text-red-500">{error}</p>}
+      {error && (
+        <RevealPanel role="alert" revealKey={error} className="text-sm text-red-500">
+          {error}
+        </RevealPanel>
+      )}
       {upcoming.length === 0 ? (
         <p className="text-sm text-muted-foreground">No upcoming shifts.</p>
       ) : (

@@ -3015,3 +3015,900 @@ end $function$;
 
 revoke all on function public.admin_delete_empty_events(bigint[]) from public, anon;
 grant execute on function public.admin_delete_empty_events(bigint[]) to authenticated;
+
+-- =============================================================================
+-- 2026-09-23 — Volunteer signup gates in the database; attend OR volunteer,
+-- never both; one-step switching between the two
+-- =============================================================================
+-- 1. sign_up_for_volunteer_shift is granted to every signed-in user and, until
+--    now, trusted its caller to have checked eligibility (approved volunteer,
+--    approved for the role, signed volunteer waiver for the event's state and
+--    year). The app always did, but calling the RPC directly skipped all
+--    three. It now checks them itself via volunteer_signup_blocker, a SQL
+--    mirror of checkVolunteerSignupEligibility (lib/volunteer-signups.ts) —
+--    keep the two in sync. The server action still checks first, for the
+--    friendly messages and the inline waiver step.
+--
+-- 2. A person is either a participant or a volunteer at an event, not both.
+--    "Participant" = an ACTIVE rsvp (confirmed / waitlisted / offered);
+--    "volunteer" = a confirmed volunteer_signups row on any of the event's
+--    roles. rsvp_to_event returns 'is_volunteer' and
+--    sign_up_for_volunteer_shift returns 'has_rsvp' instead of writing. Both
+--    lock the event row first (same lock order as everything else: events,
+--    then rsvps / volunteer_opportunities), so two tabs can't slip past each
+--    other's check. Admin paths (walk-up, "Add volunteer") are NOT blocked —
+--    the app warns and the admin decides.
+--
+-- 3. switch_rsvp_to_volunteer / switch_volunteer_to_rsvp do the cancel and
+--    the new signup in one transaction, in that order. If the target is full
+--    (the shift has no slot / the event would only waitlist them) the whole
+--    switch is rolled back and 'full' is returned — nobody loses what they
+--    had. Cancelling an RSVP goes through cancel_rsvp, so a freed spot is
+--    offered to the waitlist exactly as a normal cancellation would.
+--
+-- Existing rows aren't touched: anyone already both an attendee and a
+-- volunteer at an event stays that way. To find them:
+--
+--   select r.event_id, r.user_id, r.status as rsvp_status, vo.role
+--     from public.rsvps r
+--     join public.volunteer_opportunities vo on vo.event_id = r.event_id
+--     join public.volunteer_signups s
+--       on s.opportunity_id = vo.id and s.user_id = r.user_id and s.status = 'confirmed'
+--    where r.status in ('confirmed', 'waitlisted', 'offered');
+
+-- Why this person can't sign up for this shift, or null if they can.
+-- Internal (called by the functions below, not by the client).
+create or replace function public.volunteer_signup_blocker(p_user_id uuid, p_opportunity_id bigint)
+returns text
+language plpgsql
+stable
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_role_type_id bigint;
+  v_state text;
+  v_year int;
+  v_waiver_id bigint;
+begin
+  if not exists (
+    select 1 from public.volunteers where user_id = p_user_id and status = 'approved'
+  ) then
+    return 'not_approved';
+  end if;
+
+  -- Waiver state: events.waiver_state, falling back to the chapter's state
+  -- like waiverStateForEvent (same mapping as default_event_waiver_state).
+  -- Year: the event's calendar year in its own timezone, like eventYear.
+  select vo.role_type_id,
+         coalesce(
+           e.waiver_state,
+           case
+             when e.chapter in ('Denver', 'CO Springs', 'Colorado Springs', 'Virtual') then 'CO'
+             when e.chapter in ('Atlanta', 'Rome') then 'GA'
+           end
+         ),
+         extract(year from (e.starts_at at time zone e.timezone))::int
+    into v_role_type_id, v_state, v_year
+    from public.volunteer_opportunities vo
+    join public.events e on e.id = vo.event_id
+   where vo.id = p_opportunity_id;
+
+  if not found then
+    return 'not_found';
+  end if;
+
+  -- A role with no role_type_id ("Custom / other") is open to any approved
+  -- volunteer, same as isRoleEligible.
+  if v_role_type_id is not null and not exists (
+    select 1 from public.volunteer_role_approvals
+     where volunteer_id = p_user_id
+       and role_type_id = v_role_type_id
+       and revoked_at is null
+  ) then
+    return 'role_not_approved';
+  end if;
+
+  select id into v_waiver_id
+    from public.waivers
+   where state = v_state
+     and year = v_year
+     and audience = 'volunteer'
+     and is_active
+   order by version desc
+   limit 1;
+
+  if v_waiver_id is null or not exists (
+    select 1 from public.waiver_signatures
+     where user_id = p_user_id and waiver_id = v_waiver_id
+  ) then
+    return 'waiver_unsigned';
+  end if;
+
+  return null;
+end $function$;
+
+revoke all on function public.volunteer_signup_blocker(uuid, bigint) from public, anon, authenticated;
+grant execute on function public.volunteer_signup_blocker(uuid, bigint) to service_role;
+
+-- Same as the 2026-09-22 version plus: the eligibility gate (returns the
+-- volunteer_signup_blocker code), and 'has_rsvp' when the caller is
+-- registered to attend this event. Returns 'confirmed', 'full', 'has_rsvp',
+-- 'not_found', 'not_approved', 'role_not_approved' or 'waiver_unsigned'.
+create or replace function public.sign_up_for_volunteer_shift(p_opportunity_id bigint)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  v_event_id bigint;
+  v_existing_status text;
+  v_blocker text;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  select event_id into v_event_id
+    from public.volunteer_opportunities
+   where id = p_opportunity_id;
+  if not found then
+    return 'not_found';
+  end if;
+
+  perform 1 from public.events where id = v_event_id for update;
+
+  select status into v_existing_status
+    from public.volunteer_signups
+   where opportunity_id = p_opportunity_id and user_id = v_uid;
+
+  if v_existing_status = 'confirmed' then
+    return 'confirmed';
+  end if;
+
+  v_blocker := public.volunteer_signup_blocker(v_uid, p_opportunity_id);
+  if v_blocker is not null then
+    return v_blocker;
+  end if;
+
+  if exists (
+    select 1 from public.rsvps
+     where event_id = v_event_id
+       and user_id = v_uid
+       and status in ('confirmed', 'waitlisted', 'offered')
+  ) then
+    return 'has_rsvp';
+  end if;
+
+  if not public.try_claim_volunteer_slot(p_opportunity_id) then
+    return 'full';
+  end if;
+
+  insert into public.volunteer_signups (opportunity_id, user_id, status, signed_up_at, cancelled_at, checked_in_at)
+  values (p_opportunity_id, v_uid, 'confirmed', now(), null, null)
+  on conflict (opportunity_id, user_id)
+  do update set status = 'confirmed',
+                signed_up_at = now(),
+                cancelled_at = null,
+                checked_in_at = null;
+
+  return 'confirmed';
+end $function$;
+
+revoke all on function public.sign_up_for_volunteer_shift(bigint) from public, anon;
+grant execute on function public.sign_up_for_volunteer_shift(bigint) to authenticated;
+
+-- Same as the 2026-09-21 (waitlist) version plus: locks the event row up front, and
+-- returns 'is_volunteer' (writing nothing) when the caller has a confirmed
+-- volunteer shift at this event and no RSVP yet. Someone who already holds
+-- an RSVP can still update its notes, as before.
+create or replace function public.rsvp_to_event(p_event_id bigint, p_dietary text default null::text)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_status text;
+  v_existing_status text;
+begin
+  perform 1 from public.events where id = p_event_id for update;
+
+  select status into v_existing_status
+    from public.rsvps
+   where event_id = p_event_id and user_id = auth.uid();
+
+  if v_existing_status in ('confirmed', 'waitlisted', 'offered') then
+    update public.rsvps
+       set dietary_notes = p_dietary, updated_at = now()
+     where event_id = p_event_id and user_id = auth.uid();
+    return v_existing_status;
+  end if;
+
+  if exists (
+    select 1
+      from public.volunteer_signups s
+      join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+     where vo.event_id = p_event_id
+       and s.user_id = auth.uid()
+       and s.status = 'confirmed'
+  ) then
+    return 'is_volunteer';
+  end if;
+
+  v_status := case when public.try_claim_event_spot(p_event_id) then 'confirmed' else 'waitlisted' end;
+
+  insert into public.rsvps (event_id, user_id, status, dietary_notes, joined_at)
+  values (
+    p_event_id, auth.uid(), v_status, p_dietary,
+    case when v_status = 'waitlisted' then now() end
+  )
+  on conflict (event_id, user_id)
+  do update set status = excluded.status,
+                dietary_notes = excluded.dietary_notes,
+                joined_at = excluded.joined_at,
+                offer_expires_at = null,
+                updated_at = now();
+
+  return v_status;
+end $function$;
+
+-- "Switch to volunteering": cancels the caller's RSVP at the shift's event
+-- (through cancel_rsvp, so the freed spot is offered to the waitlist), then
+-- signs them up for the shift. Returns jsonb:
+--   { status, previous_status, offered: [{ user_id, expires_at }] }
+-- status is 'confirmed', or 'full' (shift had no slot — nothing changed), or
+-- a volunteer_signup_blocker code (nothing changed). previous_status is the
+-- RSVP status that was cancelled, or null if there was none.
+create or replace function public.switch_rsvp_to_volunteer(p_opportunity_id bigint)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  v_event_id bigint;
+  v_blocker text;
+  v_cancel jsonb := jsonb_build_object('previous_status', null, 'offered', '[]'::jsonb);
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  select event_id into v_event_id
+    from public.volunteer_opportunities
+   where id = p_opportunity_id;
+  if not found then
+    return jsonb_build_object('status', 'not_found');
+  end if;
+
+  perform 1 from public.events where id = v_event_id for update;
+
+  v_blocker := public.volunteer_signup_blocker(v_uid, p_opportunity_id);
+  if v_blocker is not null then
+    return jsonb_build_object('status', v_blocker);
+  end if;
+
+  -- An exception raised inside this block rolls back everything done in it
+  -- (the RSVP cancel and any waitlist offers it made) before the handler runs.
+  begin
+    if exists (
+      select 1 from public.rsvps
+       where event_id = v_event_id
+         and user_id = v_uid
+         and status in ('confirmed', 'waitlisted', 'offered')
+    ) then
+      v_cancel := public.cancel_rsvp(v_event_id);
+    end if;
+
+    if not exists (
+      select 1 from public.volunteer_signups
+       where opportunity_id = p_opportunity_id and user_id = v_uid and status = 'confirmed'
+    ) then
+      if not public.try_claim_volunteer_slot(p_opportunity_id) then
+        raise exception 'shift full' using errcode = 'FTGF1';
+      end if;
+
+      insert into public.volunteer_signups (opportunity_id, user_id, status, signed_up_at, cancelled_at, checked_in_at)
+      values (p_opportunity_id, v_uid, 'confirmed', now(), null, null)
+      on conflict (opportunity_id, user_id)
+      do update set status = 'confirmed',
+                    signed_up_at = now(),
+                    cancelled_at = null,
+                    checked_in_at = null;
+    end if;
+  exception when sqlstate 'FTGF1' then
+    return jsonb_build_object('status', 'full');
+  end;
+
+  return jsonb_build_object(
+    'status', 'confirmed',
+    'previous_status', v_cancel->'previous_status',
+    'offered', v_cancel->'offered'
+  );
+end $function$;
+
+revoke all on function public.switch_rsvp_to_volunteer(bigint) from public, anon;
+grant execute on function public.switch_rsvp_to_volunteer(bigint) to authenticated;
+
+-- "Switch to attending": cancels every confirmed volunteer shift the caller
+-- has at this event (freeing each slot), then RSVPs them through
+-- rsvp_to_event. Only a CONFIRMED spot counts as a switch — if the event
+-- would only waitlist them, everything is rolled back and 'full' returned,
+-- so nobody gives up a shift for a place in line. Returns jsonb:
+--   { status: 'confirmed' | 'full', cancelled_opportunity_ids: [bigint] }
+-- The participant waiver is checked by the caller, same as rsvp_to_event.
+create or replace function public.switch_volunteer_to_rsvp(p_event_id bigint, p_dietary text default null::text)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  v_cancelled bigint[] := '{}';
+  v_status text;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  perform 1 from public.events where id = p_event_id for update;
+
+  begin
+    with cancelled as (
+      update public.volunteer_signups s
+         set status = 'cancelled', cancelled_at = now()
+        from public.volunteer_opportunities vo
+       where vo.id = s.opportunity_id
+         and vo.event_id = p_event_id
+         and s.user_id = v_uid
+         and s.status = 'confirmed'
+      returning s.opportunity_id
+    )
+    select coalesce(array_agg(opportunity_id), '{}') into v_cancelled from cancelled;
+
+    update public.volunteer_opportunities
+       set slots_taken = greatest(slots_taken - 1, 0)
+     where id = any(v_cancelled);
+
+    v_status := public.rsvp_to_event(p_event_id, p_dietary);
+    if v_status is distinct from 'confirmed' then
+      raise exception 'event full' using errcode = 'FTGF1';
+    end if;
+  exception when sqlstate 'FTGF1' then
+    return jsonb_build_object('status', 'full', 'cancelled_opportunity_ids', '[]'::jsonb);
+  end;
+
+  return jsonb_build_object('status', v_status, 'cancelled_opportunity_ids', to_jsonb(v_cancelled));
+end $function$;
+
+revoke all on function public.switch_volunteer_to_rsvp(bigint, text) from public, anon;
+grant execute on function public.switch_volunteer_to_rsvp(bigint, text) to authenticated;
+
+-- =============================================================================
+-- 2026-09-23 — Every user-callable function checks its own preconditions
+-- =============================================================================
+-- An audit of every SECURITY DEFINER function, following the volunteer
+-- signup fix above: which ones trusted the app to have checked something
+-- before calling them? (Supabase grants EXECUTE on new public functions to
+-- anon and authenticated by default, so anything not explicitly revoked can
+-- be called straight from the browser with the public key — no app code in
+-- between, and for anon, no login either.)
+--
+-- Trusting the caller, fixed here:
+--   * try_claim_event_spot — an internal helper, never revoked: ANYONE, even
+--     logged out, could call it repeatedly to push an event's spots_taken up
+--     to capacity and waitlist every real RSVP. Now internal-only.
+--   * rsvp_to_event — trusted the app for the participant waiver (state +
+--     year), the event being published and scheduled (an unpublished or
+--     cancelled event got a 'waitlisted' row), required registration
+--     sections, and a signed-in caller. It now checks all of them.
+--   * switch_volunteer_to_rsvp — inherits rsvp_to_event's checks; now
+--     reports why (not just 'full') when one refuses.
+--   * sign_up_for_volunteer_shift / switch_rsvp_to_volunteer (via
+--     volunteer_signup_blocker) — didn't check the registration sections the
+--     app now requires of volunteers.
+--   * admin_upsert_walkup_rsvp — admin-only, but trusted the walk-up action
+--     for the waiver signature and registration sections. Now checked here
+--     too (the action records both before calling, so nothing changes for it).
+--   * complete_volunteer_registration — trusted the app for the volunteer
+--     waiver (home chapter's state, current year) and the required profile
+--     answers; only the 18+ flag was checked. Now checks all of them.
+--
+-- Checked and fine (own row only, or is_admin() first): cancel_rsvp,
+-- update_rsvp_answers, waitlist_position, claim_offered_spot (re-checks the
+-- offer, its expiry and capacity itself), cancel_volunteer_signup,
+-- admin_offer_spot, admin_remove_rsvp, admin_add_volunteer_signup,
+-- admin_delete_volunteer_opportunity, admin_cancel_volunteer_opportunity,
+-- admin_delete_empty_events. Internal and already revoked:
+-- offer_waitlisted_spots, expire_excess_offers, process_waitlist_expiry,
+-- try_claim_volunteer_slot, volunteer_signup_blocker.
+--
+-- Grants: every user-facing function below is revoked from anon (none of
+-- them do anything useful without a login). is_admin and
+-- can_view_volunteer_screening stay callable — RLS policies call them as
+-- the querying role.
+
+-- The waiver state for an event: events.waiver_state, else the chapter's
+-- state (same mapping as default_event_waiver_state / waiverStateForEvent).
+create or replace function public.event_waiver_state(p_waiver_state text, p_chapter text)
+returns text
+language sql
+immutable
+set search_path to 'public'
+as $function$
+  select coalesce(
+    p_waiver_state,
+    case
+      when p_chapter in ('Denver', 'CO Springs', 'Colorado Springs', 'Virtual', 'No local chapter') then 'CO'
+      when p_chapter in ('Atlanta', 'Rome') then 'GA'
+    end
+  );
+$function$;
+
+-- Whether this person has signed the ACTIVE waiver (highest active version)
+-- for this state, year and audience. Mirrors loadActiveWaiver + loadSignature.
+create or replace function public.has_signed_active_waiver(
+  p_user_id uuid,
+  p_state text,
+  p_year int,
+  p_audience text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path to 'public'
+as $function$
+  select exists (
+    select 1
+      from public.waiver_signatures s
+     where s.user_id = p_user_id
+       and s.waiver_id = (
+         select w.id from public.waivers w
+          where w.state = p_state and w.year = p_year and w.audience = p_audience and w.is_active
+          order by w.version desc
+          limit 1
+       )
+  );
+$function$;
+
+-- Whether this person has signed the event's own waiver for an audience
+-- ('participant' for RSVPs and walk-ups, 'volunteer' for shifts): the
+-- event's waiver state, in the event's calendar year in its own timezone.
+create or replace function public.has_signed_event_waiver(
+  p_user_id uuid,
+  p_event_id bigint,
+  p_audience text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path to 'public'
+as $function$
+  select coalesce((
+    select public.has_signed_active_waiver(
+      p_user_id,
+      public.event_waiver_state(e.waiver_state, e.chapter),
+      extract(year from (e.starts_at at time zone e.timezone))::int,
+      p_audience
+    )
+      from public.events e
+     where e.id = p_event_id
+  ), false);
+$function$;
+
+-- The id of the first registration section this person hasn't completed for
+-- this event, or null. A SQL mirror of sectionsForEvent + isSectionComplete
+-- over REGISTRATION_SECTIONS (lib/registration-sections.ts) — KEEP IN SYNC:
+-- adding a section there means adding its required fields here. Unknown ids
+-- in events.registration_sections are ignored, as in the app. The waiver
+-- section is checked separately (has_signed_event_waiver); the directory
+-- section is profile-only and never required.
+create or replace function public.registration_incomplete_section(p_user_id uuid, p_event_id bigint)
+returns text
+language plpgsql
+stable
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_sections text[];
+  p public.profiles%rowtype;
+  blank constant text := '';
+begin
+  select coalesce(registration_sections, '{}') into v_sections
+    from public.events where id = p_event_id;
+  select * into p from public.profiles where id = p_user_id;
+  if not found then
+    return 'emergency_contact';
+  end if;
+
+  -- Always required.
+  if coalesce(btrim(p.emergency_contact), blank) = blank
+     or coalesce(btrim(p.emergency_phone), blank) = blank then
+    return 'emergency_contact';
+  end if;
+
+  if 'dietary' = any(v_sections)
+     and coalesce(btrim(p.dietary_notes), blank) = blank then
+    return 'dietary';
+  end if;
+
+  if 'fly_fishing_sizing' = any(v_sections) and (
+       coalesce(btrim(p.fly_fishing_experience), blank) = blank
+       or p.needs_boots is null
+       or (p.needs_boots and coalesce(btrim(p.boot_size), blank) = blank)
+       or p.needs_waders is null
+       or (p.needs_waders and coalesce(btrim(p.wader_size), blank) = blank)
+       or p.needs_rod_reel is null
+     ) then
+    return 'fly_fishing_sizing';
+  end if;
+
+  return null;
+end $function$;
+
+revoke all on function public.event_waiver_state(text, text) from public, anon, authenticated;
+revoke all on function public.has_signed_active_waiver(uuid, text, int, text) from public, anon, authenticated;
+revoke all on function public.has_signed_event_waiver(uuid, bigint, text) from public, anon, authenticated;
+revoke all on function public.registration_incomplete_section(uuid, bigint) from public, anon, authenticated;
+grant execute on function public.event_waiver_state(text, text) to service_role;
+grant execute on function public.has_signed_active_waiver(uuid, text, int, text) to service_role;
+grant execute on function public.has_signed_event_waiver(uuid, bigint, text) to service_role;
+grant execute on function public.registration_incomplete_section(uuid, bigint) to service_role;
+
+-- Same as the earlier 2026-09-23 version, now built on the shared waiver
+-- helpers, plus 'registration_incomplete' (checked last, so a volunteer who
+-- isn't eligible at all is told that first).
+create or replace function public.volunteer_signup_blocker(p_user_id uuid, p_opportunity_id bigint)
+returns text
+language plpgsql
+stable
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_role_type_id bigint;
+  v_event_id bigint;
+begin
+  if not exists (
+    select 1 from public.volunteers where user_id = p_user_id and status = 'approved'
+  ) then
+    return 'not_approved';
+  end if;
+
+  select vo.role_type_id, vo.event_id into v_role_type_id, v_event_id
+    from public.volunteer_opportunities vo
+   where vo.id = p_opportunity_id;
+  if not found then
+    return 'not_found';
+  end if;
+
+  -- A role with no role_type_id ("Custom / other") is open to any approved
+  -- volunteer, same as isRoleEligible.
+  if v_role_type_id is not null and not exists (
+    select 1 from public.volunteer_role_approvals
+     where volunteer_id = p_user_id
+       and role_type_id = v_role_type_id
+       and revoked_at is null
+  ) then
+    return 'role_not_approved';
+  end if;
+
+  if not public.has_signed_event_waiver(p_user_id, v_event_id, 'volunteer') then
+    return 'waiver_unsigned';
+  end if;
+
+  if public.registration_incomplete_section(p_user_id, v_event_id) is not null then
+    return 'registration_incomplete';
+  end if;
+
+  return null;
+end $function$;
+
+-- rsvp_to_event, now checking everything the RSVP page and action check
+-- instead of trusting them. Returns 'confirmed' / 'waitlisted' (or an
+-- existing active status, for a notes-only update), else — writing nothing —
+-- 'unavailable' (no such event, unpublished, or not scheduled),
+-- 'waiver_unsigned' (no signature on the event's active participant waiver),
+-- 'registration_incomplete' (a required section isn't on the profile), or
+-- 'is_volunteer'. Someone who already holds an active RSVP can still update
+-- its notes without re-passing the checks, as before (e.g. after the event
+-- moved states and they owe a new signature — their spot is still theirs).
+create or replace function public.rsvp_to_event(p_event_id bigint, p_dietary text default null::text)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  v_status text;
+  v_existing_status text;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  perform 1 from public.events where id = p_event_id for update;
+
+  select status into v_existing_status
+    from public.rsvps
+   where event_id = p_event_id and user_id = v_uid;
+
+  if v_existing_status in ('confirmed', 'waitlisted', 'offered') then
+    update public.rsvps
+       set dietary_notes = p_dietary, updated_at = now()
+     where event_id = p_event_id and user_id = v_uid;
+    return v_existing_status;
+  end if;
+
+  if not exists (
+    select 1 from public.events
+     where id = p_event_id
+       and coalesce(is_published, false)
+       and coalesce(status, 'scheduled') = 'scheduled'
+  ) then
+    return 'unavailable';
+  end if;
+
+  if not public.has_signed_event_waiver(v_uid, p_event_id, 'participant') then
+    return 'waiver_unsigned';
+  end if;
+
+  if public.registration_incomplete_section(v_uid, p_event_id) is not null then
+    return 'registration_incomplete';
+  end if;
+
+  if exists (
+    select 1
+      from public.volunteer_signups s
+      join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+     where vo.event_id = p_event_id
+       and s.user_id = v_uid
+       and s.status = 'confirmed'
+  ) then
+    return 'is_volunteer';
+  end if;
+
+  v_status := case when public.try_claim_event_spot(p_event_id) then 'confirmed' else 'waitlisted' end;
+
+  insert into public.rsvps (event_id, user_id, status, dietary_notes, joined_at)
+  values (
+    p_event_id, v_uid, v_status, p_dietary,
+    case when v_status = 'waitlisted' then now() end
+  )
+  on conflict (event_id, user_id)
+  do update set status = excluded.status,
+                dietary_notes = excluded.dietary_notes,
+                joined_at = excluded.joined_at,
+                offer_expires_at = null,
+                updated_at = now();
+
+  return v_status;
+end $function$;
+
+-- Same as the earlier 2026-09-23 version, but when rsvp_to_event refuses
+-- for a reason other than capacity (waiver, sections, event unavailable),
+-- that reason is returned instead of 'full'. Still all-or-nothing: the
+-- shift cancellations are rolled back either way. (PL/pgSQL variables
+-- aren't rolled back with the block, so v_status survives into the handler.)
+create or replace function public.switch_volunteer_to_rsvp(p_event_id bigint, p_dietary text default null::text)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  v_cancelled bigint[] := '{}';
+  v_status text;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  perform 1 from public.events where id = p_event_id for update;
+
+  begin
+    with cancelled as (
+      update public.volunteer_signups s
+         set status = 'cancelled', cancelled_at = now()
+        from public.volunteer_opportunities vo
+       where vo.id = s.opportunity_id
+         and vo.event_id = p_event_id
+         and s.user_id = v_uid
+         and s.status = 'confirmed'
+      returning s.opportunity_id
+    )
+    select coalesce(array_agg(opportunity_id), '{}') into v_cancelled from cancelled;
+
+    update public.volunteer_opportunities
+       set slots_taken = greatest(slots_taken - 1, 0)
+     where id = any(v_cancelled);
+
+    v_status := public.rsvp_to_event(p_event_id, p_dietary);
+    if v_status is distinct from 'confirmed' then
+      raise exception 'switch refused' using errcode = 'FTGF1';
+    end if;
+  exception when sqlstate 'FTGF1' then
+    return jsonb_build_object(
+      'status', case when v_status = 'waitlisted' then 'full' else coalesce(v_status, 'full') end,
+      'cancelled_opportunity_ids', '[]'::jsonb
+    );
+  end;
+
+  return jsonb_build_object('status', v_status, 'cancelled_opportunity_ids', to_jsonb(v_cancelled));
+end $function$;
+
+-- Same as the 2026-09-21 version plus the participant waiver and required
+-- registration sections, checked right after the admin check (before the
+-- already-confirmed check-in shortcut too). The walk-up action records the
+-- signature and saves the sections before calling this, so for it nothing
+-- changes; it just can't be skipped. Returns 'waiver_unsigned' /
+-- 'registration_incomplete' in those cases, writing nothing.
+create or replace function public.admin_upsert_walkup_rsvp(
+  p_event_id bigint,
+  p_profile_id uuid,
+  p_force boolean default false
+)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_existing_status text;
+  v_claimed boolean;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can add walk-up RSVPs';
+  end if;
+
+  if not exists (
+    select 1 from public.events where id = p_event_id and status = 'scheduled'
+  ) then
+    raise exception 'Event is not scheduled';
+  end if;
+
+  if not public.has_signed_event_waiver(p_profile_id, p_event_id, 'participant') then
+    return 'waiver_unsigned';
+  end if;
+
+  if public.registration_incomplete_section(p_profile_id, p_event_id) is not null then
+    return 'registration_incomplete';
+  end if;
+
+  select status into v_existing_status
+    from public.rsvps
+   where event_id = p_event_id and user_id = p_profile_id;
+
+  if v_existing_status = 'confirmed' then
+    update public.rsvps
+       set checked_in_at = now(), updated_at = now()
+     where event_id = p_event_id and user_id = p_profile_id;
+    return 'confirmed';
+  end if;
+
+  v_claimed := public.try_claim_event_spot(p_event_id, p_profile_id);
+
+  if not v_claimed and not p_force then
+    return 'capacity_exceeded';
+  end if;
+
+  if not v_claimed and p_force then
+    update public.events
+       set spots_taken = spots_taken + 1, updated_at = now()
+     where id = p_event_id;
+  end if;
+
+  insert into public.rsvps (event_id, user_id, status, checked_in_at)
+  values (p_event_id, p_profile_id, 'confirmed', now())
+  on conflict (event_id, user_id)
+  do update set status = excluded.status,
+                checked_in_at = excluded.checked_in_at,
+                offer_expires_at = null,
+                updated_at = now();
+
+  return 'confirmed';
+end $function$;
+
+-- Same as the 2026-09-22 version plus what submitVolunteerRegistrationAction
+-- (lib/actions/volunteer-register.ts) validates — KEEP IN SYNC: the required
+-- profile answers, a recognized home chapter, and a signature on the active
+-- VOLUNTEER waiver for the home chapter's state, current year in that
+-- chapter's timezone (resolveVolunteerWaiver + timezoneForChapter).
+create or replace function public.complete_volunteer_registration(p_is_18_plus boolean)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  p public.profiles%rowtype;
+  blank constant text := '';
+  v_state text;
+  v_zone text;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+  if not p_is_18_plus then
+    raise exception 'Must confirm 18 years of age or older';
+  end if;
+
+  select * into p from public.profiles where id = v_uid;
+  if not found
+     or coalesce(btrim(p.first_name), blank) = blank
+     or coalesce(btrim(p.last_name), blank) = blank
+     or coalesce(btrim(p.phone), blank) = blank
+     or coalesce(btrim(p.email), blank) = blank
+     or coalesce(btrim(p.address_line1), blank) = blank
+     or coalesce(btrim(p.city), blank) = blank
+     or coalesce(btrim(p.state), blank) = blank
+     or coalesce(btrim(p.postal_code), blank) = blank
+     or coalesce(btrim(p.emergency_contact), blank) = blank
+     or coalesce(btrim(p.emergency_phone), blank) = blank
+     or coalesce(btrim(p.tshirt_size), blank) = blank
+     or coalesce(btrim(p.favorite_snack), blank) = blank
+     or coalesce(btrim(p.favorite_na_beverage), blank) = blank then
+    raise exception 'Complete every required registration answer first';
+  end if;
+
+  if p.chapter not in ('Atlanta', 'CO Springs', 'Denver', 'Rome', 'No local chapter') then
+    raise exception 'Choose a home chapter';
+  end if;
+  v_state := public.event_waiver_state(null, p.chapter);
+  v_zone := case when v_state = 'GA' then 'America/New_York' else 'America/Denver' end;
+  if not public.has_signed_active_waiver(
+       v_uid, v_state, extract(year from (now() at time zone v_zone))::int, 'volunteer'
+     ) then
+    raise exception 'Sign the volunteer waiver first';
+  end if;
+
+  update public.volunteers
+     set status = 'registered',
+         registered_at = coalesce(registered_at, now()),
+         is_18_plus = true,
+         health_history_outstanding = true,
+         updated_at = now()
+   where user_id = v_uid
+     and status in ('invited', 'registered');
+
+  if not found then
+    raise exception 'No volunteer invitation found for this account';
+  end if;
+end $function$;
+
+-- ---- Grants -----------------------------------------------------------------
+-- Internal: only ever called from inside the functions above/below (which
+-- run as their owner), never by the app directly.
+revoke all on function public.try_claim_event_spot(bigint, uuid) from public, anon, authenticated;
+grant execute on function public.try_claim_event_spot(bigint, uuid) to service_role;
+
+-- User-facing: signed-in users only.
+revoke all on function public.rsvp_to_event(bigint, text) from public, anon;
+revoke all on function public.cancel_rsvp(bigint) from public, anon;
+revoke all on function public.claim_offered_spot(bigint) from public, anon;
+revoke all on function public.update_rsvp_answers(bigint, text, boolean) from public, anon;
+revoke all on function public.waitlist_position(bigint) from public, anon;
+revoke all on function public.event_offered_counts(bigint[]) from public, anon;
+revoke all on function public.admin_upsert_walkup_rsvp(bigint, uuid, boolean) from public, anon;
+revoke all on function public.admin_offer_spot(bigint) from public, anon;
+revoke all on function public.admin_remove_rsvp(bigint) from public, anon;
+grant execute on function public.rsvp_to_event(bigint, text) to authenticated;
+grant execute on function public.cancel_rsvp(bigint) to authenticated;
+grant execute on function public.claim_offered_spot(bigint) to authenticated;
+grant execute on function public.update_rsvp_answers(bigint, text, boolean) to authenticated;
+grant execute on function public.waitlist_position(bigint) to authenticated;
+grant execute on function public.event_offered_counts(bigint[]) to authenticated;
+grant execute on function public.admin_upsert_walkup_rsvp(bigint, uuid, boolean) to authenticated;
+grant execute on function public.admin_offer_spot(bigint) to authenticated;
+grant execute on function public.admin_remove_rsvp(bigint) to authenticated;

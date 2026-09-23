@@ -14,6 +14,8 @@ import {
   leadParticipantCancelledEmail,
   leadVolunteerSignupChangeEmail,
   reminderEmail,
+  switchedToAttendingEmail,
+  switchedToVolunteeringEmail,
   volunteerCancellationEmail,
   volunteerRoleCancelledEmail,
   volunteerShiftEventCancelledEmail,
@@ -529,6 +531,11 @@ export type VolunteerShiftEmailContext = {
   location: string | null;
   virtualLink: string | null;
   virtualAccessNotes: string | null;
+  /** events.lead_name / lead_phone / lead_email — the day-of contact block in
+   * the confirmation and reminders, and lead_email alone for the lead's own
+   * heads-up (sendLeadVolunteerSignupChangeEmail). */
+  leadName: string | null;
+  leadPhone: string | null;
   leadEmail: string | null;
 };
 
@@ -555,6 +562,9 @@ function buildVolunteerShiftInfo(ctx: VolunteerShiftEmailContext): VolunteerShif
     virtualAccessNotes: ctx.virtualAccessNotes,
     eventUrl: `${getSiteUrl()}/protected/events/${ctx.eventId}/rsvp`,
     googleCalendarUrl: buildGoogleCalendarLink(icsEvent),
+    leadName: ctx.leadName,
+    leadPhone: ctx.leadPhone,
+    leadEmail: ctx.leadEmail,
   };
 }
 
@@ -699,6 +709,72 @@ export async function sendVolunteerReminderEmail({
   const info = buildVolunteerShiftInfo(ctx);
   const { subject, html, text } = volunteerReminderEmail(info, kind);
   await deliverEmail({ to: toEmail, subject, html, text });
+}
+
+/**
+ * "Switch to volunteering" — the single email replacing both the RSVP
+ * cancellation and the volunteer confirmation. Two .ics parts: a REQUEST
+ * for the shift (same UID as a normal volunteer confirmation) and a CANCEL
+ * for the event entry their RSVP confirmation added (same UID as that).
+ */
+export async function sendSwitchedToVolunteeringEmail({
+  ctx,
+  event,
+  toEmail,
+  previousRsvpStatus,
+}: {
+  ctx: VolunteerShiftEmailContext;
+  event: RsvpEmailEvent;
+  toEmail: string;
+  previousRsvpStatus: string | null;
+}): Promise<void> {
+  const { subject, html, text } = switchedToVolunteeringEmail(
+    buildVolunteerShiftInfo(ctx),
+    previousRsvpStatus,
+  );
+  await deliverEmail({
+    to: toEmail,
+    subject,
+    html,
+    text,
+    attachments: [
+      buildVolunteerShiftIcsAttachment(ctx, "REQUEST"),
+      buildIcsAttachment(event, "CANCEL", false),
+    ],
+  });
+}
+
+/**
+ * "Switch to attending" — the single email replacing both the volunteer
+ * cancellation(s) and the RSVP confirmation. Always a confirmed RSVP (the
+ * switch never waitlists — see switch_volunteer_to_rsvp), so virtual details
+ * are included. A REQUEST .ics for the event plus a CANCEL for each shift.
+ */
+export async function sendSwitchedToAttendingEmail({
+  event,
+  toEmail,
+  cancelledShifts,
+}: {
+  event: RsvpEmailEvent;
+  toEmail: string;
+  cancelledShifts: VolunteerShiftEmailContext[];
+}): Promise<void> {
+  const { subject, html, text } = switchedToAttendingEmail(
+    buildEventInfo(event, true),
+    cancelledShifts.map(
+      (ctx) => `${ctx.role}, ${formatEventDateRange(ctx.shiftStart, ctx.shiftEnd, ctx.timezone)}`,
+    ),
+  );
+  await deliverEmail({
+    to: toEmail,
+    subject,
+    html,
+    text,
+    attachments: [
+      buildIcsAttachment(event, "REQUEST", true),
+      ...cancelledShifts.map((ctx) => buildVolunteerShiftIcsAttachment(ctx, "CANCEL")),
+    ],
+  });
 }
 
 /** Internal heads-up to the event's lead (lead_email) when a volunteer signs

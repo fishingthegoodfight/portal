@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { formatDateInZone, formatEventDateRange, formatEventInstant } from "@/lib/format-date";
 import { resolveEventWaiver, waiverHeading } from "@/lib/waivers";
+import { profileValueFromColumn, REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 
 export type AdminEventSummary = {
   id: number;
@@ -44,6 +45,10 @@ export type RosterPerson = {
   emergencyPhone: string;
   /** Pre-formatted date they signed this event's waiver, or null if they haven't. */
   waiverSignedOn: string | null;
+  /** Every registration field's value from their profile, keyed by column —
+   * the event's other sections (sizing, …) are shown from here, same as for
+   * volunteers. Dietary keeps using dietaryNotes above. */
+  profileFields: Record<string, string>;
 };
 
 export type WaitlistPerson = {
@@ -87,7 +92,15 @@ export type VolunteerRosterPerson = {
   shiftLabel: string;
   firstName: string;
   lastName: string;
+  email: string;
   phone: string;
+  emergencyContact: string;
+  emergencyPhone: string;
+  /** Every registration field's value from their profile, keyed by column —
+   * volunteers answer the event's sections (dietary, sizing, …) at signup,
+   * saved to the profile, so the roster reads them from there rather than a
+   * per-signup copy like rsvps.dietary_notes. */
+  profileFields: Record<string, string>;
   checkedInAt: string | null;
 };
 
@@ -115,6 +128,18 @@ export type EventRoster = {
   /** Confirmed volunteer signups, sorted by role then last name. */
   volunteerRoster: VolunteerRosterPerson[];
 };
+
+/** Every registration field's value from a profile row, keyed by column, in
+ * the form the section catalog reads (see profileValueFromColumn). */
+function profileFieldsOf(profile: Record<string, unknown> | null | undefined): Record<string, string> {
+  const fields: Record<string, string> = {};
+  for (const section of REGISTRATION_SECTIONS) {
+    for (const field of section.fields) {
+      fields[field.key] = profileValueFromColumn(field, profile?.[field.key]);
+    }
+  }
+  return fields;
+}
 
 /**
  * Loads an event plus its confirmed roster and, separately, its waitlist
@@ -150,8 +175,10 @@ export async function loadEventRoster(
   const { data: profileRows } =
     userIds.length > 0
       ? await supabase
+          // * so a new registration section's column is picked up with no
+          // edit here — see profileFieldsOf.
           .from("profiles")
-          .select("id, first_name, last_name, email, phone, emergency_contact, emergency_phone")
+          .select("*")
           .in("id", userIds)
       : { data: [] as never[] };
 
@@ -208,6 +235,7 @@ export async function loadEventRoster(
         waiverSignedOn: signedAtByUser.has(r.user_id as string)
           ? formatDateInZone(signedAtByUser.get(r.user_id as string)!, event.timezone as string)
           : null,
+        profileFields: profileFieldsOf(profile),
       };
     });
 
@@ -285,7 +313,9 @@ export async function loadEventRoster(
 
     const { data: signupRows } = await supabase
       .from("volunteer_signups")
-      .select("id, opportunity_id, checked_in_at, profile:profiles(first_name, last_name, phone)")
+      // profiles(*) so a new registration section's column is picked up with
+      // no edit here, same as the RSVP page's profile read.
+      .select("id, opportunity_id, checked_in_at, profile:profiles(*)")
       .in(
         "opportunity_id",
         opportunities.map((o) => o.id),
@@ -296,17 +326,25 @@ export async function loadEventRoster(
       id: number;
       opportunity_id: number;
       checked_in_at: string | null;
-      profile: { first_name: string | null; last_name: string | null; phone: string | null } | null;
-    }[]).map((s) => ({
-      signupId: s.id,
-      opportunityId: s.opportunity_id,
-      role: roleByOpportunity.get(s.opportunity_id) ?? "",
-      shiftLabel: shiftLabelByOpportunity.get(s.opportunity_id) ?? "",
-      firstName: s.profile?.first_name ?? "",
-      lastName: s.profile?.last_name ?? "",
-      phone: s.profile?.phone ?? "",
-      checkedInAt: s.checked_in_at,
-    }));
+      profile: Record<string, unknown> | null;
+    }[]).map((s) => {
+      const text = (key: string) => (s.profile?.[key] as string | null | undefined) ?? "";
+      const profileFields = profileFieldsOf(s.profile);
+      return {
+        signupId: s.id,
+        opportunityId: s.opportunity_id,
+        role: roleByOpportunity.get(s.opportunity_id) ?? "",
+        shiftLabel: shiftLabelByOpportunity.get(s.opportunity_id) ?? "",
+        firstName: text("first_name"),
+        lastName: text("last_name"),
+        email: text("email"),
+        phone: text("phone"),
+        emergencyContact: text("emergency_contact"),
+        emergencyPhone: text("emergency_phone"),
+        profileFields,
+        checkedInAt: s.checked_in_at,
+      };
+    });
 
     volunteerRoster.sort(
       (a, b) =>

@@ -70,7 +70,11 @@ function wrapHtml(bodyHtml: string): string {
 </html>`;
 }
 
-function leadSectionHtml(info: RsvpEmailEventInfo): string {
+/** The event lead's contact details — the "Day-of questions?" block shared by
+ * participant and volunteer emails. */
+type LeadContact = Pick<RsvpEmailEventInfo, "leadName" | "leadPhone" | "leadEmail">;
+
+function leadSectionHtml(info: LeadContact): string {
   if (!info.leadName && !info.leadPhone && !info.leadEmail) return "";
   const parts = [
     info.leadName ? escapeHtml(info.leadName) : "",
@@ -82,7 +86,7 @@ function leadSectionHtml(info: RsvpEmailEventInfo): string {
   return `<p style="margin:0 0 16px;"><strong>Day-of questions?</strong><br>${parts.join(" · ")}</p>`;
 }
 
-function leadSectionText(info: RsvpEmailEventInfo): string {
+function leadSectionText(info: LeadContact): string {
   if (!info.leadName && !info.leadPhone && !info.leadEmail) return "";
   const contact = [info.leadName, info.leadPhone, info.leadEmail].filter(Boolean).join(" · ");
   return `Day-of questions? ${contact}`;
@@ -693,8 +697,8 @@ export function leadParticipantCancelledEmail({
  * What a volunteer shift email (confirmation, cancellation, reminder) needs.
  * Distinct from RsvpEmailEventInfo — this is about the SHIFT, not the whole
  * event: shiftDateRange is the role's own shift_start/shift_end, not the
- * event's start/end, and there's no waitlist/lead-contact concept here (no
- * volunteer waitlist yet).
+ * event's start/end, and there's no waitlist concept here (no volunteer
+ * waitlist yet). The lead contact is the event's, same as participants get.
  */
 export type VolunteerShiftEmailInfo = {
   eventName: string;
@@ -711,6 +715,11 @@ export type VolunteerShiftEmailInfo = {
   virtualAccessNotes: string | null;
   eventUrl: string;
   googleCalendarUrl: string;
+  /** The event lead, for day-of questions — rendered by the confirmation and
+   * reminder emails (see leadSectionHtml). */
+  leadName: string | null;
+  leadPhone: string | null;
+  leadEmail: string | null;
 };
 
 function volunteerWhereHtml(info: VolunteerShiftEmailInfo): string {
@@ -754,6 +763,7 @@ export function volunteerSignupConfirmationEmail(info: VolunteerShiftEmailInfo):
         ? `<p style="margin:0 0 16px;"><strong>What to bring or wear:</strong> ${escapeHtml(info.whatToBring)}</p>`
         : "",
       info.description ? `<p style="margin:0 0 16px;">${htmlWithLineBreaks(info.description)}</p>` : "",
+      leadSectionHtml(info),
       `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">View event</a></p>`,
       `<p style="margin:8px 0 16px;font-size:13px;"><a href="${info.googleCalendarUrl}" style="color:#166534;">Add to Google Calendar</a></p>`,
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Can't make it? Visit the event page above and cancel your volunteer signup.</p>`,
@@ -771,6 +781,7 @@ export function volunteerSignupConfirmationEmail(info: VolunteerShiftEmailInfo):
     volunteerWhereText(info),
     info.whatToBring ? `What to bring or wear: ${info.whatToBring}` : "",
     info.description ?? "",
+    leadSectionText(info),
     "",
     `Event page: ${info.eventUrl}`,
     `Add to Google Calendar: ${info.googleCalendarUrl}`,
@@ -915,6 +926,7 @@ export function volunteerReminderEmail(
       info.whatToBring
         ? `<p style="margin:0 0 16px;"><strong>What to bring or wear:</strong> ${escapeHtml(info.whatToBring)}</p>`
         : "",
+      leadSectionHtml(info),
       `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">View event</a></p>`,
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Can't make it? Please let us know: visit the event page above and cancel your volunteer signup.</p>`,
     ]
@@ -930,10 +942,132 @@ export function volunteerReminderEmail(
     `Shift: ${info.shiftDateRange}`,
     volunteerWhereText(info),
     info.whatToBring ? `What to bring or wear: ${info.whatToBring}` : "",
+    leadSectionText(info),
     "",
     `Event page: ${info.eventUrl}`,
     "",
     "Can't make it? Please let us know: visit the event page and cancel your volunteer signup.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return { subject, html, text };
+}
+
+/**
+ * "Switch to volunteering": the one email someone gets after trading their
+ * RSVP for a volunteer shift at the same event — in place of both the RSVP
+ * cancellation and the volunteer confirmation. Carries the shift's
+ * METHOD:REQUEST .ics (and a CANCEL for the event's own calendar entry —
+ * see lib/email/send.ts).
+ */
+export function switchedToVolunteeringEmail(
+  info: VolunteerShiftEmailInfo,
+  /** The RSVP that was cancelled: 'confirmed' freed a spot; a waitlist place
+   * or open offer didn't hold one of their own. */
+  previousRsvpStatus: string | null,
+): RenderedEmail {
+  const subject = `You're volunteering instead: ${info.role} — ${info.eventName}`;
+  const rsvpNote =
+    previousRsvpStatus === "confirmed"
+      ? "Your RSVP to attend has been cancelled, so your spot can go to someone else."
+      : previousRsvpStatus === "waitlisted"
+        ? "You've been taken off the waitlist to attend."
+        : previousRsvpStatus === "offered"
+          ? "The spot you were offered to attend has been passed to the next person."
+          : "";
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">You're now volunteering</p>`,
+      `<p style="margin:0 0 16px;">You're signed up to volunteer as <strong>${escapeHtml(info.role)}</strong> at <strong>${escapeHtml(info.eventName)}</strong>.${rsvpNote ? ` ${escapeHtml(rsvpNote)}` : ""}</p>`,
+      `<p style="margin:0 0 4px;"><strong>Shift:</strong> ${escapeHtml(info.shiftDateRange)}</p>`,
+      volunteerWhereHtml(info),
+      info.whatToBring
+        ? `<p style="margin:0 0 16px;"><strong>What to bring or wear:</strong> ${escapeHtml(info.whatToBring)}</p>`
+        : "",
+      info.description ? `<p style="margin:0 0 16px;">${htmlWithLineBreaks(info.description)}</p>` : "",
+      leadSectionHtml(info),
+      `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">View event</a></p>`,
+      `<p style="margin:8px 0 16px;font-size:13px;"><a href="${info.googleCalendarUrl}" style="color:#166534;">Add to Google Calendar</a></p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Can't make it? Visit the event page above and cancel your volunteer signup.</p>`,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+
+  const text = [
+    "You're now volunteering",
+    "",
+    `You're signed up to volunteer as ${info.role} at ${info.eventName}.${rsvpNote ? ` ${rsvpNote}` : ""}`,
+    "",
+    `Shift: ${info.shiftDateRange}`,
+    volunteerWhereText(info),
+    info.whatToBring ? `What to bring or wear: ${info.whatToBring}` : "",
+    info.description ?? "",
+    leadSectionText(info),
+    "",
+    `Event page: ${info.eventUrl}`,
+    `Add to Google Calendar: ${info.googleCalendarUrl}`,
+    "",
+    "Can't make it? Visit the event page and cancel your volunteer signup.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return { subject, html, text };
+}
+
+/**
+ * "Switch to attending": the one email someone gets after trading their
+ * volunteer shift(s) for a confirmed RSVP at the same event — in place of
+ * both the volunteer cancellation and the RSVP confirmation. Same event
+ * details as confirmationEmail. `cancelledShifts` are "Role (shift time)".
+ */
+export function switchedToAttendingEmail(
+  info: RsvpEmailEventInfo,
+  cancelledShifts: string[],
+): RenderedEmail {
+  const name = escapeHtml(info.name);
+  const subject = `You're attending instead: ${info.name}`;
+  const shiftList = cancelledShifts.join(", ");
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">You're now attending</p>`,
+      `<p style="margin:0 0 16px;">You're confirmed to attend <strong>${name}</strong>. Your volunteer signup${cancelledShifts.length === 1 ? "" : "s"} (${escapeHtml(shiftList)}) ${cancelledShifts.length === 1 ? "has" : "have"} been cancelled so someone else can take ${cancelledShifts.length === 1 ? "it" : "them"}.</p>`,
+      `<p style="margin:0 0 4px;"><strong>When:</strong> ${escapeHtml(info.dateRange)}</p>`,
+      info.location
+        ? `<p style="margin:0 0 16px;"><strong>Where:</strong> ${escapeHtml(info.location)}</p>`
+        : "",
+      virtualSectionHtml(info),
+      occurrenceNoteSectionHtml(info),
+      leadSectionHtml(info),
+      info.customNote ? `<p style="margin:0 0 16px;">${htmlWithLineBreaks(info.customNote)}</p>` : "",
+      `<p style="margin:24px 0 8px;"><a href="${info.eventUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">View event</a></p>`,
+      `<p style="margin:8px 0 16px;font-size:13px;"><a href="${info.googleCalendarUrl}" style="color:#166534;">Add to Google Calendar</a></p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Need to cancel? Visit the event page above and click "Cancel RSVP."</p>`,
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+
+  const text = [
+    "You're now attending",
+    "",
+    `You're confirmed to attend ${info.name}. Your volunteer signup${cancelledShifts.length === 1 ? "" : "s"} (${shiftList}) ${cancelledShifts.length === 1 ? "has" : "have"} been cancelled so someone else can take ${cancelledShifts.length === 1 ? "it" : "them"}.`,
+    "",
+    `When: ${info.dateRange}`,
+    info.location ? `Where: ${info.location}` : "",
+    virtualSectionText(info),
+    occurrenceNoteSectionText(info),
+    leadSectionText(info),
+    info.customNote ?? "",
+    "",
+    `Event page: ${info.eventUrl}`,
+    `Add to Google Calendar: ${info.googleCalendarUrl}`,
+    "",
+    `Need to cancel? Visit the event page and click "Cancel RSVP."`,
   ]
     .filter(Boolean)
     .join("\n");

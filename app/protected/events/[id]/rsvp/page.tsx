@@ -11,6 +11,7 @@ import { formatEventDateRange, formatEventInstant } from "@/lib/format-date";
 import { waiverInfoForUser, waiverInfoForVolunteerAtEvent, type WaiverInfo } from "@/lib/waivers";
 import {
   approvedRoleTypeIds,
+  confirmedShiftsAtEvent,
   eligibleOpportunities,
   isApprovedVolunteer,
   type VolunteerOpportunity,
@@ -122,9 +123,33 @@ async function RsvpLoader({
   // to this event (state + year) and whether this user has signed it.
   const waiver = await waiverInfoForUser(supabase, event, userId);
 
-  // Volunteer signups are independent of RSVPing — computed regardless of
-  // activeRsvp above. Only rendered at all when the event actually has
-  // volunteer roles (see lib/volunteer-signups.ts).
+  // Every registration field's current value, keyed by its profile column —
+  // formatted (e.g. the phone mask) in case a stored value predates that
+  // formatting, same as the profile page does for its own initial values.
+  // Shared by the RSVP form and the Volunteer section, which collect the
+  // same sections.
+  const profileFields: Record<string, string> = {};
+  for (const section of REGISTRATION_SECTIONS) {
+    for (const field of section.fields) {
+      profileFields[field.key] = profileValueFromColumn(field, profile?.[field.key]);
+    }
+  }
+  const editProfileHref = `/protected/profile?return_to=${encodeURIComponent(
+    `/protected/events/${event.id}/rsvp`,
+  )}`;
+
+  // Attend OR volunteer, never both: someone with a confirmed shift here and
+  // no RSVP gets "Switch to attending" on the RSVP form (their shifts, in the
+  // event's zone, are what the confirmation names).
+  const volunteerShifts = activeRsvp
+    ? []
+    : (await confirmedShiftsAtEvent(supabase, userId, eventId)).map(
+        (s) => `${s.role}, ${formatEventDateRange(s.shiftStart, s.shiftEnd, event.timezone)}`,
+      );
+
+  // The Volunteer section — only rendered at all when the event actually has
+  // volunteer roles (see lib/volunteer-signups.ts). Someone with an active
+  // RSVP still sees it, as "Switch to volunteering".
   const { data: opportunities } = await supabase
     .from("volunteer_opportunities")
     .select(
@@ -176,18 +201,12 @@ async function RsvpLoader({
         isApprovedVolunteer={approvedVolunteer}
         eligibleRoles={eligibleRoles}
         waiver={volunteerWaiver}
+        registrationSectionIds={event.registration_sections ?? []}
+        profileFields={profileFields}
+        rsvpStatus={activeRsvp?.status ?? null}
+        editProfileHref={editProfileHref}
       />
     );
-  }
-
-  // Every registration field's current value, keyed by its profile column —
-  // formatted (e.g. the phone mask) in case a stored value predates that
-  // formatting, same as the profile page does for its own initial values.
-  const profileFields: Record<string, string> = {};
-  for (const section of REGISTRATION_SECTIONS) {
-    for (const field of section.fields) {
-      profileFields[field.key] = profileValueFromColumn(field, profile?.[field.key]);
-    }
   }
 
   return (
@@ -239,6 +258,7 @@ async function RsvpLoader({
       }
       offerLapsed={offerLapsed}
       waiver={waiver}
+      volunteerShifts={volunteerShifts}
     />
     {volunteerSection}
     </div>

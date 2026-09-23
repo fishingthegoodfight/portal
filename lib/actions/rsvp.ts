@@ -3,14 +3,25 @@
 import { createClient } from "@/lib/supabase/server";
 import {
   sendLeadParticipantCancelledEmail,
+  sendLeadVolunteerSignupChangeEmail,
   sendRsvpCancellationEmail,
   sendRsvpConfirmationEmail,
+  sendSwitchedToAttendingEmail,
   type RsvpEmailEvent,
+  type VolunteerShiftEmailContext,
 } from "@/lib/email/send";
+import { formatEventDateRange } from "@/lib/format-date";
 import { waiverInfoForUser } from "@/lib/waivers";
 import { emailWaitlistOffers, offeredLabels, type OfferedSpot } from "@/lib/waitlist";
+import { confirmedShiftsAtEvent, type ConfirmedShift } from "@/lib/volunteer-signups";
 
-export type RsvpActionResult = { ok: true; status: string } | { ok: false; error: string };
+export type RsvpActionResult =
+  | { ok: true; status: string }
+  /** confirmRsvpAction only: they have a confirmed volunteer shift at this
+   * event — offer "Switch to attending" and call again with
+   * switchFromVolunteering once they confirm. Nothing was saved. */
+  | { ok: false; error: string; needsSwitch: true; shifts: string[] }
+  | { ok: false; error: string };
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
@@ -36,15 +47,46 @@ async function loadEmailContext(
   };
 }
 
+/** "Role, Sat, Oct 3, 9:00 AM – 12:00 PM" for each shift, in the event's zone. */
+function shiftLabels(shifts: ConfirmedShift[], timeZone: string): string[] {
+  return shifts.map((s) => `${s.role}, ${formatEventDateRange(s.shiftStart, s.shiftEnd, timeZone)}`);
+}
+
+/** Why rsvp_to_event (or the switch built on it) refused, writing nothing —
+ * it re-checks everything the RSVP form and this action already check (see
+ * the 2026-09-23 "Every user-callable function" schema-changes.sql entry),
+ * so these normally only show if something changed in between. */
+const RSVP_REFUSALS: Record<string, string> = {
+  unavailable: "This event isn't open for RSVPs.",
+  waiver_unsigned: "Please read and sign the waiver before RSVPing.",
+  registration_incomplete: "Please complete the registration questions before RSVPing.",
+};
+
+function needsSwitchResult(shifts: string[]): RsvpActionResult {
+  return {
+    ok: false,
+    needsSwitch: true,
+    shifts,
+    error: "You're signed up to volunteer at this event — you can attend or volunteer, not both.",
+  };
+}
+
 /**
  * Confirms (or updates) the caller's RSVP via the rsvp_to_event RPC, then
  * sends the confirmation email. A failed database write fails the action; a
  * failed email does not — it's logged and swallowed so the RSVP still
  * stands.
+ *
+ * Someone with a confirmed volunteer shift at the event can't also attend:
+ * they get `needsSwitch` back, and once they confirm, a second call with
+ * `switchFromVolunteering` cancels their shift(s) and RSVPs them in one
+ * transaction (switch_volunteer_to_rsvp) — only if a spot is actually open;
+ * a switch never trades a shift for a waitlist place.
  */
 export async function confirmRsvpAction(
   eventId: number,
   dietaryNotes: string | null,
+  options: { switchFromVolunteering?: boolean } = {},
 ): Promise<RsvpActionResult> {
   const supabase = await createClient();
   const { data: claims, error: authError } = await supabase.auth.getClaims();
@@ -73,12 +115,35 @@ export async function confirmRsvpAction(
     }
   }
 
+  const { data: existingRsvp } = await supabase
+    .from("rsvps")
+    .select("status")
+    .eq("event_id", eventId)
+    .eq("user_id", userId)
+    .in("status", ["confirmed", "waitlisted", "offered"])
+    .maybeSingle();
+  const shifts = existingRsvp ? [] : await confirmedShiftsAtEvent(supabase, userId, eventId);
+  if (shifts.length > 0) {
+    if (!options.switchFromVolunteering) {
+      return needsSwitchResult(shiftLabels(shifts, waiverEvent?.timezone ?? "America/Denver"));
+    }
+    return switchToAttending(supabase, eventId, userId, dietaryNotes, shifts);
+  }
+
   const { data, error } = await supabase.rpc("rsvp_to_event", {
     p_event_id: eventId,
     p_dietary: dietaryNotes,
   });
   if (error) {
     return { ok: false, error: error.message };
+  }
+  if (data === "is_volunteer") {
+    // Signed up to volunteer in another tab since the check above.
+    const latest = await confirmedShiftsAtEvent(supabase, userId, eventId);
+    return needsSwitchResult(shiftLabels(latest, waiverEvent?.timezone ?? "America/Denver"));
+  }
+  if (typeof data === "string" && RSVP_REFUSALS[data]) {
+    return { ok: false, error: RSVP_REFUSALS[data] };
   }
 
   const status = typeof data === "string" && data ? data : "confirmed";
@@ -97,6 +162,86 @@ export async function confirmRsvpAction(
   }
 
   return { ok: true, status };
+}
+
+/** The confirmed second step of "Switch to attending" — see confirmRsvpAction. */
+async function switchToAttending(
+  supabase: SupabaseServerClient,
+  eventId: number,
+  userId: string,
+  dietaryNotes: string | null,
+  shifts: ConfirmedShift[],
+): Promise<RsvpActionResult> {
+  // Loaded before the switch for the emails; the shifts' role details too.
+  const { data: roleRows } = await supabase
+    .from("volunteer_opportunities")
+    .select("id, role, description, what_to_bring, shift_start, shift_end")
+    .in(
+      "id",
+      shifts.map((s) => s.opportunityId),
+    );
+
+  const { data, error } = await supabase.rpc("switch_volunteer_to_rsvp", {
+    p_event_id: eventId,
+    p_dietary: dietaryNotes,
+  });
+  if (error) {
+    console.error(`[rsvp] event ${eventId}: switch_volunteer_to_rsvp failed:`, error);
+    return { ok: false, error: error.message };
+  }
+  const outcome = data as { status: string; cancelled_opportunity_ids: number[] } | null;
+  if (outcome && RSVP_REFUSALS[outcome.status]) {
+    return { ok: false, error: `${RSVP_REFUSALS[outcome.status]} Your volunteer shift is unchanged.` };
+  }
+  if (outcome?.status !== "confirmed") {
+    return {
+      ok: false,
+      error:
+        "This event is full, so switching would only put you on the waitlist — your volunteer shift is unchanged. Cancel your shift first if you'd rather join the waitlist.",
+    };
+  }
+
+  try {
+    const context = await loadEmailContext(supabase, eventId, userId);
+    if (context) {
+      const cancelledIds = new Set(outcome.cancelled_opportunity_ids ?? []);
+      const cancelledShifts: VolunteerShiftEmailContext[] = (roleRows ?? [])
+        .filter((r) => cancelledIds.has(r.id as number))
+        .map((r) => ({
+          opportunityId: r.id as number,
+          role: r.role as string,
+          description: r.description as string | null,
+          whatToBring: r.what_to_bring as string | null,
+          shiftStart: r.shift_start as string,
+          shiftEnd: r.shift_end as string,
+          eventId,
+          eventName: context.event.name,
+          timezone: context.event.timezone,
+          location: context.event.location,
+          virtualLink: context.event.virtual_link,
+          virtualAccessNotes: context.event.virtual_access_notes,
+          leadName: context.event.lead_name,
+          leadPhone: context.event.lead_phone,
+          leadEmail: context.event.lead_email,
+        }));
+      await sendSwitchedToAttendingEmail({
+        event: context.event,
+        toEmail: context.toEmail,
+        cancelledShifts,
+      });
+      for (const ctx of cancelledShifts) {
+        await sendLeadVolunteerSignupChangeEmail({
+          ctx,
+          volunteerName: `${context.label} (switched to attending)`,
+          action: "cancelled",
+        });
+      }
+    }
+  } catch (err) {
+    console.error(`[rsvp] event ${eventId}: switch email failed:`, err);
+  }
+
+  return { ok: true, status: "confirmed" };
 }
 
 /**

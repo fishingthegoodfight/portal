@@ -9,7 +9,11 @@ import { formatPhoneNumber } from "@/lib/phone";
  *
  * To add a new section: add its profile column(s) via a schema-changes.sql
  * migration, then add an entry below. Nothing else in the RSVP form needs to
- * change — it renders this catalog generically.
+ * change — it renders this catalog generically. If any of its fields are
+ * required, ALSO add them to registration_incomplete_section in the same
+ * migration: rsvp_to_event and the volunteer signup functions check
+ * completeness in the database with that SQL mirror of this catalog (see
+ * the 2026-09-23 "Every user-callable function" schema-changes.sql entry).
  */
 
 export type RegistrationFieldType =
@@ -448,4 +452,24 @@ export function collectSectionUpdates(
     }
   }
   return updates;
+}
+
+/** The sections whose answers a roster shows for one person (the event's own
+ * sections — dietary, sizing, … — not the waiver, which has its own column,
+ * or the emergency contact, shown with the contact details). */
+export function rosterAnswerSections(
+  registrationSections: string[] | null | undefined,
+): RegistrationSection[] {
+  return sectionsForEvent(registrationSections).filter(
+    (section) => section.kind !== "waiver" && section.id !== "emergency_contact",
+  );
+}
+
+/** One person's answer to a section for a roster: its "On file" summary, or
+ * null when they haven't completed it. */
+export function rosterSectionAnswer(
+  section: RegistrationSection,
+  profileFields: Record<string, string>,
+): string | null {
+  return isSectionComplete(section, profileFields) ? section.summary(profileFields) || "—" : null;
 }

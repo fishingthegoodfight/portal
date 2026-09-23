@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { RevealPanel } from "@/components/reveal-panel";
 
 export type SeriesOccurrence = {
   id: number;
@@ -96,17 +97,22 @@ export function SeriesOccurrences({
         {futureEmpty.length > 0 && (
           <Button
             variant="outline"
-            disabled={busy}
-            onClick={() => setConfirmDelete("future_empty")}
+            disabled={busy || confirmDelete === "future_empty"}
+            onClick={() => {
+              setMessage(null);
+              setConfirmDelete("future_empty");
+            }}
           >
-            Delete all future empty occurrences ({futureEmpty.length})
+            {confirmDelete === "future_empty"
+              ? "Confirm below"
+              : `Delete all future empty occurrences (${futureEmpty.length})`}
           </Button>
         )}
       </div>
 
       {confirmDelete === "future_empty" && (
-        <div
-          role="alertdialog"
+        <RevealPanel
+          aria-label="Delete future empty occurrences"
           className="flex flex-col gap-3 rounded-md border border-red-500/50 bg-red-500/10 p-3 text-sm"
         >
           <p className="text-red-700 dark:text-red-400">
@@ -123,16 +129,18 @@ export function SeriesOccurrences({
               Keep them
             </Button>
           </div>
-        </div>
+        </RevealPanel>
       )}
 
+      {/* A per-row delete far down the list reports up here — brought into view. */}
       {message && (
-        <p
+        <RevealPanel
           role="status"
+          revealKey={message.text}
           className={cn("text-sm", message.tone === "ok" ? "text-green-600" : "text-red-500")}
         >
           {message.text}
-        </p>
+        </RevealPanel>
       )}
 
       <div className="flex flex-col gap-2">
@@ -163,7 +171,11 @@ export function SeriesOccurrences({
                 </Button>
                 {o.isEmpty &&
                   (confirmDelete === o.id ? (
-                    <>
+                    // Replaces the Delete button in place; focus moves onto it.
+                    <RevealPanel
+                      aria-label={`Delete ${o.dateRange}`}
+                      className="flex flex-wrap gap-2"
+                    >
                       <Button
                         variant="destructive"
                         size="sm"
@@ -180,14 +192,17 @@ export function SeriesOccurrences({
                       >
                         Keep
                       </Button>
-                    </>
+                    </RevealPanel>
                   ) : (
                     <Button
                       variant="ghost"
                       size="sm"
                       disabled={busy}
                       title="Nobody is registered or volunteering, so this can be deleted"
-                      onClick={() => setConfirmDelete(o.id)}
+                      onClick={() => {
+                        setMessage(null);
+                        setConfirmDelete(o.id);
+                      }}
                     >
                       Delete
                     </Button>

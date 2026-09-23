@@ -449,9 +449,16 @@ function applyToLaterOccurrence(
   copy("lead_email");
   copy("registration_sections");
   if (applyOccurrenceNote) copy("occurrence_note");
+  // Chapter only ever carries over within one state between physical
+  // chapters (see isSeriesSafeChapterChange) — and only onto an occurrence
+  // that's itself a physical chapter in that state, so an occurrence that was
+  // individually moved elsewhere never has its waiver or format changed.
+  if (changed("chapter") && isSeriesSafeChapterChange(occurrence.chapter, after.chapter)) {
+    next.chapter = after.chapter;
+    next.waiver_state = after.waiver_state;
+  }
   // Location and meeting link move as one group — and only onto an
-  // occurrence of the same kind (physical vs virtual), since chapter itself
-  // never carries over.
+  // occurrence of the same kind (physical vs virtual).
   if (isVirtualChapter(occurrence.chapter) === isVirtualChapter(after.chapter)) {
     copy(
       "location",
@@ -474,6 +481,15 @@ function applyToLaterOccurrence(
     next.ends_at = newEnd ? zonedDateTimeToUtc(date, newEnd, occurrence.timezone).toISOString() : null;
   }
   return next;
+}
+
+/** Whether a chapter change leaves everything derived from the chapter alone
+ * — same waiver state, and physical on both sides — so it's safe to apply
+ * across a series. */
+function isSeriesSafeChapterChange(from: string | null, to: string | null): boolean {
+  if (isVirtualChapter(from) || isVirtualChapter(to)) return false;
+  const fromState = waiverStateForChapter(from);
+  return fromState != null && fromState === waiverStateForChapter(to);
 }
 
 /** A changed date/time, location, chapter, or meeting link — what attendees
@@ -673,14 +689,18 @@ export async function updateEventAction(
   const laterPairs: { before: EventRow; after: EventRow }[] = [];
   if (options.scope === "future") {
     if (!before.series_id) return { ok: false, error: "This event isn't part of a series" };
-    // Chapter decides the waiver state and physical-vs-virtual, so it's never
-    // carried across a series; saving it for this event alone keeps each
-    // occurrence's own waiver and location consistent.
-    if (chapterChanged) {
+    // Chapter decides the waiver state and physical-vs-virtual. A move within
+    // one state between physical chapters (Denver -> CO Springs) changes
+    // neither, so it can carry across the series. Crossing states or moving
+    // to/from Virtual would change the waiver or the format for everyone
+    // already registered on every later date, so that stays per-event.
+    if (chapterChanged && !isSeriesSafeChapterChange(before.chapter, after.chapter)) {
+      const crossesVirtual = isVirtualChapter(before.chapter) || isVirtualChapter(after.chapter);
       return {
         ok: false,
-        error:
-          'A chapter change can only be saved for "This event only". Save the chapter change on its own first, then make the series-wide changes.',
+        error: crossesVirtual
+          ? 'Moving to or from Virtual can only be saved for "This event only" — it would switch the event between in-person and virtual for everyone already registered across the series. Save the chapter change on its own first, then make the series-wide changes.'
+          : 'Moving to a chapter in another state can only be saved for "This event only" — it would change which state\'s waiver applies for everyone already registered across the series. Save the chapter change on its own first, then make the series-wide changes.',
       };
     }
     for (const occurrence of await loadLaterOccurrences(supabase, before)) {

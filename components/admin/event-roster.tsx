@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -22,6 +22,7 @@ import { RestoreEventDialog } from "@/components/admin/restore-event-dialog";
 import { SaveAsTemplateButton } from "@/components/admin/save-as-template-button";
 import { EventCard, type EventCardEvent } from "@/components/event-card";
 import { Button } from "@/components/ui/button";
+import { RevealPanel } from "@/components/reveal-panel";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -33,7 +34,10 @@ import {
   dietaryDisplay,
   firstIncompleteSection,
   REGISTRATION_SECTIONS,
+  rosterAnswerSections,
+  rosterSectionAnswer,
   sectionsForEvent,
+  type RegistrationSection,
 } from "@/lib/registration-sections";
 import { cn } from "@/lib/utils";
 import type {
@@ -190,6 +194,28 @@ export function EventRoster({
     await runWaitlistAction(rsvpId, () => adminRemoveRsvpAction(rsvpId, eventId));
   };
 
+  // Rendered as its own list item directly under the person's row (roster or
+  // waitlist), not above the lists, so it opens next to the Remove clicked.
+  const removalConfirm = pendingRemoval && (
+    <li className="list-none pb-3">
+      <RevealPanel
+        aria-label={`Remove ${pendingRemoval.name}?`}
+        className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm"
+      >
+        <p className="font-medium">Remove {pendingRemoval.name}?</p>
+        <p className="mt-1 text-muted-foreground">{pendingRemoval.warning}</p>
+        <div className="mt-3 flex gap-2">
+          <Button size="sm" onClick={confirmRemoval}>
+            Yes, remove
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setPendingRemoval(null)}>
+            Keep
+          </Button>
+        </div>
+      </RevealPanel>
+    </li>
+  );
+
   const [search, setSearch] = useState("");
   const [checkInError, setCheckInError] = useState<string | null>(null);
 
@@ -198,6 +224,11 @@ export function EventRoster({
   const [walkupError, setWalkupError] = useState<string | null>(null);
   const [isSubmittingWalkup, setIsSubmittingWalkup] = useState(false);
   const [capacityConfirmPending, setCapacityConfirmPending] = useState(false);
+  // The walk-up is signed up to volunteer here: their shifts while the
+  // warning is showing, and whether the admin already said "add anyway" (kept
+  // when a capacity confirmation follows, so it isn't asked twice).
+  const [volunteerConflictShifts, setVolunteerConflictShifts] = useState<string[] | null>(null);
+  const [volunteerConflictAcked, setVolunteerConflictAcked] = useState(false);
 
   const [showAddVolunteerForm, setShowAddVolunteerForm] = useState(false);
   const [addVolunteerEmail, setAddVolunteerEmail] = useState("");
@@ -205,11 +236,16 @@ export function EventRoster({
   const [addVolunteerError, setAddVolunteerError] = useState<string | null>(null);
   const [isAddingVolunteer, setIsAddingVolunteer] = useState(false);
   // Set once the action reports something that needs an explicit override —
-  // "not approved for this role" or "shift is full" — then cleared on any
-  // further edit, same two-step confirm shape as the walk-up capacity flow.
-  const [addVolunteerConfirm, setAddVolunteerConfirm] = useState<"not_approved" | "capacity" | null>(
-    null,
-  );
+  // "not approved for this role", "already RSVP'd to attend", or "shift is
+  // full" — then cleared on any further edit, same two-step confirm shape as
+  // the walk-up capacity flow. Overrides already confirmed are remembered
+  // (addVolunteerAcked) so a later check doesn't send the admin back to one.
+  const [addVolunteerConfirm, setAddVolunteerConfirm] = useState<
+    "not_approved" | "has_rsvp" | "capacity" | null
+  >(null);
+  const [addVolunteerAcked, setAddVolunteerAcked] = useState<Set<string>>(() => new Set());
+  // Their RSVP to attend, when the has_rsvp warning is showing.
+  const [addVolunteerRsvpStatus, setAddVolunteerRsvpStatus] = useState<string | null>(null);
   // The event's own sections the walk-up form collects — the same catalog-
   // driven sections the RSVP form shows. The emergency contact and directory
   // choice have their own fields above; the waiver has its own block below.
@@ -218,6 +254,13 @@ export function EventRoster({
       sectionsForEvent(registrationSectionIds).filter(
         (section) => !section.alwaysRequired && section.kind !== "waiver",
       ),
+    [registrationSectionIds],
+  );
+
+  // The event's sections whose answers the volunteer rows show — volunteers
+  // answer the same ones participants do when they sign up.
+  const answerSections = useMemo(
+    () => rosterAnswerSections(registrationSectionIds),
     [registrationSectionIds],
   );
 
@@ -339,6 +382,8 @@ export function EventRoster({
     setWalkupSign(EMPTY_WAIVER_SIGN);
     setWalkupSectionValues({});
     setWalkupSectionsKey((k) => k + 1);
+    setVolunteerConflictShifts(null);
+    setVolunteerConflictAcked(false);
     setShowWalkupForm(true);
   };
 
@@ -400,6 +445,7 @@ export function EventRoster({
       waiverName: walkupSign.name,
       waiverAgreed: walkupSign.agreed,
       sections: sectionValues,
+      allowVolunteerConflict: volunteerConflictAcked || volunteerConflictShifts != null,
       force: capacityConfirmPending,
     });
 
@@ -408,6 +454,14 @@ export function EventRoster({
     if (!result.ok) {
       setWalkupError(result.error);
       return;
+    }
+    if (result.status === "volunteer_conflict") {
+      setVolunteerConflictShifts(result.shifts);
+      return;
+    }
+    if (volunteerConflictShifts) {
+      setVolunteerConflictAcked(true);
+      setVolunteerConflictShifts(null);
     }
     if (result.status === "capacity_exceeded") {
       setCapacityConfirmPending(true);
@@ -423,7 +477,15 @@ export function EventRoster({
     setAddVolunteerOpportunityId(volunteerRoles[0] ? String(volunteerRoles[0].opportunityId) : "");
     setAddVolunteerError(null);
     setAddVolunteerConfirm(null);
+    setAddVolunteerAcked(new Set());
     setShowAddVolunteerForm(true);
+  };
+
+  // Any edit to who/which role invalidates earlier confirmations.
+  const resetAddVolunteerConfirm = () => {
+    setAddVolunteerConfirm(null);
+    setAddVolunteerAcked(new Set());
+    setAddVolunteerError(null);
   };
 
   const closeAddVolunteerForm = () => {
@@ -436,17 +498,28 @@ export function EventRoster({
     setIsAddingVolunteer(true);
     setAddVolunteerError(null);
 
+    const acked = new Set(addVolunteerAcked);
+    if (addVolunteerConfirm) acked.add(addVolunteerConfirm);
+    setAddVolunteerAcked(acked);
+
     const result = await adminAddVolunteerSignupAction({
       opportunityId: Number(addVolunteerOpportunityId),
       email: addVolunteerEmail,
-      overrideApproval: addVolunteerConfirm === "not_approved",
-      forceCapacity: addVolunteerConfirm === "capacity",
+      overrideApproval: acked.has("not_approved"),
+      overrideRsvp: acked.has("has_rsvp"),
+      forceCapacity: acked.has("capacity"),
     });
 
     setIsAddingVolunteer(false);
 
     if (!result.ok) {
       setAddVolunteerError(result.error);
+      return;
+    }
+    if (result.status === "has_rsvp") {
+      setAddVolunteerConfirm("has_rsvp");
+      setAddVolunteerRsvpStatus(result.rsvpStatus);
+      setAddVolunteerError(null);
       return;
     }
     if (result.status === "not_approved") {
@@ -577,33 +650,20 @@ export function EventRoster({
         </div>
       )}
 
-      {checkInError && <p className="text-sm text-red-500">{checkInError}</p>}
+      {checkInError && (
+        <RevealPanel role="alert" revealKey={checkInError} className="text-sm text-red-500">
+          {checkInError}
+        </RevealPanel>
+      )}
 
       {waitlistError && (
-        <div
+        <RevealPanel
           role="alert"
+          revealKey={waitlistError}
           className="rounded-md border border-red-500/50 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-400"
         >
           {waitlistError}
-        </div>
-      )}
-
-      {pendingRemoval && (
-        <div
-          role="alertdialog"
-          className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm"
-        >
-          <p className="font-medium">Remove {pendingRemoval.name}?</p>
-          <p className="mt-1 text-muted-foreground">{pendingRemoval.warning}</p>
-          <div className="mt-3 flex gap-2">
-            <Button size="sm" onClick={confirmRemoval}>
-              Yes, remove
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => setPendingRemoval(null)}>
-              Keep
-            </Button>
-          </div>
-        </div>
+        </RevealPanel>
       )}
 
       <Card>
@@ -621,19 +681,23 @@ export function EventRoster({
           ) : (
             <ul>
               {filteredRoster.map((person) => (
-                <RosterRow
-                  key={person.rsvpId}
-                  person={person}
-                  collectsDietary={dietary.collected}
-                  onToggleCheckIn={toggleCheckIn}
-                  onRemove={(p) =>
-                    removePerson(
-                      p,
-                      "They'll be emailed that their RSVP was cancelled, and the spot goes to the next person on the waitlist.",
-                    )
-                  }
-                  removing={busyRsvpId === person.rsvpId}
-                />
+                <Fragment key={person.rsvpId}>
+                  <RosterRow
+                    person={person}
+                    collectsDietary={dietary.collected}
+                    answerSections={answerSections}
+                    onToggleCheckIn={toggleCheckIn}
+                    onRemove={(p) =>
+                      removePerson(
+                        p,
+                        "They'll be emailed that their RSVP was cancelled, and the spot goes to the next person on the waitlist.",
+                      )
+                    }
+                    removing={busyRsvpId === person.rsvpId}
+                    confirming={pendingRemoval?.rsvpId === person.rsvpId}
+                  />
+                  {pendingRemoval?.rsvpId === person.rsvpId && removalConfirm}
+                </Fragment>
               ))}
             </ul>
           )}
@@ -650,21 +714,24 @@ export function EventRoster({
           ) : (
             <ul>
               {waitlist.map((person) => (
-                <WaitlistRow
-                  key={person.rsvpId}
-                  person={person}
-                  canOffer={!isCancelled && freeSpots > 0}
-                  busy={busyRsvpId === person.rsvpId}
-                  onOffer={offerSpot}
-                  onRemove={(p) =>
-                    removePerson(
-                      p,
-                      p.status === "offered"
-                        ? "Their open offer is voided and the spot goes to the next person."
-                        : "They'll be taken off the waitlist.",
-                    )
-                  }
-                />
+                <Fragment key={person.rsvpId}>
+                  <WaitlistRow
+                    person={person}
+                    canOffer={!isCancelled && freeSpots > 0}
+                    busy={busyRsvpId === person.rsvpId}
+                    onOffer={offerSpot}
+                    onRemove={(p) =>
+                      removePerson(
+                        p,
+                        p.status === "offered"
+                          ? "Their open offer is voided and the spot goes to the next person."
+                          : "They'll be taken off the waitlist.",
+                      )
+                    }
+                    confirming={pendingRemoval?.rsvpId === person.rsvpId}
+                  />
+                  {pendingRemoval?.rsvpId === person.rsvpId && removalConfirm}
+                </Fragment>
               ))}
             </ul>
           )}
@@ -689,7 +756,13 @@ export function EventRoster({
             </div>
 
             {volunteerCheckInError && (
-              <p className="text-sm text-red-500">{volunteerCheckInError}</p>
+              <RevealPanel
+                role="alert"
+                revealKey={volunteerCheckInError}
+                className="text-sm text-red-500"
+              >
+                {volunteerCheckInError}
+              </RevealPanel>
             )}
 
             {volunteerRoster.length === 0 ? (
@@ -700,6 +773,7 @@ export function EventRoster({
                   <VolunteerRosterRow
                     key={person.signupId}
                     person={person}
+                    answerSections={answerSections}
                     onToggleCheckIn={toggleVolunteerCheckIn}
                   />
                 ))}
@@ -724,8 +798,7 @@ export function EventRoster({
                     value={addVolunteerOpportunityId}
                     onChange={(e) => {
                       setAddVolunteerOpportunityId(e.target.value);
-                      setAddVolunteerConfirm(null);
-                      setAddVolunteerError(null);
+                      resetAddVolunteerConfirm();
                     }}
                   >
                     {volunteerRoles.map((role) => (
@@ -747,8 +820,7 @@ export function EventRoster({
                     value={addVolunteerEmail}
                     onChange={(e) => {
                       setAddVolunteerEmail(e.target.value);
-                      setAddVolunteerConfirm(null);
-                      setAddVolunteerError(null);
+                      resetAddVolunteerConfirm();
                     }}
                   />
                   <p className="text-xs text-muted-foreground">
@@ -756,14 +828,34 @@ export function EventRoster({
                     participant walk-up flow.
                   </p>
                 </div>
-                {addVolunteerConfirm && (
+                {addVolunteerConfirm === "has_rsvp" && (
+                  <RevealPanel role="alert" className="text-sm text-amber-600">
+                    {addVolunteerRsvpStatus === "waitlisted"
+                      ? "This person is on the waitlist to attend this event"
+                      : addVolunteerRsvpStatus === "offered"
+                        ? "This person has an open offer to attend this event"
+                        : "This person is RSVP'd to attend this event"}
+                    . People normally attend or volunteer, not both. Add them as a volunteer
+                    anyway? Their RSVP stays as it is — remove it from the roster if they&apos;re
+                    only volunteering.
+                  </RevealPanel>
+                )}
+                {addVolunteerError && (
+                  <RevealPanel
+                    role="alert"
+                    revealKey={`${addVolunteerConfirm}:${addVolunteerError}`}
+                    className="text-sm text-red-500"
+                  >
+                    {addVolunteerError}
+                  </RevealPanel>
+                )}
+                {(addVolunteerConfirm === "not_approved" || addVolunteerConfirm === "capacity") && (
                   <p className="text-sm text-amber-600">
                     {addVolunteerConfirm === "not_approved"
                       ? "Add them anyway?"
                       : "Add them anyway, over capacity?"}
                   </p>
                 )}
-                {addVolunteerError && <p className="text-sm text-red-500">{addVolunteerError}</p>}
               </CardContent>
               <CardFooter className="flex justify-end gap-2">
                 <Button
@@ -837,6 +929,8 @@ export function EventRoster({
                         setWalkupSectionsKey((k) => k + 1);
                       }
                       setWalkupLookup(null);
+                      setVolunteerConflictShifts(null);
+                      setVolunteerConflictAcked(false);
                     }}
                     onBlur={(e) => void lookUpWalkup(e.target.value)}
                   />
@@ -922,12 +1016,25 @@ export function EventRoster({
                     </p>
                   )}
                 </div>
-                {capacityConfirmPending && (
-                  <p className="text-sm text-amber-600">
-                    This event is at capacity. Add {walkupForm.firstName || "them"} anyway?
-                  </p>
+                {volunteerConflictShifts && (
+                  <RevealPanel role="alert" className="text-sm text-amber-600">
+                    {walkupForm.firstName || "This person"} is signed up to volunteer at this event (
+                    {volunteerConflictShifts.join("; ")}). People normally attend or volunteer, not
+                    both. Add them as a participant anyway? Their volunteer{" "}
+                    {volunteerConflictShifts.length === 1 ? "shift stays" : "shifts stay"} as{" "}
+                    {volunteerConflictShifts.length === 1 ? "it is" : "they are"}.
+                  </RevealPanel>
                 )}
-                {walkupError && <p className="text-sm text-red-500">{walkupError}</p>}
+                {capacityConfirmPending && (
+                  <RevealPanel role="alert" className="text-sm text-amber-600">
+                    This event is at capacity. Add {walkupForm.firstName || "them"} anyway?
+                  </RevealPanel>
+                )}
+                {walkupError && (
+                  <RevealPanel role="alert" revealKey={walkupError} className="text-sm text-red-500">
+                    {walkupError}
+                  </RevealPanel>
+                )}
               </CardContent>
               <CardFooter className="flex justify-end gap-2">
                 <Button
@@ -941,7 +1048,7 @@ export function EventRoster({
                 <Button type="submit" disabled={isSubmittingWalkup}>
                   {isSubmittingWalkup
                     ? "Adding..."
-                    : capacityConfirmPending
+                    : capacityConfirmPending || volunteerConflictShifts
                       ? "Add anyway"
                       : "Add walk-up"}
                 </Button>
@@ -1014,12 +1121,15 @@ function WaitlistRow({
   busy,
   onOffer,
   onRemove,
+  confirming,
 }: {
   person: WaitlistPerson;
   canOffer: boolean;
   busy: boolean;
   onOffer: (person: WaitlistPerson) => void;
   onRemove: (person: WaitlistPerson) => void;
+  /** Their "Remove?" confirmation is open, right below this row. */
+  confirming: boolean;
 }) {
   const contact = [person.phone, person.email].filter(Boolean).join(" · ");
   const canOfferThis = person.status !== "offered";
@@ -1067,10 +1177,10 @@ function WaitlistRow({
           type="button"
           size="sm"
           variant="outline"
-          disabled={busy}
+          disabled={busy || confirming}
           onClick={() => onRemove(person)}
         >
-          Remove
+          {confirming ? "Confirm below" : busy ? "Removing..." : "Remove"}
         </Button>
       </div>
     </li>
@@ -1080,15 +1190,21 @@ function WaitlistRow({
 function RosterRow({
   person,
   collectsDietary,
+  answerSections,
   onToggleCheckIn,
   onRemove,
   removing,
+  confirming,
 }: {
   person: RosterPerson;
   collectsDietary: boolean;
+  /** The event's sections to show answers for (see rosterAnswerSections). */
+  answerSections: RegistrationSection[];
   onToggleCheckIn: (person: RosterPerson) => void;
   onRemove: (person: RosterPerson) => void;
   removing: boolean;
+  /** Their "Remove?" confirmation is open, right below this row. */
+  confirming: boolean;
 }) {
   const contact = [person.phone, person.email].filter(Boolean).join(" · ");
   const emergency = [person.emergencyContact, person.emergencyPhone].filter(Boolean).join(" · ");
@@ -1110,17 +1226,22 @@ function RosterRow({
             WAIVER NOT SIGNED
           </span>
         )}
-        <DietaryLine note={person.dietaryNotes} collected={collectsDietary} />
+        <SectionAnswers
+          sections={answerSections}
+          profileFields={person.profileFields}
+          dietaryNote={person.dietaryNotes}
+          collectsDietary={collectsDietary}
+        />
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <Button
           type="button"
           size="sm"
           variant="ghost"
-          disabled={removing}
+          disabled={removing || confirming}
           onClick={() => onRemove(person)}
         >
-          Remove
+          {confirming ? "Confirm below" : removing ? "Removing..." : "Remove"}
         </Button>
         <button
           type="button"
@@ -1141,11 +1262,17 @@ function RosterRow({
 
 function VolunteerRosterRow({
   person,
+  answerSections,
   onToggleCheckIn,
 }: {
   person: VolunteerRosterPerson;
+  /** The event's sections to show answers for (see rosterAnswerSections). */
+  answerSections: RegistrationSection[];
   onToggleCheckIn: (person: VolunteerRosterPerson) => void;
 }) {
+  const contact = [person.phone, person.email].filter(Boolean).join(" · ");
+  const emergency = [person.emergencyContact, person.emergencyPhone].filter(Boolean).join(" · ");
+
   return (
     <li className="flex flex-col gap-1 border-b py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between">
       <div className="flex flex-col gap-0.5">
@@ -1153,7 +1280,18 @@ function VolunteerRosterRow({
           {person.firstName} {person.lastName} · {person.role}
         </span>
         <span className="text-sm text-muted-foreground">{person.shiftLabel}</span>
-        <span className="text-sm text-muted-foreground">{person.phone || "—"}</span>
+        <span className="text-sm text-muted-foreground">{contact || "—"}</span>
+        <span className="text-sm text-muted-foreground">Emergency: {emergency || "—"}</span>
+        <SectionAnswers
+          sections={answerSections}
+          profileFields={person.profileFields}
+          dietaryNote={
+            answerSections.some((section) => section.id === "dietary")
+              ? person.profileFields.dietary_notes || null
+              : null
+          }
+          collectsDietary={answerSections.some((section) => section.id === "dietary")}
+        />
       </div>
       <button
         type="button"
@@ -1168,6 +1306,54 @@ function VolunteerRosterRow({
         {person.checkedInAt ? "✓ Checked in" : "Check in"}
       </button>
     </li>
+  );
+}
+
+/** One person's registration-section answers, identical for participant and
+ * volunteer rows: dietary via DietaryLine (participants' comes from their RSVP
+ * copy, volunteers' from the profile), then every other section the event
+ * collects (sizing, …). */
+function SectionAnswers({
+  sections,
+  profileFields,
+  dietaryNote,
+  collectsDietary,
+}: {
+  sections: RegistrationSection[];
+  profileFields: Record<string, string>;
+  dietaryNote: string | null;
+  collectsDietary: boolean;
+}) {
+  return (
+    <>
+      <DietaryLine note={dietaryNote} collected={collectsDietary} />
+      {sections
+        .filter((section) => section.id !== "dietary")
+        .map((section) => (
+          <SectionAnswerLine
+            key={section.id}
+            title={section.title}
+            answer={rosterSectionAnswer(section, profileFields)}
+          />
+        ))}
+    </>
+  );
+}
+
+/** A registration section's answer on a roster row, or a clear marker when
+ * they haven't given one — same treatment as an unanswered dietary question. */
+function SectionAnswerLine({ title, answer }: { title: string; answer: string | null }) {
+  if (answer != null) {
+    return (
+      <span className="text-sm text-muted-foreground">
+        {title}: {answer}
+      </span>
+    );
+  }
+  return (
+    <span className="w-fit rounded bg-amber-500 px-2 py-0.5 text-xs font-bold tracking-wide text-black">
+      {title.toUpperCase()}: NOT ANSWERED
+    </span>
   );
 }
 

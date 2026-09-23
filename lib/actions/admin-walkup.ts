@@ -5,6 +5,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { CHAPTERS, NOT_LOCAL_CHAPTER } from "@/lib/chapters";
 import { waiverInfoForUser } from "@/lib/waivers";
+import { formatEventDateRange } from "@/lib/format-date";
+import { confirmedShiftsAtEvent } from "@/lib/volunteer-signups";
 import {
   collectSectionUpdates,
   columnValuesFromProfile,
@@ -19,6 +21,10 @@ import {
 export type WalkupResult =
   | { ok: true; status: "confirmed"; wasExistingProfile: boolean }
   | { ok: true; status: "capacity_exceeded" }
+  /** They're signed up to volunteer at this event ("Role, time" per shift).
+   * Someone can't normally be both — adding them anyway is the admin's call
+   * (allowVolunteerConflict), and leaves the shifts in place. */
+  | { ok: true; status: "volunteer_conflict"; shifts: string[] }
   | { ok: false; error: string };
 
 /**
@@ -58,6 +64,8 @@ export async function addWalkupRsvpAction(input: {
   /** Answers to the event's registration sections (dietary, sizing, …),
    * keyed by profile column — the same values the RSVP form collects. */
   sections?: Record<string, string>;
+  /** Set once the admin has seen the volunteer_conflict warning. */
+  allowVolunteerConflict?: boolean;
   force: boolean;
 }): Promise<WalkupResult> {
   const supabase = await createClient();
@@ -106,7 +114,7 @@ export async function addWalkupRsvpAction(input: {
   let waiverIdToSign: number | null = null;
   const { data: waiverEvent } = await supabase
     .from("events")
-    .select("chapter, waiver_state, starts_at, timezone, registration_sections")
+    .select("id, chapter, waiver_state, starts_at, timezone, registration_sections")
     .eq("id", input.eventId)
     .maybeSingle();
   if (waiverEvent) {
@@ -126,6 +134,22 @@ export async function addWalkupRsvpAction(input: {
         };
       }
       waiverIdToSign = info.waiverId;
+    }
+  }
+
+  // Attend or volunteer, not both — but at the check-in table that's the
+  // admin's call, so it's a warning to confirm, not a block. Checked before
+  // anything is written, like the waiver above.
+  if (existingProfile && waiverEvent && !input.allowVolunteerConflict) {
+    const shifts = await confirmedShiftsAtEvent(supabase, existingProfile.id as string, input.eventId);
+    if (shifts.length > 0) {
+      return {
+        ok: true,
+        status: "volunteer_conflict",
+        shifts: shifts.map(
+          (s) => `${s.role}, ${formatEventDateRange(s.shiftStart, s.shiftEnd, waiverEvent.timezone)}`,
+        ),
+      };
     }
   }
 
@@ -297,6 +321,14 @@ export async function addWalkupRsvpAction(input: {
 
   if (status === "capacity_exceeded") {
     return { ok: true, status: "capacity_exceeded" };
+  }
+  // admin_upsert_walkup_rsvp re-checks the waiver and sections itself; this
+  // action records both first, so these only show if that somehow failed.
+  if (status === "waiver_unsigned") {
+    return { ok: false, error: "The waiver signature wasn't recorded — have them sign again." };
+  }
+  if (status === "registration_incomplete") {
+    return { ok: false, error: "Their registration answers are incomplete — check every section." };
   }
 
   // The RSVP row carries the free-text dietary note organizers see on the

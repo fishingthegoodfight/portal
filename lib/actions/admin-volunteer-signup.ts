@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import {
+  activeRsvpStatus,
   approvedRoleTypeIds,
   isApprovedVolunteer,
   isRoleEligible,
@@ -17,12 +18,16 @@ import {
 const OPPORTUNITY_COLUMNS =
   "id, event_id, role, description, what_to_bring, role_type_id, shift_start, shift_end, slots, slots_taken, cancelled_at";
 const EVENT_COLUMNS =
-  "id, name, chapter, waiver_state, starts_at, timezone, location, virtual_link, virtual_access_notes, lead_email";
+  "id, name, chapter, waiver_state, starts_at, timezone, location, virtual_link, virtual_access_notes, lead_name, lead_phone, lead_email";
 
 export type AdminAddVolunteerResult =
   | { ok: true; status: "confirmed" }
   | { ok: true; status: "capacity_exceeded" }
   | { ok: true; status: "not_approved"; approvedForRole: boolean }
+  /** They're registered to attend this event ('confirmed' / 'waitlisted' /
+   * 'offered'). Someone can't normally be both — adding them anyway is the
+   * admin's call (overrideRsvp), and leaves the RSVP in place. */
+  | { ok: true; status: "has_rsvp"; rsvpStatus: string }
   | { ok: false; error: string };
 
 /**
@@ -32,13 +37,15 @@ export type AdminAddVolunteerResult =
  * and enforces the same approval eligibility as the participant signup
  * action, with an explicit override + confirmation step (mirroring the
  * walk-up form's capacity-exceeded confirm): call once with
- * overrideApproval/forceCapacity false, get back which confirmation is
- * needed, then call again with it set once the admin confirms.
+ * overrideApproval/overrideRsvp/forceCapacity false, get back which
+ * confirmation is needed, then call again with it set once the admin
+ * confirms. Checks run in that order, each only until it's been overridden.
  */
 export async function adminAddVolunteerSignupAction(input: {
   opportunityId: number;
   email: string;
   overrideApproval?: boolean;
+  overrideRsvp?: boolean;
   forceCapacity?: boolean;
 }): Promise<AdminAddVolunteerResult> {
   const supabase = await createClient();
@@ -83,6 +90,11 @@ export async function adminAddVolunteerSignupAction(input: {
     }
   }
 
+  if (!input.overrideRsvp) {
+    const rsvpStatus = await activeRsvpStatus(supabase, userId, event.id as number);
+    if (rsvpStatus) return { ok: true, status: "has_rsvp", rsvpStatus };
+  }
+
   const { data, error } = await supabase.rpc("admin_add_volunteer_signup", {
     p_opportunity_id: input.opportunityId,
     p_user_id: userId,
@@ -110,6 +122,8 @@ export async function adminAddVolunteerSignupAction(input: {
       location: event.location as string | null,
       virtualLink: event.virtual_link as string | null,
       virtualAccessNotes: event.virtual_access_notes as string | null,
+      leadName: event.lead_name as string | null,
+      leadPhone: event.lead_phone as string | null,
       leadEmail: event.lead_email as string | null,
     };
     if (profile.email) {

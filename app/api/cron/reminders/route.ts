@@ -252,6 +252,8 @@ export async function GET(request: NextRequest) {
               location: event.location,
               virtualLink: event.virtual_link,
               virtualAccessNotes: event.virtual_access_notes,
+              leadName: event.lead_name,
+              leadPhone: event.lead_phone,
               leadEmail: event.lead_email,
             };
 

@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { certIsCurrent, VOLUNTEER_STATUS_LABELS, type VolunteerStatus } from "@/lib/volunteers";
 import { formatEventDateRange } from "@/lib/format-date";
 import { VolunteerShiftsList, type VolunteerShift } from "@/components/volunteer-shifts-list";
+import { loadOpenShiftsForVolunteer } from "@/lib/volunteer-signups";
 
 async function VolunteerHomeLoader({
   searchParams,
@@ -115,6 +116,10 @@ async function VolunteerHomeLoader({
     });
   }
 
+  // Every open shift across upcoming events in a role they're approved for —
+  // empty for anyone not approved (loadOpenShiftsForVolunteer checks).
+  const openShifts = status === "approved" ? await loadOpenShiftsForVolunteer(supabase, userId) : [];
+
   const upcomingShifts = shiftsWithStart
     .filter((s) => new Date(s.shiftStart).getTime() >= now)
     .sort((a, b) => a.shiftStart.localeCompare(b.shiftStart));
@@ -147,6 +152,51 @@ async function VolunteerHomeLoader({
           <VolunteerShiftsList upcoming={upcomingShifts} past={pastShifts} />
         </CardContent>
       </Card>
+
+      {status === "approved" && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Open shifts you can fill</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {openShifts.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                No open shifts in your roles right now — check back soon.
+              </p>
+            ) : (
+              <ul>
+                {openShifts.map((shift) => (
+                  <li
+                    key={shift.opportunityId}
+                    className="flex flex-col gap-1 border-b py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div className="flex flex-col gap-0.5">
+                      <Link
+                        href={`/protected/events/${shift.event.id}/rsvp`}
+                        className="font-medium underline-offset-4 hover:underline"
+                      >
+                        {shift.event.name}
+                      </Link>
+                      <span className="text-sm text-muted-foreground">
+                        {shift.role} ·{" "}
+                        {formatEventDateRange(shift.shiftStart, shift.shiftEnd, shift.event.timezone)}
+                      </span>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-3">
+                      <span className="text-sm text-muted-foreground">
+                        {shift.spotsRemaining} spot{shift.spotsRemaining === 1 ? "" : "s"} left
+                      </span>
+                      <Button asChild size="sm" variant="outline">
+                        <Link href={`/protected/events/${shift.event.id}/rsvp`}>Sign up</Link>
+                      </Button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

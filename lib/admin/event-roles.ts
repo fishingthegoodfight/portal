@@ -58,6 +58,8 @@ export type RoleEventContext = {
   location: string | null;
   virtual_link: string | null;
   virtual_access_notes: string | null;
+  lead_name: string | null;
+  lead_phone: string | null;
   lead_email: string | null;
 };
 
@@ -485,6 +487,8 @@ async function emailShiftVolunteers(
           location: event.location,
           virtualLink: event.virtual_link,
           virtualAccessNotes: event.virtual_access_notes,
+          leadName: event.lead_name,
+          leadPhone: event.lead_phone,
           leadEmail: event.lead_email,
         },
       });

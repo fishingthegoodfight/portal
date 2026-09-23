@@ -35,6 +35,7 @@ import {
 import { SeriesScopeChoice } from "@/components/admin/series-scope-choice";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { RevealPanel } from "@/components/reveal-panel";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import type { EventTypeOption } from "@/lib/event-types";
 
@@ -400,13 +401,19 @@ export function EventEditForm({
                         </Badge>
                       )}
                     </div>
-                    <Button type="button" variant="ghost" size="sm" onClick={() => removeRole(i)}>
-                      Remove
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={cancelAsk === i}
+                      onClick={() => removeRole(i)}
+                    >
+                      {cancelAsk === i ? "Confirm below" : "Remove"}
                     </Button>
                   </div>
                   {cancelAsk === i && (
-                    <div
-                      role="alertdialog"
+                    <RevealPanel
+                      aria-label={`Cancel ${title}?`}
                       className="flex flex-col gap-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm"
                     >
                       <p className="text-amber-700 dark:text-amber-400">
@@ -438,7 +445,7 @@ export function EventEditForm({
                           Keep role
                         </Button>
                       </div>
-                    </div>
+                    </RevealPanel>
                   )}
                   <VolunteerRoleFields
                     idPrefix="edit"
@@ -483,8 +490,8 @@ export function EventEditForm({
             )}
 
             {warnings && (
-              <div
-                role="alertdialog"
+              <RevealPanel
+                aria-label="Please confirm before saving"
                 className={
                   strong
                     ? "flex flex-col gap-3 rounded-md border border-red-500/60 bg-red-500/10 p-3"
@@ -536,11 +543,14 @@ export function EventEditForm({
                     Go back
                   </Button>
                 </div>
-              </div>
+              </RevealPanel>
             )}
 
             {notifyPrompt && (
-              <div className="flex flex-col gap-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-3">
+              <RevealPanel
+                aria-label="Notify attendees?"
+                className="flex flex-col gap-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-3"
+              >
                 <p className="text-sm text-amber-700 dark:text-amber-400">
                   This changes the date, time, location, or chapter for{" "}
                   <strong>{notifyPrompt.confirmedCount}</strong> confirmed{" "}
@@ -566,15 +576,19 @@ export function EventEditForm({
                     No, just save
                   </Button>
                 </div>
-              </div>
+              </RevealPanel>
             )}
 
             {error && (
-              <p role="alert" className="text-sm text-red-500">
+              <RevealPanel role="alert" revealKey={error} className="text-sm text-red-500">
                 {error}
-              </p>
+              </RevealPanel>
             )}
-            {success && <p className="text-sm text-green-600">Saved.</p>}
+            {success && (
+              <RevealPanel role="status" className="text-sm text-green-600">
+                Saved.
+              </RevealPanel>
+            )}
           </CardContent>
           <CardFooter className="flex gap-2">
             {!notifyPrompt && !warnings && !scopePrompt && (

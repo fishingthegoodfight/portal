@@ -5,6 +5,7 @@ import { useState } from "react";
 import type { ScopeSummary } from "@/lib/actions/admin-event-series";
 import type { EditScope, OccurrencePeople } from "@/lib/admin/series";
 import { Button } from "@/components/ui/button";
+import { RevealPanel } from "@/components/reveal-panel";
 import { cn } from "@/lib/utils";
 
 function peopleLabel(people: OccurrencePeople): string {
@@ -21,7 +22,8 @@ function peopleLabel(people: OccurrencePeople): string {
 
 /** "This event only" vs "This and all future events", with how many events
  * and people each reaches, confirmed before an edit or cancel of a series
- * occurrence goes through. */
+ * occurrence goes through. Scrolls itself into view and takes focus when it
+ * appears (it opens below a long edit form). */
 export function SeriesScopeChoice({
   summary,
   action,
@@ -64,8 +66,8 @@ export function SeriesScopeChoice({
   ];
 
   return (
-    <div
-      role="alertdialog"
+    <RevealPanel
+      aria-label="Which events should this apply to?"
       className="flex flex-col gap-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm"
     >
       <p className="font-semibold">
@@ -98,9 +100,10 @@ export function SeriesScopeChoice({
       {choice === "future" && action === "edit" && (
         <p className="text-muted-foreground">
           Only what you changed carries over: title, description, location or meeting link,
-          capacity, lead contact, registration sections, time of day, and volunteer roles. Each
-          event keeps its own date, and chapter, event type, and email note changes apply to this
-          event only. Cancelled events in the series are left as they are.
+          capacity, lead contact, registration sections, time of day, volunteer roles, and a move
+          to another chapter in the same state. Each event keeps its own date. Event type and email
+          note changes apply to this event only, and a chapter change can&apos;t cross states or move
+          to or from Virtual here. Cancelled events in the series are left as they are.
         </p>
       )}
       {choice === "future" && action === "cancel" && (
@@ -129,6 +132,6 @@ export function SeriesScopeChoice({
           Go back
         </Button>
       </div>
-    </div>
+    </RevealPanel>
   );
 }

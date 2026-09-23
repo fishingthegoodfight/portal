@@ -13,6 +13,7 @@ import {
   defaultChapterFilterSlug,
 } from "@/lib/chapters";
 import { cn } from "@/lib/utils";
+import { isApprovedVolunteer, loadOpenShiftsForVolunteer } from "@/lib/volunteer-signups";
 
 async function ConfirmationBannerLoader({
   searchParams,
@@ -41,7 +42,25 @@ async function ConfirmationBannerLoader({
   );
 }
 
-function ChapterFilterBar({ activeSlug }: { activeSlug: string }) {
+const PILL_CLASS = "rounded-full border px-3 py-1 text-sm transition-colors";
+const PILL_ACTIVE = "border-transparent bg-foreground text-background";
+const PILL_IDLE = "text-muted-foreground hover:bg-accent";
+
+function eventsHref(chapterSlug: string, needsVolunteers: boolean): string {
+  return `/protected/events?chapter=${chapterSlug}${needsVolunteers ? "&volunteers=1" : ""}`;
+}
+
+/** Chapter pills, plus — for approved volunteers only — a "Needs volunteers"
+ * toggle that combines with whichever chapter is selected. */
+function ChapterFilterBar({
+  activeSlug,
+  showVolunteerFilter,
+  needsVolunteers,
+}: {
+  activeSlug: string;
+  showVolunteerFilter: boolean;
+  needsVolunteers: boolean;
+}) {
   return (
     <div className="flex flex-wrap gap-2">
       {CHAPTER_FILTERS.map((filter) => {
@@ -49,19 +68,23 @@ function ChapterFilterBar({ activeSlug }: { activeSlug: string }) {
         return (
           <Link
             key={filter.slug}
-            href={`/protected/events?chapter=${filter.slug}`}
+            href={eventsHref(filter.slug, needsVolunteers)}
             aria-current={active ? "true" : undefined}
-            className={cn(
-              "rounded-full border px-3 py-1 text-sm transition-colors",
-              active
-                ? "border-transparent bg-foreground text-background"
-                : "text-muted-foreground hover:bg-accent",
-            )}
+            className={cn(PILL_CLASS, active ? PILL_ACTIVE : PILL_IDLE)}
           >
             {filter.label}
           </Link>
         );
       })}
+      {showVolunteerFilter && (
+        <Link
+          href={eventsHref(activeSlug, !needsVolunteers)}
+          aria-pressed={needsVolunteers}
+          className={cn(PILL_CLASS, "sm:ml-2", needsVolunteers ? PILL_ACTIVE : PILL_IDLE)}
+        >
+          Needs volunteers
+        </Link>
+      )}
     </div>
   );
 }
@@ -69,9 +92,9 @@ function ChapterFilterBar({ activeSlug }: { activeSlug: string }) {
 async function EventsListLoader({
   searchParams,
 }: {
-  searchParams: Promise<{ chapter?: string }>;
+  searchParams: Promise<{ chapter?: string; volunteers?: string }>;
 }) {
-  const { chapter: chapterParam } = await searchParams;
+  const { chapter: chapterParam, volunteers: volunteersParam } = await searchParams;
   const supabase = await createClient();
   const { data, error } = await supabase.auth.getClaims();
 
@@ -121,11 +144,25 @@ async function EventsListLoader({
     );
   }
 
-  const shownEvents = activeFilter.chapters
+  const chapterEvents = activeFilter.chapters
     ? events.filter((event) =>
         activeFilter.chapters!.includes(event.chapter ?? ""),
       )
     : events;
+
+  // Approved volunteers only: events with an open shift in a role they're
+  // approved for — the "Needs volunteers" badge and filter.
+  const isVolunteer = await isApprovedVolunteer(supabase, userId);
+  const openShifts = isVolunteer
+    ? await loadOpenShiftsForVolunteer(supabase, userId, {
+        eventIds: chapterEvents.map((event) => event.id),
+      })
+    : [];
+  const needsVolunteerIds = new Set(openShifts.map((shift) => shift.event.id));
+  const needsVolunteersFilter = isVolunteer && volunteersParam === "1";
+  const shownEvents = needsVolunteersFilter
+    ? chapterEvents.filter((event) => needsVolunteerIds.has(event.id))
+    : chapterEvents;
 
   // Filter by user_id explicitly: RLS alone isn't enough, because admins have
   // a policy (admin_select_all_rsvps) that lets them read EVERYONE's rows —
@@ -159,11 +196,17 @@ async function EventsListLoader({
 
   return (
     <div className="flex flex-col gap-4">
-      <ChapterFilterBar activeSlug={activeFilter.slug} />
+      <ChapterFilterBar
+        activeSlug={activeFilter.slug}
+        showVolunteerFilter={isVolunteer}
+        needsVolunteers={needsVolunteersFilter}
+      />
 
       {shownEvents.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          No upcoming events for {activeFilter.label}.
+          {needsVolunteersFilter
+            ? `No upcoming ${activeFilter.label === "All" ? "" : `${activeFilter.label} `}events need volunteers in your roles right now.`
+            : `No upcoming events for ${activeFilter.label}.`}
         </p>
       ) : (
         shownEvents.map((event) => {
@@ -195,6 +238,7 @@ async function EventsListLoader({
                 ),
                 capacity: event.capacity,
                 spots_taken: spotsTaken,
+                needsVolunteers: needsVolunteerIds.has(event.id),
               }}
               rsvpStatus={rsvpStatus}
               action={
@@ -238,7 +282,7 @@ async function EventsListLoader({
 export default function EventsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ rsvp?: string; event?: string; chapter?: string }>;
+  searchParams: Promise<{ rsvp?: string; event?: string; chapter?: string; volunteers?: string }>;
 }) {
   return (
     <div className="flex-1 w-full flex flex-col gap-8 max-w-2xl">

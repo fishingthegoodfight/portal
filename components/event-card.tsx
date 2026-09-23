@@ -36,6 +36,10 @@ export type EventCardEvent = {
    * nothing here to leak. */
   virtualLink?: string | null;
   virtualAccessNotes?: string | null;
+  /** The viewer is an approved volunteer and this event has an open shift in
+   * a role they're approved for (see loadOpenShiftsForVolunteer) — only ever
+   * set on the events list. */
+  needsVolunteers?: boolean;
 };
 
 /**
@@ -122,6 +126,11 @@ export function EventCard({
             {event.chapter && (
               <span className="text-xs text-muted-foreground">
                 {event.chapter === "Virtual" ? "Virtual" : `${event.chapter} chapter`}
+              </span>
+            )}
+            {event.needsVolunteers && (
+              <span className="rounded-full border border-blue-600/40 px-2 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-400">
+                Needs volunteers
               </span>
             )}
           </div>
