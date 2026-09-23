@@ -37,6 +37,7 @@ async function SeriesLoader({ params }: { params: Promise<{ seriesId: string }> 
     supabase,
     events.map((e) => e.id),
   );
+  // eslint-disable-next-line react-hooks/purity -- Server Component: renders once per request on the server (after awaiting request data), so there's no re-render or hydration to disagree with this timestamp.
   const now = Date.now();
   const occurrences: SeriesOccurrence[] = events.map((e) => {
     const p = people.get(e.id) ?? EMPTY_PEOPLE;

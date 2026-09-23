@@ -144,6 +144,7 @@ export function RsvpForm({
   // section that's complete on file and not being edited — otherwise the form
   // would keep showing, and later saving, the old answer.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Works and is tested: pulls fresh on-file answers into the form when the profile changes elsewhere, skipping sections being edited. Worth revisiting next time someone's in this file: the during-render resync used in components/admin/event-roster.tsx avoids the one stale render.
     setFieldValues((prev) => {
       const next = { ...prev };
       for (const section of sectionsForEvent(event.registration_sections)) {

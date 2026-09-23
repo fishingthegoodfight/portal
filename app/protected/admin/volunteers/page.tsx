@@ -73,6 +73,7 @@ async function VolunteersListLoader({
   }
   const currentCertByVolunteer = new Map<string, boolean>();
   for (const c of (certs ?? []) as { volunteer_id: string; expires_on: string | null }[]) {
+    // eslint-disable-next-line react-hooks/purity -- Server Component: renders once per request on the server (after awaiting request data), so there's no re-render or hydration to disagree with this timestamp.
     const current = !c.expires_on || new Date(c.expires_on).getTime() >= Date.now();
     if (current) currentCertByVolunteer.set(c.volunteer_id, true);
     else if (!currentCertByVolunteer.has(c.volunteer_id)) currentCertByVolunteer.set(c.volunteer_id, false);

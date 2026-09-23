@@ -71,6 +71,7 @@ async function AdminEventsLoader() {
   }
 
   // An event counts as past once it has ended (or, open-ended, started).
+  // eslint-disable-next-line react-hooks/purity -- Server Component: renders once per request on the server (after awaiting request data), so there's no re-render or hydration to disagree with this timestamp.
   const now = Date.now();
   const isPast = (e: AdminEventRow) => new Date(e.ends_at ?? e.starts_at).getTime() < now;
   const flagUntil = now + FLAG_WINDOW_DAYS * 24 * 60 * 60 * 1000;

@@ -89,6 +89,7 @@ async function VolunteerHomeLoader({
     .eq("user_id", userId)
     .eq("status", "confirmed");
 
+  // eslint-disable-next-line react-hooks/purity -- Server Component: renders once per request on the server (after awaiting request data), so there's no re-render or hydration to disagree with this timestamp.
   const now = Date.now();
   const shiftsWithStart: (VolunteerShift & { shiftStart: string })[] = [];
   for (const row of (signupRows ?? []) as unknown as {

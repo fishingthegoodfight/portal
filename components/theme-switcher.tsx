@@ -18,6 +18,7 @@ const ThemeSwitcher = () => {
 
   // useEffect only runs on the client, so now we can safely show the UI
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- The standard next-themes "mounted" guard: the theme is only known in the browser, so rendering the switcher before mount would mismatch the server HTML.
     setMounted(true);
   }, []);
 

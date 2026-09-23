@@ -74,6 +74,7 @@ export function VolunteerRegistrationForm({
   // derive it from, unlike the RSVP form).
   useEffect(() => {
     if (!profile.chapter) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Clearing/marking the waiver as loading when the chapter changes, before fetching the new one; the fetch itself ignores stale responses (the `cancelled` flag), so there's no race.
       setWaiverInfo(null);
       return;
     }

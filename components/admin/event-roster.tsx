@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -122,24 +122,32 @@ export function EventRoster({
   const router = useRouter();
   const isCancelled = status === "cancelled";
 
-  // Re-synced from the server whenever a fresh load comes in (router.refresh()
-  // after adding a walk-up) — initialRoster is a new array each time the
-  // server component re-renders, so this only fires on genuinely new data.
+  // Local copy for optimistic check-in toggles, replaced whenever a fresh
+  // server load arrives (router.refresh() after a walk-up, removal, …).
+  // Compared DURING render — React's "adjusting state when a prop changes"
+  // pattern — so no render ever shows the old rows; a useEffect resync
+  // commits one stale render first. Not a `key` on this component: that
+  // would also wipe the search box, open forms, and messages on every refresh.
   const [roster, setRoster] = useState<RosterPerson[]>(initialRoster);
-  useEffect(() => {
+  const [rosterSource, setRosterSource] = useState(initialRoster);
+  if (rosterSource !== initialRoster) {
+    setRosterSource(initialRoster);
     setRoster(initialRoster);
-  }, [initialRoster]);
+  }
 
   const waitlist = initialWaitlist;
   const [busyRsvpId, setBusyRsvpId] = useState<number | null>(null);
   const [waitlistError, setWaitlistError] = useState<string | null>(null);
 
+  // Same during-render resync as `roster` above.
   const [volunteerRoster, setVolunteerRoster] = useState<VolunteerRosterPerson[]>(
     initialVolunteerRoster,
   );
-  useEffect(() => {
+  const [volunteerRosterSource, setVolunteerRosterSource] = useState(initialVolunteerRoster);
+  if (volunteerRosterSource !== initialVolunteerRoster) {
+    setVolunteerRosterSource(initialVolunteerRoster);
     setVolunteerRoster(initialVolunteerRoster);
-  }, [initialVolunteerRoster]);
+  }
   const [volunteerCheckInError, setVolunteerCheckInError] = useState<string | null>(null);
 
   // eventCard.spots_taken already includes spots held by open offers, so

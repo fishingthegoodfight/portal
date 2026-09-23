@@ -226,6 +226,7 @@ export function EventCreateWizard({
         step: number;
         timezoneOverridden: boolean;
       };
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- Restoring a saved draft from localStorage, which only exists in the browser: reading it during render would mismatch the server-rendered HTML, so it has to happen after mount (once, guarded by hasRestoredDraft).
       setForm((prev) => ({ ...prev, ...draft.form }));
       setStep(draft.step);
       setTimezoneOverridden(draft.timezoneOverridden);
@@ -407,6 +408,7 @@ export function EventCreateWizard({
   // event_end instead of the event_start fallback.
   useEffect(() => {
     if (!form.time || !templateRoleTracking.some(Boolean)) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- Works and is tested: resyncs template-derived shift times when the event's start/end changes; never overwrites a shift the admin edited (editing clears its tracking). Worth revisiting next time someone's in this file: compute the times in the time-change handler instead, which also removes the one render where they lag.
     setForm((prev) => ({
       ...prev,
       volunteerRoles: prev.volunteerRoles.map((role, i) => {
