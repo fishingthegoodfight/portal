@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation";
 
 import {
   createTemplateAction,
+  deleteTemplateAction,
   setTemplateActiveAction,
+  templateUsageAction,
   updateTemplateAction,
   type TemplateInput,
   type TemplateRoleInput,
@@ -13,21 +15,23 @@ import {
 import type { EventTemplateWithRoles, ShiftAnchor } from "@/lib/event-templates";
 import type { EventTypeOption } from "@/lib/event-types";
 import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
-import { EventTypeField } from "@/components/admin/fields/event-text-fields";
+import { DescriptionField, EventTypeField } from "@/components/admin/fields/event-text-fields";
+import { RoleDescriptionField } from "@/components/admin/fields/volunteer-role-fields";
 import { RegistrationSectionsFields } from "@/components/admin/fields/registration-sections-fields";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
+import { ShowInactiveToggle, useDeleteFlow } from "@/components/admin/setup-list-controls";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 
 export type TemplateRoleTypeOption = { id: number; name: string };
 
 const EMPTY_ROLE: TemplateRoleInput = {
   roleTypeId: "",
+  title: "",
   description: "",
   whatToBring: "",
   // Setup begins before doors, cleanup ends after the event — the common
@@ -66,6 +70,7 @@ function toInput(template: EventTemplateWithRoles): TemplateInput {
       .sort((a, b) => a.sort_order - b.sort_order)
       .map((r) => ({
         roleTypeId: String(r.role_type_id),
+        title: r.title ?? "",
         description: r.description ?? "",
         whatToBring: r.what_to_bring ?? "",
         shiftStartAnchor: r.shift_start_anchor,
@@ -194,13 +199,29 @@ function TemplateRoleFields({
         </Button>
       </div>
       <div className="grid gap-2">
-        <Label htmlFor={`${idPrefix}_description`}>Description</Label>
-        <Textarea
-          id={`${idPrefix}_description`}
-          value={role.description}
-          onChange={(e) => onChange({ ...role, description: e.target.value })}
+        <Label htmlFor={`${idPrefix}_title`}>
+          Title <span className="font-normal text-muted-foreground">(optional)</span>
+        </Label>
+        <Input
+          id={`${idPrefix}_title`}
+          aria-describedby={`${idPrefix}_title_help`}
+          placeholder={
+            roleTypes.find((rt) => String(rt.id) === role.roleTypeId)?.name ??
+            "Choose a role type first"
+          }
+          value={role.title}
+          onChange={(e) => onChange({ ...role, title: e.target.value })}
         />
+        <p id={`${idPrefix}_title_help`} className="text-xs text-muted-foreground">
+          Leave blank to use the role type&apos;s name, or give it a friendlier label for this
+          template. Display only — the role type still decides who can sign up.
+        </p>
       </div>
+      <RoleDescriptionField
+        id={`${idPrefix}_description`}
+        value={role.description}
+        onChange={(description) => onChange({ ...role, description })}
+      />
       <div className="grid gap-2">
         <Label htmlFor={`${idPrefix}_bring`}>What to bring or wear</Label>
         <Input
@@ -299,14 +320,11 @@ function TemplateFormFields({
           </Select>
         </div>
       </div>
-      <div className="grid gap-2">
-        <Label htmlFor={`${idPrefix}_description`}>Description</Label>
-        <Textarea
-          id={`${idPrefix}_description`}
-          value={value.description}
-          onChange={(e) => onChange({ ...value, description: e.target.value })}
-        />
-      </div>
+      <DescriptionField
+        idPrefix={idPrefix}
+        value={value.description}
+        onChange={(description) => onChange({ ...value, description })}
+      />
       <div className="grid grid-cols-3 gap-4">
         <div className="grid gap-2">
           <Label htmlFor={`${idPrefix}_capacity`}>Default capacity</Label>
@@ -391,6 +409,20 @@ export function EventTemplatesManager({
   const [editInput, setEditInput] = useState<TemplateInput>(EMPTY_TEMPLATE);
   const [editError, setEditError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [showInactive, setShowInactive] = useState(false);
+
+  const deleteFlow = useDeleteFlow({
+    noun: "template",
+    hiddenWhenInactive:
+      "hides it from the create wizard but keeps it for reference, and never changes an event created from it",
+    checkUsage: templateUsageAction,
+    remove: deleteTemplateAction,
+    deactivate: (id) => setTemplateActiveAction(id, false),
+    onDone: () => router.refresh(),
+  });
+
+  const visibleTemplates = templates.filter((t) => showInactive || t.active);
+  const inactiveCount = templates.length - templates.filter((t) => t.active).length;
 
   const roleTypeName = (id: number) => roleTypes.find((rt) => rt.id === id)?.name ?? `Role #${id}`;
 
@@ -476,7 +508,14 @@ export function EventTemplatesManager({
             </form>
           )}
 
-          {templates.map((template) => (
+          <ShowInactiveToggle
+            id="templates_show_inactive"
+            count={inactiveCount}
+            checked={showInactive}
+            onChange={setShowInactive}
+          />
+
+          {visibleTemplates.map((template) => (
             <div key={template.id} className="rounded-md border p-3">
               {editingId === template.id ? (
                 <div className="flex flex-col gap-4">
@@ -519,7 +558,7 @@ export function EventTemplatesManager({
                       <p className="text-sm text-muted-foreground">
                         Roles:{" "}
                         {template.roles
-                          .map((r) => `${roleTypeName(r.role_type_id)} (${r.number_needed})`)
+                          .map((r) => `${r.title || roleTypeName(r.role_type_id)} (${r.number_needed})`)
                           .join(", ")}
                       </p>
                     )}
@@ -537,14 +576,27 @@ export function EventTemplatesManager({
                     >
                       {template.active ? "Deactivate" : "Activate"}
                     </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={busyId === template.id || deleteFlow.isBusy(template.id)}
+                      onClick={() => deleteFlow.begin(template)}
+                    >
+                      Delete
+                    </Button>
                   </div>
                 </div>
               )}
+              {deleteFlow.panelFor(template.id)}
             </div>
           ))}
 
           {templates.length === 0 && !showAdd && (
             <p className="text-sm text-muted-foreground">No templates yet.</p>
+          )}
+          {templates.length > 0 && visibleTemplates.length === 0 && (
+            <p className="text-sm text-muted-foreground">All templates are inactive.</p>
           )}
         </CardContent>
       </Card>

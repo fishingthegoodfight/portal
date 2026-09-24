@@ -49,6 +49,7 @@ export type ChapterEventRoleType = { id: number; name: string };
 
 function emptyForm(prefill: AdminPrefill): CreateEventInput {
   return {
+    templateId: "",
     chapter: "",
     eventType: "",
     title: "",
@@ -93,11 +94,17 @@ function sectionTitle(id: string): string {
   return REGISTRATION_SECTIONS.find((s) => s.id === id)?.title ?? id;
 }
 
+const CHOOSE_CHAPTER_FIRST = "Choose a chapter to set the date and time";
+
 function step1Errors(form: CreateEventInput): string[] {
   const errors: string[] = [];
-  if (!form.chapter) errors.push("Chapter is required");
+  // The date and time fields only appear once a chapter is chosen (it sets
+  // the time zone), so without one, say that first and don't name fields
+  // that aren't on screen yet.
+  if (!form.chapter) errors.push(CHOOSE_CHAPTER_FIRST);
   if (!form.eventType) errors.push("Event type is required");
   if (!form.title.trim()) errors.push("Title is required");
+  if (!form.chapter) return errors;
   if (!form.date) errors.push("Date is required");
   if (!form.time) errors.push("Start time is required");
   if (form.time && form.endTime && form.endTime <= form.time) {
@@ -209,6 +216,7 @@ export function EventCreateWizard({
   const [stepErrors, setStepErrors] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
   const hasRestoredDraft = useRef(false);
   const isSubmittedRef = useRef(false);
 
@@ -302,17 +310,24 @@ export function EventCreateWizard({
         : prev.registrationSections.filter((s) => s !== id),
     }));
 
-  // --- "Start from a template" (step 1) ---
+  // --- "Start from a template" (top of step 1) ---
   // templateRoleTracking[i] mirrors form.volunteerRoles[i]: the anchors +
   // offsets it came from, kept in sync so a later date/time entry can
   // recompute its HH:MM shift times — until the admin edits that role's
   // times by hand, at which point its entry is cleared and it stops
   // tracking the template.
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
   const [templateRoleTracking, setTemplateRoleTracking] = useState<TemplateRoleTracking[]>([]);
 
+  // Before a chapter is chosen every template is offered (picking a
+  // chapter-specific one sets the chapter); after, only that chapter's and
+  // the all-chapter ones — plus whichever is already selected, so the picker
+  // never shows a selection that isn't in its list.
   const templatesForChapter = templates.filter(
-    (t) => t.chapter === null || t.chapter === form.chapter,
+    (t) =>
+      !form.chapter ||
+      t.chapter === null ||
+      t.chapter === form.chapter ||
+      String(t.id) === form.templateId,
   );
 
   // Anything a template would overwrite — used to decide whether switching
@@ -333,6 +348,13 @@ export function EventCreateWizard({
     const sortedRoles = template.roles.slice().sort((a, b) => a.sort_order - b.sort_order);
     setForm((prev) => ({
       ...prev,
+      templateId: String(template.id),
+      ...(template.chapter && template.chapter !== prev.chapter
+        ? {
+            chapter: template.chapter,
+            timezone: timezoneOverridden ? prev.timezone : timezoneForChapter(template.chapter),
+          }
+        : {}),
       eventType: template.event_type,
       description: template.description ?? "",
       capacity: template.default_capacity != null ? String(template.default_capacity) : "",
@@ -348,7 +370,10 @@ export function EventCreateWizard({
           ? resolveShiftTime(r.shift_end_anchor, r.shift_end_offset, prev.time, prev.endTime)
           : null;
         return {
-          title: roleTypeName(r.role_type_id),
+          // The template's own label if it has one, else the role type's
+          // name — either way it's the same editable title field as a role
+          // added by hand.
+          title: r.title?.trim() || roleTypeName(r.role_type_id),
           description: r.description ?? "",
           shiftStart: start?.time ?? "",
           shiftEnd: end?.time ?? "",
@@ -371,6 +396,7 @@ export function EventCreateWizard({
   const clearTemplateFields = () => {
     setForm((prev) => ({
       ...prev,
+      templateId: "",
       description: "",
       capacity: "",
       registrationSections: [],
@@ -393,7 +419,6 @@ export function EventCreateWizard({
     ) {
       return;
     }
-    setSelectedTemplateId(value);
     if (!value) {
       clearTemplateFields();
       return;
@@ -464,9 +489,17 @@ export function EventCreateWizard({
     }
   }, [form.date, form.recurrence, form.recurrenceEndDate]);
 
+  // Each step starts at its own top — otherwise a long step leaves you
+  // scrolled to wherever the previous one's Next button was.
+  const scrollToTop = () =>
+    requestAnimationFrame(() =>
+      cardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
+
   const goToStep = (n: number) => {
     setStepErrors([]);
     setStep(n);
+    scrollToTop();
   };
 
   const goNext = () => {
@@ -477,6 +510,7 @@ export function EventCreateWizard({
     }
     setStepErrors([]);
     setStep((s) => s + 1);
+    scrollToTop();
   };
 
   const handleCreate = async () => {
@@ -513,7 +547,7 @@ export function EventCreateWizard({
   })();
 
   return (
-    <Card>
+    <Card ref={cardRef} className="scroll-mt-4">
       <CardHeader>
         <CardTitle>New event</CardTitle>
         <div className="flex flex-wrap gap-1 pt-2">
@@ -544,6 +578,32 @@ export function EventCreateWizard({
       <CardContent className="flex flex-col gap-4">
         {step === 1 && (
           <div className="flex flex-col gap-4">
+            {templatesForChapter.length > 0 && (
+              <div className="grid gap-2 rounded-md border border-dashed bg-muted/40 p-3">
+                <Label htmlFor="create_template">
+                  Start from a template{" "}
+                  <span className="font-normal text-muted-foreground">(optional)</span>
+                </Label>
+                <Select
+                  id="create_template"
+                  value={form.templateId}
+                  onChange={(e) => handleTemplateChange(e.target.value)}
+                >
+                  <option value="">No template — start blank</option>
+                  {templatesForChapter.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                      {!form.chapter && t.chapter ? ` (${t.chapter})` : ""}
+                    </option>
+                  ))}
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  A shortcut: pre-fills the event type, description, capacity, registration
+                  sections, virtual details, and volunteer roles. Everything stays editable.
+                </p>
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-4">
               <ChapterField idPrefix="create" value={form.chapter} onChange={updateChapter} />
               <EventTypeField
@@ -553,28 +613,6 @@ export function EventCreateWizard({
                 eventTypes={eventTypes}
               />
             </div>
-
-            {templatesForChapter.length > 0 && (
-              <div className="grid gap-2">
-                <Label htmlFor="create_template">Start from a template</Label>
-                <Select
-                  id="create_template"
-                  value={selectedTemplateId}
-                  onChange={(e) => handleTemplateChange(e.target.value)}
-                >
-                  <option value="">No template</option>
-                  {templatesForChapter.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  Pre-fills description, capacity, registration sections, virtual details, and
-                  volunteer roles — everything stays editable afterward.
-                </p>
-              </div>
-            )}
 
             <TitleField idPrefix="create" value={form.title} onChange={setField("title")} />
             {form.chapter ? (
@@ -592,8 +630,10 @@ export function EventCreateWizard({
                 onOverrideTimezone={() => setTimezoneOverridden(true)}
               />
             ) : (
-              <p className="text-sm text-muted-foreground">
-                Choose a chapter to set the date, time, and time zone.
+              <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">
+                <span className="font-medium text-foreground">Date and time:</span> choose a
+                chapter above first — it sets the time zone, then the date and time fields
+                appear here.
               </p>
             )}
           </div>
@@ -776,14 +816,14 @@ export function EventCreateWizard({
                     .join(", ")}
                 />
               )}
-              <ReviewRow label="Description" value={form.description || "—"} />
-              <ReviewRow label="Occurrence note (public)" value={form.occurrenceNote.trim() || "—"} />
+              <ReviewRow label="About this event" value={form.description || "—"} />
+              <ReviewRow label="What's different about this one" value={form.occurrenceNote.trim() || "—"} />
               <ReviewRow label="Capacity" value={form.capacity.trim() || "Unlimited"} />
               <ReviewRow
                 label="Lead contact"
                 value={[form.leadName, form.leadPhone, form.leadEmail].filter(Boolean).join(" · ") || "—"}
               />
-              <ReviewRow label="Custom email note" value={form.customEmailNote.trim() || "—"} />
+              <ReviewRow label="Email-only note" value={form.customEmailNote.trim() || "—"} />
               <ReviewRow
                 label="Registration sections"
                 value={

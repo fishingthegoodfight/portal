@@ -25,7 +25,7 @@ export default function AdminVolunteerRoleTypesPage() {
         <h1 className="font-bold text-2xl mb-1">Volunteer role types</h1>
         <p className="text-sm text-muted-foreground">
           Deactivating hides a role from new event builds and new approvals but leaves existing
-          approvals and past event roles intact.
+          approvals and past event roles intact. A role nothing uses yet can be deleted outright.
         </p>
       </div>
       <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>

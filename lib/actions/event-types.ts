@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { requireAdmin } from "@/lib/admin/require-admin";
+import { countLabel, type DeleteResult, type UsageResult } from "@/lib/admin/usage";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
@@ -95,7 +96,7 @@ export async function updateEventTypeAction(id: number, input: EventTypeInput): 
 
 /** Deactivating hides a type from the create wizard's picker but never
  * changes an event that already has it — a plain flag flip, nothing is
- * deleted (there's no DELETE policy on this table at all). */
+ * deleted. */
 export async function setEventTypeActiveAction(id: number, active: boolean): Promise<ActionResult> {
   const supabase = await createClient();
   const adminCheck = await requireAdmin(supabase);
@@ -103,6 +104,75 @@ export async function setEventTypeActiveAction(id: number, active: boolean): Pro
 
   const { error } = await supabase.from("event_types").update({ active }).eq("id", id);
   if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+/** Events and templates reference a type by its current name (plain text,
+ * no FK) — an event created under a since-renamed name doesn't count. */
+async function eventTypeUsage(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  id: number,
+): Promise<UsageResult> {
+  const { data: type, error: typeError } = await supabase
+    .from("event_types")
+    .select("name")
+    .eq("id", id)
+    .maybeSingle();
+  if (typeError) return { ok: false, error: typeError.message };
+  if (!type) return { ok: false, error: "Event type not found" };
+
+  const [events, templates] = await Promise.all([
+    supabase
+      .from("events")
+      .select("id", { count: "exact", head: true })
+      .eq("event_type", type.name),
+    supabase
+      .from("event_templates")
+      .select("id", { count: "exact", head: true })
+      .eq("event_type", type.name),
+  ]);
+  const failed = [events, templates].find((r) => r.error);
+  if (failed?.error) return { ok: false, error: failed.error.message };
+
+  const usage: string[] = [];
+  if ((events.count ?? 0) > 0) usage.push(`used by ${countLabel(events.count ?? 0, "event")}`);
+  if ((templates.count ?? 0) > 0) {
+    usage.push(`used by ${countLabel(templates.count ?? 0, "template")}`);
+  }
+  return { ok: true, usage };
+}
+
+/** What still uses an event type — empty means it can be deleted. */
+export async function eventTypeUsageAction(id: number): Promise<UsageResult> {
+  const supabase = await createClient();
+  const adminCheck = await requireAdmin(supabase);
+  if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
+  return eventTypeUsage(supabase, id);
+}
+
+/** Deletes an event type only if no event or template uses it (re-checked
+ * here, and enforced by the event_types_delete_guard trigger regardless). */
+export async function deleteEventTypeAction(id: number): Promise<DeleteResult> {
+  const supabase = await createClient();
+  const adminCheck = await requireAdmin(supabase);
+  if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
+
+  const usage = await eventTypeUsage(supabase, id);
+  if (!usage.ok) return { ok: false, error: usage.error };
+  if (usage.usage.length > 0) {
+    return { ok: false, error: "This event type is in use", usage: usage.usage };
+  }
+
+  const { error } = await supabase.from("event_types").delete().eq("id", id);
+  if (error) {
+    return {
+      ok: false,
+      error:
+        error.code === "23503"
+          ? "This event type was just put to use, so it can't be deleted — deactivate it instead."
+          : error.message,
+    };
+  }
   return { ok: true };
 }
 

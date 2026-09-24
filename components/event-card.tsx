@@ -8,6 +8,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { ChapterTag } from "@/components/chapter-tag";
 import { cn } from "@/lib/utils";
 
 export type EventCardEvent = {
@@ -102,16 +103,19 @@ export function EventCard({
     >
       <CardHeader>
         <div className="flex items-start justify-between gap-4">
-          <div>
+          <div className="flex min-w-0 flex-col gap-1.5">
             <CardTitle>{event.name}</CardTitle>
-            <CardDescription>
-              {event.dateRange}
-              {event.location ? ` · ${event.location}` : ""}
+            {/* The chapter sits with the rest of the event's metadata, as a
+              * pill so it stays visible even when the location is missing —
+              * the top-right is left for status pills. */}
+            <CardDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              {event.chapter && <ChapterTag chapter={event.chapter} />}
+              <span>
+                {event.dateRange}
+                {event.location ? ` · ${event.location}` : ""}
+              </span>
             </CardDescription>
           </div>
-          {/* Chapter lives here (not on the location line, where it's
-            * redundant after the address) so it stays visible when the
-            * address is elsewhere or missing. */}
           <div className="flex shrink-0 flex-col items-end gap-1 text-right">
             {statusPill && (
               <span
@@ -121,11 +125,6 @@ export function EventCard({
                 )}
               >
                 {statusPill.label}
-              </span>
-            )}
-            {event.chapter && (
-              <span className="text-xs text-muted-foreground">
-                {event.chapter === "Virtual" ? "Virtual" : `${event.chapter} chapter`}
               </span>
             )}
             {event.needsVolunteers && (

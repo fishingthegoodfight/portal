@@ -31,6 +31,9 @@ export type VolunteerRoleInput = {
 
 export type CreateEventInput = {
   // Step 1 — Basics
+  /** event_templates.id as a string, or "" when no template was used —
+   * stored as events.created_from_template_id (provenance only). */
+  templateId: string;
   chapter: string;
   eventType: string;
   title: string;
@@ -107,6 +110,17 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
     .maybeSingle();
   if (!eventTypeRow) {
     return { ok: false, error: "Choose an event type" };
+  }
+  // Provenance only — a template deleted since the wizard loaded just leaves
+  // this null rather than failing the create on the FK.
+  let templateId: number | null = null;
+  if (Number.isInteger(Number(input.templateId)) && input.templateId !== "") {
+    const { data: templateRow } = await supabase
+      .from("event_templates")
+      .select("id")
+      .eq("id", Number(input.templateId))
+      .maybeSingle();
+    templateId = templateRow?.id ?? null;
   }
   if (!input.date || !input.time) {
     return { ok: false, error: "Date and start time are required" };
@@ -207,6 +221,7 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
         event_type: input.eventType,
         description: input.description.trim() || null,
         occurrence_note: input.occurrenceNote.trim() || null,
+        created_from_template_id: templateId,
         venue_name: venueName,
         street_address: streetAddress,
         city,

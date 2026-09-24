@@ -88,12 +88,18 @@ export function DescriptionField({
 }) {
   return (
     <div className="grid gap-2">
-      <Label htmlFor={`${idPrefix}_description`}>Public description</Label>
+      <Label htmlFor={`${idPrefix}_description`}>About this event</Label>
       <Textarea
         id={`${idPrefix}_description`}
+        aria-describedby={`${idPrefix}_description_help`}
         value={value}
         onChange={(e) => onChange(e.target.value)}
       />
+      <p id={`${idPrefix}_description_help`} className="text-xs text-muted-foreground">
+        A standing description of what this program is, shown on the event page and the public
+        link. It&apos;s reused every time you run this event, so keep it general — no dates or
+        one-off details.
+      </p>
     </div>
   );
 }
@@ -136,13 +142,18 @@ export function CustomEmailNoteField({
 }) {
   return (
     <div className="grid gap-2">
-      <Label htmlFor={`${idPrefix}_custom_note`}>Custom email note (email only, not shown on the site)</Label>
+      <Label htmlFor={`${idPrefix}_custom_note`}>Email-only note (optional)</Label>
       <Textarea
         id={`${idPrefix}_custom_note`}
-        placeholder="Shown in the RSVP confirmation email and reminders, if set"
+        aria-describedby={`${idPrefix}_custom_note_help`}
         value={value}
         onChange={(e) => onChange(e.target.value)}
       />
+      <p id={`${idPrefix}_custom_note_help`} className="text-xs text-muted-foreground">
+        Only in the confirmation and reminder emails to people who registered — never shown on
+        the site or the public link. Good for logistics you&apos;d rather not post, like a door
+        code or where to park.
+      </p>
     </div>
   );
 }
@@ -165,13 +176,20 @@ export function OccurrenceNoteField({
 }) {
   return (
     <div className="grid gap-2">
-      <Label htmlFor={`${idPrefix}_occurrence_note`}>Note for this occurrence (shown publicly)</Label>
+      <Label htmlFor={`${idPrefix}_occurrence_note`}>
+        What&apos;s different about this one? (optional)
+      </Label>
       <Textarea
         id={`${idPrefix}_occurrence_note`}
-        placeholder="Optional — shown on the events list, the event page, and in the confirmation/reminder emails"
+        aria-describedby={`${idPrefix}_occurrence_note_help`}
         value={value}
         onChange={(e) => onChange(e.target.value)}
       />
+      <p id={`${idPrefix}_occurrence_note_help`} className="text-xs text-muted-foreground">
+        A short public note about this specific date. Appears under the description and in
+        confirmation and reminder emails. Example: &ldquo;This month we&apos;re tying a Pat&apos;s
+        Rubber Legs.&rdquo;
+      </p>
     </div>
   );
 }

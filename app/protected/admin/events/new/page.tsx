@@ -4,10 +4,7 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/supabase/server";
 import { EventCreateWizard } from "@/components/admin/event-create-wizard";
 import type { EventTypeOption } from "@/lib/event-types";
-import type { EventTemplateWithRoles } from "@/lib/event-templates";
-
-const TEMPLATE_COLUMNS =
-  "id, name, event_type, chapter, description, default_capacity, default_registration_sections, default_virtual_link, default_virtual_access_notes, active, roles:event_template_roles(id, role_type_id, description, what_to_bring, shift_start_offset, shift_end_offset, number_needed, sort_order)";
+import { TEMPLATE_WITH_ROLES_COLUMNS, type EventTemplateWithRoles } from "@/lib/event-templates";
 
 async function NewEventLoader() {
   const supabase = await createClient();
@@ -31,7 +28,7 @@ async function NewEventLoader() {
         .select("id, key, name, default_registration_sections, sort_order, active")
         .eq("active", true)
         .order("sort_order", { ascending: true }),
-      supabase.from("event_templates").select(TEMPLATE_COLUMNS).eq("active", true).order("name", { ascending: true }),
+      supabase.from("event_templates").select(TEMPLATE_WITH_ROLES_COLUMNS).eq("active", true).order("name", { ascending: true }),
     ]);
 
   const leadName = [profile?.first_name, profile?.last_name].filter(Boolean).join(" ");

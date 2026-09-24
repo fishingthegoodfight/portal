@@ -66,14 +66,11 @@ export function VolunteerRoleFields({
           onChange={(e) => onChange("title", e.target.value)}
         />
       </div>
-      <div className="grid gap-2">
-        <Label htmlFor={id("description")}>Description</Label>
-        <Textarea
-          id={id("description")}
-          value={role.description}
-          onChange={(e) => onChange("description", e.target.value)}
-        />
-      </div>
+      <RoleDescriptionField
+        id={id("description")}
+        value={role.description}
+        onChange={(value) => onChange("description", value)}
+      />
       <div className="grid grid-cols-2 gap-4">
         <div className="grid gap-2">
           <Label htmlFor={id("shift_start")}>Shift start</Label>
@@ -123,6 +120,34 @@ export function VolunteerRoleFields({
         )}
       </div>
     </>
+  );
+}
+
+/** A volunteer role's description — shared by the create wizard, the edit
+ * form (via VolunteerRoleFields above), and the template editor's roles. */
+export function RoleDescriptionField({
+  id,
+  value,
+  onChange,
+}: {
+  id: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="grid gap-2">
+      <Label htmlFor={id}>Description</Label>
+      <Textarea
+        id={id}
+        aria-describedby={`${id}_help`}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <p id={`${id}_help`} className="text-xs text-muted-foreground">
+        What will this person actually do? Example: &ldquo;Set up tables and vises before doors
+        open, then help newcomers get started.&rdquo;
+      </p>
+    </div>
   );
 }
 

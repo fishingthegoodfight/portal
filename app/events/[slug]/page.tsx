@@ -6,6 +6,7 @@ import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/server";
 import { Button } from "@/components/ui/button";
+import { ChapterTag } from "@/components/chapter-tag";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatEventDateRange } from "@/lib/format-date";
 import { isVirtualChapter } from "@/lib/chapters";
@@ -81,10 +82,8 @@ async function PublicEventLoader({ params }: { params: Params }) {
     <Card>
       <CardHeader>
         <CardTitle className="text-2xl">{event.name}</CardTitle>
-        <CardDescription className="flex flex-col gap-0.5">
-          {event.chapter && (
-            <span>{virtual ? "Virtual event" : `${event.chapter} chapter`}</span>
-          )}
+        <CardDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          {event.chapter && <ChapterTag chapter={event.chapter} />}
           {event.event_type && <span>{event.event_type}</span>}
         </CardDescription>
       </CardHeader>

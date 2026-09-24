@@ -6,6 +6,8 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 
 import {
   createEventTypeAction,
+  deleteEventTypeAction,
+  eventTypeUsageAction,
   reorderEventTypesAction,
   setEventTypeActiveAction,
   updateEventTypeAction,
@@ -14,6 +16,7 @@ import {
 import type { EventTypeOption } from "@/lib/event-types";
 import { RegistrationSectionsFields } from "@/components/admin/fields/registration-sections-fields";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
+import { ShowInactiveToggle, useDeleteFlow } from "@/components/admin/setup-list-controls";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -78,8 +81,21 @@ export function EventTypesManager({ eventTypes }: { eventTypes: EventTypeOption[
   const [editInput, setEditInput] = useState<EventTypeInput>(EMPTY_INPUT);
   const [editError, setEditError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [showInactive, setShowInactive] = useState(false);
+
+  const deleteFlow = useDeleteFlow({
+    noun: "event type",
+    hiddenWhenInactive:
+      "hides it from the create wizard but never changes an event or template that already has it",
+    checkUsage: eventTypeUsageAction,
+    remove: deleteEventTypeAction,
+    deactivate: (id) => setEventTypeActiveAction(id, false),
+    onDone: () => router.refresh(),
+  });
 
   const sorted = [...eventTypes].sort((a, b) => a.sort_order - b.sort_order);
+  const visible = sorted.filter((t) => showInactive || t.active);
+  const inactiveCount = sorted.length - sorted.filter((t) => t.active).length;
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -121,12 +137,16 @@ export function EventTypesManager({ eventTypes }: { eventTypes: EventTypeOption[
     router.refresh();
   };
 
+  /** Swaps two visible neighbours within the full list — inactive types
+   * hidden from view keep their place in the saved order. */
   const move = async (index: number, direction: -1 | 1) => {
     const target = index + direction;
-    if (target < 0 || target >= sorted.length) return;
+    if (target < 0 || target >= visible.length) return;
+    const from = sorted.indexOf(visible[index]);
+    const to = sorted.indexOf(visible[target]);
     const reordered = [...sorted];
-    [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
-    setBusyId(reordered[index].id);
+    [reordered[from], reordered[to]] = [reordered[to], reordered[from]];
+    setBusyId(visible[index].id);
     await reorderEventTypesAction(reordered.map((t) => t.id));
     setBusyId(null);
     router.refresh();
@@ -156,7 +176,13 @@ export function EventTypesManager({ eventTypes }: { eventTypes: EventTypeOption[
           <CardTitle>Event types</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
-          {sorted.map((type, i) => (
+          <ShowInactiveToggle
+            id="event_types_show_inactive"
+            count={inactiveCount}
+            checked={showInactive}
+            onChange={setShowInactive}
+          />
+          {visible.map((type, i) => (
             <div key={type.id} className="rounded-md border p-3">
               {editingId === type.id ? (
                 <div className="flex flex-col gap-3">
@@ -198,7 +224,7 @@ export function EventTypesManager({ eventTypes }: { eventTypes: EventTypeOption[
                         type="button"
                         variant="ghost"
                         size="sm"
-                        disabled={i === sorted.length - 1 || busyId === type.id}
+                        disabled={i === visible.length - 1 || busyId === type.id}
                         onClick={() => move(i, 1)}
                         aria-label="Move down"
                       >
@@ -218,10 +244,20 @@ export function EventTypesManager({ eventTypes }: { eventTypes: EventTypeOption[
                       >
                         {type.active ? "Deactivate" : "Activate"}
                       </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        disabled={busyId === type.id || deleteFlow.isBusy(type.id)}
+                        onClick={() => deleteFlow.begin(type)}
+                      >
+                        Delete
+                      </Button>
                     </div>
                   </div>
                 </div>
               )}
+              {deleteFlow.panelFor(type.id)}
             </div>
           ))}
         </CardContent>

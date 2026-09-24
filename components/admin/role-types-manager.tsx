@@ -6,12 +6,15 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 
 import {
   createRoleTypeAction,
+  deleteRoleTypeAction,
   reorderRoleTypesAction,
+  roleTypeUsageAction,
   setRoleTypeActiveAction,
   updateRoleTypeAction,
   type RoleTypeInput,
 } from "@/lib/actions/volunteer-role-types";
 import { ROLE_TYPE_GROUP_LABELS, roleTypeGroup, type VolunteerRoleType } from "@/lib/volunteers";
+import { ShowInactiveToggle, useDeleteFlow } from "@/components/admin/setup-list-controls";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -103,6 +106,17 @@ export function RoleTypesManager({ roleTypes }: { roleTypes: VolunteerRoleType[]
   const [editInput, setEditInput] = useState<RoleTypeInput>(EMPTY_INPUT);
   const [editError, setEditError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [showInactive, setShowInactive] = useState(false);
+
+  const deleteFlow = useDeleteFlow({
+    noun: "role type",
+    hiddenWhenInactive:
+      "hides it from new event builds and new approvals but keeps existing approvals and event roles intact",
+    checkUsage: roleTypeUsageAction,
+    remove: deleteRoleTypeAction,
+    deactivate: (id) => setRoleTypeActiveAction(id, false),
+    onDone: () => router.refresh(),
+  });
 
   const handleAdd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -144,23 +158,37 @@ export function RoleTypesManager({ roleTypes }: { roleTypes: VolunteerRoleType[]
     router.refresh();
   };
 
-  const move = async (group: VolunteerRoleType[], index: number, direction: -1 | 1) => {
+  /** Swaps two visible neighbours within their full group — inactive roles
+   * hidden from view keep their place in the saved order. */
+  const move = async (
+    group: VolunteerRoleType[],
+    visible: VolunteerRoleType[],
+    index: number,
+    direction: -1 | 1,
+  ) => {
     const target = index + direction;
-    if (target < 0 || target >= group.length) return;
+    if (target < 0 || target >= visible.length) return;
+    const from = group.indexOf(visible[index]);
+    const to = group.indexOf(visible[target]);
     const reordered = [...group];
-    [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
-    setBusyId(reordered[index].id);
+    [reordered[from], reordered[to]] = [reordered[to], reordered[from]];
+    setBusyId(visible[index].id);
     await reorderRoleTypesAction(reordered.map((r) => r.id));
     setBusyId(null);
     router.refresh();
   };
 
-  const groups: { key: "retreats" | "chapter_events" | "both"; roles: VolunteerRoleType[] }[] = (
-    ["retreats", "chapter_events", "both"] as const
-  ).map((key) => ({
-    key,
-    roles: roleTypes.filter((r) => roleTypeGroup(r) === key).sort((a, b) => a.sort_order - b.sort_order),
-  }));
+  const inactiveCount = roleTypes.filter((r) => !r.active).length;
+  const groups: {
+    key: "retreats" | "chapter_events" | "both";
+    roles: VolunteerRoleType[];
+    visible: VolunteerRoleType[];
+  }[] = (["retreats", "chapter_events", "both"] as const).map((key) => {
+    const roles = roleTypes
+      .filter((r) => roleTypeGroup(r) === key)
+      .sort((a, b) => a.sort_order - b.sort_order);
+    return { key, roles, visible: roles.filter((r) => showInactive || r.active) };
+  });
 
   return (
     <div className="flex flex-col gap-6">
@@ -181,15 +209,22 @@ export function RoleTypesManager({ roleTypes }: { roleTypes: VolunteerRoleType[]
         </CardContent>
       </Card>
 
+      <ShowInactiveToggle
+        id="role_types_show_inactive"
+        count={inactiveCount}
+        checked={showInactive}
+        onChange={setShowInactive}
+      />
+
       {groups.map(
         (group) =>
-          group.roles.length > 0 && (
+          group.visible.length > 0 && (
             <Card key={group.key}>
               <CardHeader>
                 <CardTitle>{ROLE_TYPE_GROUP_LABELS[group.key]}</CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col gap-3">
-                {group.roles.map((role, i) => (
+                {group.visible.map((role, i) => (
                   <div key={role.id} className="rounded-md border p-3">
                     {editingId === role.id ? (
                       <div className="flex flex-col gap-3">
@@ -223,7 +258,7 @@ export function RoleTypesManager({ roleTypes }: { roleTypes: VolunteerRoleType[]
                               variant="ghost"
                               size="sm"
                               disabled={i === 0 || busyId === role.id}
-                              onClick={() => move(group.roles, i, -1)}
+                              onClick={() => move(group.roles, group.visible, i, -1)}
                               aria-label="Move up"
                             >
                               <ChevronUp className="size-4" />
@@ -232,8 +267,8 @@ export function RoleTypesManager({ roleTypes }: { roleTypes: VolunteerRoleType[]
                               type="button"
                               variant="ghost"
                               size="sm"
-                              disabled={i === group.roles.length - 1 || busyId === role.id}
-                              onClick={() => move(group.roles, i, 1)}
+                              disabled={i === group.visible.length - 1 || busyId === role.id}
+                              onClick={() => move(group.roles, group.visible, i, 1)}
                               aria-label="Move down"
                             >
                               <ChevronDown className="size-4" />
@@ -252,10 +287,20 @@ export function RoleTypesManager({ roleTypes }: { roleTypes: VolunteerRoleType[]
                             >
                               {role.active ? "Deactivate" : "Activate"}
                             </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              disabled={busyId === role.id || deleteFlow.isBusy(role.id)}
+                              onClick={() => deleteFlow.begin(role)}
+                            >
+                              Delete
+                            </Button>
                           </div>
                         </div>
                       </div>
                     )}
+                    {deleteFlow.panelFor(role.id)}
                   </div>
                 ))}
               </CardContent>

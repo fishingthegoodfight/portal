@@ -4181,3 +4181,86 @@ end $function$;
 
 revoke all on function public.generate_event_slug(text, timestamptz, text) from public, anon, authenticated;
 grant execute on function public.generate_event_slug(text, timestamptz, text) to service_role;
+
+-- =============================================================================
+-- 2026-09-24 — Deleting unused role types / event types / templates,
+-- template provenance on events, Fishing Instructor retreat-only
+-- =============================================================================
+-- Volunteer role types, event types, and event templates can now be deleted
+-- from their admin screens — but only when nothing references them; anything
+-- in use can still only be deactivated. The app checks first so it can say
+-- exactly what's using it, and the database enforces the same rule on its
+-- own:
+--  - volunteer_role_types: already referenced by plain (NO ACTION) FKs from
+--    volunteer_role_approvals (active and revoked), volunteer_opportunities,
+--    and event_template_roles, so a delete of one in use fails with 23503.
+--    The existing volunteer_role_types_admin_all policy already covers
+--    DELETE; only the grant was missing.
+--  - event_types: events.event_type and event_templates.event_type are plain
+--    text with no FK (see the 2026-09-22 entry), so a BEFORE DELETE trigger
+--    refuses the delete while any event or template still carries the
+--    type's name.
+--  - event_templates: events.created_from_template_id (new) records which
+--    template seeded an event, with a NO ACTION FK so a template that has
+--    created events can't be deleted. Events created before this change have
+--    no record of their template, so they don't count. The link is
+--    provenance only — editing a template still never changes an event.
+
+-- ---- Template provenance ------------------------------------------------------
+alter table public.events
+  add column if not exists created_from_template_id bigint
+    references public.event_templates(id);
+
+create index if not exists events_created_from_template_idx
+  on public.events (created_from_template_id)
+  where created_from_template_id is not null;
+
+-- ---- Delete grants --------------------------------------------------------------
+-- Each table's existing "*_admin_all" policy (for all, is_admin()) already
+-- covers DELETE for admins.
+grant delete on public.volunteer_role_types to authenticated;
+grant delete on public.event_types to authenticated;
+grant delete on public.event_templates to authenticated;
+
+-- ---- Event types: refuse deleting one still in use ---------------------------
+create or replace function public.event_types_delete_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if exists (select 1 from public.events where event_type = old.name)
+     or exists (select 1 from public.event_templates where event_type = old.name) then
+    raise exception 'Event type "%" is still used by an event or template', old.name
+      using errcode = '23503';
+  end if;
+  return old;
+end $function$;
+
+drop trigger if exists event_types_delete_guard on public.event_types;
+create trigger event_types_delete_guard
+  before delete on public.event_types
+  for each row execute function public.event_types_delete_guard();
+
+revoke all on function public.event_types_delete_guard() from public, anon, authenticated;
+
+-- ---- Fishing Instructor: retreats only ----------------------------------------
+-- A separate chapter-program role will be added later. Existing event roles
+-- and approvals that use it are untouched; it just stops being offered for
+-- new chapter events and templates.
+update public.volunteer_role_types
+  set for_chapter_events = false
+  where key = 'fishing_instructor';
+
+-- =============================================================================
+-- 2026-09-24 — Optional title on event template roles
+-- =============================================================================
+-- A display-only label for a template's role (e.g. "Vise wrangler" for a
+-- Fly Tying Lead role type). Null = use the role type's name. Applying the
+-- template fills the new event role's title (volunteer_opportunities.role)
+-- from it, falling back to the role type's name; "Save as template" carries
+-- an event role's title over when it differs from its role type's name. The
+-- role type alone still decides who's eligible to sign up.
+alter table public.event_template_roles
+  add column if not exists title text;

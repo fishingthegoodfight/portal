@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { requireAdmin } from "@/lib/admin/require-admin";
+import { countLabel, type DeleteResult, type UsageResult } from "@/lib/admin/usage";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
@@ -102,6 +103,87 @@ export async function setRoleTypeActiveAction(id: number, active: boolean): Prom
 
   const { error } = await supabase.from("volunteer_role_types").update({ active }).eq("id", id);
   if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+async function roleTypeUsage(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  id: number,
+): Promise<UsageResult> {
+  const [approved, revoked, eventRoles, templateRoles] = await Promise.all([
+    supabase
+      .from("volunteer_role_approvals")
+      .select("id", { count: "exact", head: true })
+      .eq("role_type_id", id)
+      .is("revoked_at", null),
+    supabase
+      .from("volunteer_role_approvals")
+      .select("id", { count: "exact", head: true })
+      .eq("role_type_id", id)
+      .not("revoked_at", "is", null),
+    supabase
+      .from("volunteer_opportunities")
+      .select("id", { count: "exact", head: true })
+      .eq("role_type_id", id),
+    supabase.from("event_template_roles").select("template_id").eq("role_type_id", id),
+  ]);
+  const failed = [approved, revoked, eventRoles, templateRoles].find((r) => r.error);
+  if (failed?.error) return { ok: false, error: failed.error.message };
+
+  const usage: string[] = [];
+  const approvedCount = approved.count ?? 0;
+  if (approvedCount > 0) {
+    usage.push(
+      `${countLabel(approvedCount, "volunteer")} ${approvedCount === 1 ? "is" : "are"} approved for this role`,
+    );
+  }
+  const revokedCount = revoked.count ?? 0;
+  if (revokedCount > 0) {
+    usage.push(
+      `${countLabel(revokedCount, "revoked approval")} ${revokedCount === 1 ? "is" : "are"} kept on record for this role`,
+    );
+  }
+  const eventRoleCount = eventRoles.count ?? 0;
+  if (eventRoleCount > 0) {
+    usage.push(`used by ${countLabel(eventRoleCount, "event volunteer role")}`);
+  }
+  const templateCount = new Set((templateRoles.data ?? []).map((r) => r.template_id)).size;
+  if (templateCount > 0) usage.push(`used in ${countLabel(templateCount, "template")}`);
+  return { ok: true, usage };
+}
+
+/** What still references a role type — empty means it can be deleted. */
+export async function roleTypeUsageAction(id: number): Promise<UsageResult> {
+  const supabase = await createClient();
+  const adminCheck = await requireAdmin(supabase);
+  if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
+  return roleTypeUsage(supabase, id);
+}
+
+/** Deletes a role type only if nothing references it (re-checked here, and
+ * enforced by the FKs regardless) — otherwise refuses with what's using it,
+ * and the admin can deactivate it instead. */
+export async function deleteRoleTypeAction(id: number): Promise<DeleteResult> {
+  const supabase = await createClient();
+  const adminCheck = await requireAdmin(supabase);
+  if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
+
+  const usage = await roleTypeUsage(supabase, id);
+  if (!usage.ok) return { ok: false, error: usage.error };
+  if (usage.usage.length > 0) {
+    return { ok: false, error: "This role type is in use", usage: usage.usage };
+  }
+
+  const { error } = await supabase.from("volunteer_role_types").delete().eq("id", id);
+  if (error) {
+    return {
+      ok: false,
+      error:
+        error.code === "23503"
+          ? "This role type was just put to use, so it can't be deleted — deactivate it instead."
+          : error.message,
+    };
+  }
   return { ok: true };
 }
 

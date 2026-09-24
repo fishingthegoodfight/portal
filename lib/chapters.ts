@@ -55,66 +55,97 @@ export function timezoneForChapter(chapter: string | null | undefined): string {
 }
 
 // =============================================================================
-// Regions — groupings of chapters
+// Chapter filter — the multi-select pills above the events lists
 // =============================================================================
-// Single source of truth for which chapters roll up into which region. The
-// events-list filter (and any future region-scoped view) reads it from here;
-// `chapters` values must match the `name`s in CHAPTERS / events.chapter.
-export const REGIONS: { slug: string; label: string; chapters: string[] }[] = [
-  { slug: "colorado", label: "Colorado", chapters: ["Denver", "CO Springs"] },
-  { slug: "georgia", label: "Georgia", chapters: ["Atlanta", "Rome"] },
-];
+// Shared by the participant events list and the admin events index. Carried
+// in the URL as `?chapter=` — a comma-separated list of slugs (e.g.
+// "denver,virtual"), or "all" — so a selection survives a reload and can be
+// shared.
 
-// Where a chapter's filter-pill label differs from its stored name.
+export type ChapterFilterOption = {
+  /** Value carried in the `?chapter=` query param. */
+  slug: string;
+  label: string;
+  /** The events.chapter value this pill matches. */
+  chapter: string;
+};
+
+// Display order after "All". Add new chapters here as they launch; every
+// name must match CHAPTERS / events.chapter.
+const FILTER_CHAPTER_ORDER = ["Denver", "CO Springs", "Atlanta", "Rome"];
+
+// Where a chapter's pill label differs from its stored name.
 const FILTER_LABEL_OVERRIDES: Record<string, string> = {
   "CO Springs": "Colorado Springs",
 };
 
-export type ChapterFilter = {
-  /** Value carried in the `?chapter=` query param. */
-  slug: string;
-  label: string;
-  /** Event chapters this pill matches; null means "no filter" (All). */
-  chapters: string[] | null;
-};
-
-// The filter pills shown above the events list, in display order: All, each
-// region, then each individual chapter.
-export const CHAPTER_FILTERS: ChapterFilter[] = [
-  { slug: "all", label: "All", chapters: null },
-  ...REGIONS.map((region) => ({
-    slug: region.slug,
-    label: region.label,
-    chapters: [...region.chapters],
+export const CHAPTER_FILTER_OPTIONS: ChapterFilterOption[] = [
+  ...FILTER_CHAPTER_ORDER.map((name) => ({
+    slug: name.toLowerCase().replace(/\s+/g, "-"),
+    label: FILTER_LABEL_OVERRIDES[name] ?? name,
+    chapter: name,
   })),
-  ...REGIONS.flatMap((region) =>
-    region.chapters.map((name) => ({
-      slug: name.toLowerCase().replace(/\s+/g, "-"),
-      label: FILTER_LABEL_OVERRIDES[name] ?? name,
-      chapters: [name],
-    })),
-  ),
-  { slug: "virtual", label: "Virtual", chapters: [VIRTUAL_CHAPTER] },
+  { slug: "virtual", label: "Virtual", chapter: VIRTUAL_CHAPTER },
 ];
 
-/** Look up a filter pill by its slug (query-param value); null if unknown. */
-export function chapterFilterBySlug(
-  slug: string | null | undefined,
-): ChapterFilter | null {
-  return CHAPTER_FILTERS.find((filter) => filter.slug === slug) ?? null;
-}
+/** A chapter filter selection: the selected pills' slugs, or null for All. */
+export type ChapterSelection = string[] | null;
 
 /**
- * Which pill to select when the URL has no `?chapter=` yet: the one for the
- * member's own chapter (profiles.chapter), or "All" if they have none or
- * aren't local to a chapter.
+ * The selection from the `?chapter=` param. With no param (or nothing
+ * recognisable in it) it defaults to the person's own chapter plus Virtual —
+ * virtual events are open to everyone — or All for anyone with no local
+ * chapter.
  */
-export function defaultChapterFilterSlug(
+export function parseChapterSelection(
+  param: string | null | undefined,
   profileChapter: string | null | undefined,
-): string {
-  const match = CHAPTER_FILTERS.find(
-    (filter) =>
-      filter.chapters?.length === 1 && filter.chapters[0] === profileChapter,
+): ChapterSelection {
+  if (param === "all") return null;
+  const slugs = (param ?? "").split(",");
+  const selected = CHAPTER_FILTER_OPTIONS.filter((o) => slugs.includes(o.slug)).map((o) => o.slug);
+  if (selected.length > 0) return selected;
+
+  const own = CHAPTER_FILTER_OPTIONS.find(
+    (o) => o.chapter === profileChapter && !isVirtualChapter(o.chapter),
   );
-  return match?.slug ?? "all";
+  return own ? [own.slug, "virtual"] : null;
+}
+
+/** The `?chapter=` value for a selection — always explicit, so a chosen
+ * selection (All included) isn't replaced by the default on reload. */
+export function chapterSelectionParam(selection: ChapterSelection): string {
+  return selection && selection.length > 0 ? selection.join(",") : "all";
+}
+
+/** The selection after tapping one chapter pill: toggles it; turning off the
+ * last one goes back to All. */
+export function toggleChapterSelection(selection: ChapterSelection, slug: string): ChapterSelection {
+  const current = selection ?? [];
+  const next = current.includes(slug) ? current.filter((s) => s !== slug) : [...current, slug];
+  // Keep display order, so the URL is the same however it was built up.
+  const ordered = CHAPTER_FILTER_OPTIONS.map((o) => o.slug).filter((s) => next.includes(s));
+  return ordered.length > 0 ? ordered : null;
+}
+
+/** Whether an event's chapter passes the selection. */
+export function matchesChapterSelection(
+  selection: ChapterSelection,
+  eventChapter: string | null,
+): boolean {
+  if (!selection) return true;
+  return CHAPTER_FILTER_OPTIONS.some(
+    (o) => selection.includes(o.slug) && o.chapter === eventChapter,
+  );
+}
+
+/** "Denver and Virtual", "Atlanta, Rome and Virtual" — for empty-state copy. */
+export function chapterSelectionLabel(selection: ChapterSelection): string {
+  if (!selection) return "any chapter";
+  const labels = CHAPTER_FILTER_OPTIONS.filter((o) => selection.includes(o.slug)).map(
+    (o) => o.label,
+  );
+  return labels.length > 1
+    ? `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`
+    : labels[0];
 }

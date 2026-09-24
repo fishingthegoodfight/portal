@@ -8,11 +8,13 @@ import { Button } from "@/components/ui/button";
 import { EventCard } from "@/components/event-card";
 import { formatEventDateRange } from "@/lib/format-date";
 import {
-  CHAPTER_FILTERS,
-  chapterFilterBySlug,
-  defaultChapterFilterSlug,
+  chapterSelectionLabel,
+  chapterSelectionParam,
+  matchesChapterSelection,
+  parseChapterSelection,
+  type ChapterSelection,
 } from "@/lib/chapters";
-import { cn } from "@/lib/utils";
+import { ChapterFilterPills, FilterPill, filterHref } from "@/components/filter-pills";
 import { isApprovedVolunteer, loadOpenShiftsForVolunteer } from "@/lib/volunteer-signups";
 
 async function ConfirmationBannerLoader({
@@ -42,48 +44,36 @@ async function ConfirmationBannerLoader({
   );
 }
 
-const PILL_CLASS = "rounded-full border px-3 py-1 text-sm transition-colors";
-const PILL_ACTIVE = "border-transparent bg-foreground text-background";
-const PILL_IDLE = "text-muted-foreground hover:bg-accent";
-
-function eventsHref(chapterSlug: string, needsVolunteers: boolean): string {
-  return `/protected/events?chapter=${chapterSlug}${needsVolunteers ? "&volunteers=1" : ""}`;
-}
-
 /** Chapter pills, plus — for approved volunteers only — a "Needs volunteers"
- * toggle that combines with whichever chapter is selected. */
-function ChapterFilterBar({
-  activeSlug,
+ * toggle that combines with whichever chapters are selected. */
+function EventsFilterBar({
+  selection,
   showVolunteerFilter,
   needsVolunteers,
 }: {
-  activeSlug: string;
+  selection: ChapterSelection;
   showVolunteerFilter: boolean;
   needsVolunteers: boolean;
 }) {
   return (
-    <div className="flex flex-wrap gap-2">
-      {CHAPTER_FILTERS.map((filter) => {
-        const active = filter.slug === activeSlug;
-        return (
-          <Link
-            key={filter.slug}
-            href={eventsHref(filter.slug, needsVolunteers)}
-            aria-current={active ? "true" : undefined}
-            className={cn(PILL_CLASS, active ? PILL_ACTIVE : PILL_IDLE)}
-          >
-            {filter.label}
-          </Link>
-        );
-      })}
+    <div className="flex flex-col gap-2">
+      <ChapterFilterPills
+        selection={selection}
+        basePath="/protected/events"
+        otherParams={{ volunteers: needsVolunteers ? "1" : undefined }}
+      />
       {showVolunteerFilter && (
-        <Link
-          href={eventsHref(activeSlug, !needsVolunteers)}
-          aria-pressed={needsVolunteers}
-          className={cn(PILL_CLASS, "sm:ml-2", needsVolunteers ? PILL_ACTIVE : PILL_IDLE)}
-        >
-          Needs volunteers
-        </Link>
+        <div>
+          <FilterPill
+            href={filterHref("/protected/events", {
+              chapter: chapterSelectionParam(selection),
+              volunteers: needsVolunteers ? undefined : "1",
+            })}
+            active={needsVolunteers}
+          >
+            Needs volunteers
+          </FilterPill>
+        </div>
       )}
     </div>
   );
@@ -111,12 +101,9 @@ async function EventsListLoader({
     .maybeSingle();
   const isAdmin = profile?.is_admin ?? false;
 
-  // An explicit `?chapter=` wins; otherwise fall back to the member's own
-  // chapter (or "All" if they have none).
-  const activeFilter =
-    chapterFilterBySlug(chapterParam) ??
-    chapterFilterBySlug(defaultChapterFilterSlug(profile?.chapter)) ??
-    CHAPTER_FILTERS[0];
+  // An explicit `?chapter=` wins; otherwise the member's own chapter plus
+  // Virtual (or All if they have no local chapter).
+  const selection = parseChapterSelection(chapterParam, profile?.chapter);
 
   const { data: events, error: eventsError } = await supabase
     .from("events")
@@ -144,11 +131,7 @@ async function EventsListLoader({
     );
   }
 
-  const chapterEvents = activeFilter.chapters
-    ? events.filter((event) =>
-        activeFilter.chapters!.includes(event.chapter ?? ""),
-      )
-    : events;
+  const chapterEvents = events.filter((event) => matchesChapterSelection(selection, event.chapter));
 
   // Approved volunteers only: events with an open shift in a role they're
   // approved for — the "Needs volunteers" badge and filter.
@@ -196,8 +179,8 @@ async function EventsListLoader({
 
   return (
     <div className="flex flex-col gap-4">
-      <ChapterFilterBar
-        activeSlug={activeFilter.slug}
+      <EventsFilterBar
+        selection={selection}
         showVolunteerFilter={isVolunteer}
         needsVolunteers={needsVolunteersFilter}
       />
@@ -205,8 +188,8 @@ async function EventsListLoader({
       {shownEvents.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           {needsVolunteersFilter
-            ? `No upcoming ${activeFilter.label === "All" ? "" : `${activeFilter.label} `}events need volunteers in your roles right now.`
-            : `No upcoming events for ${activeFilter.label}.`}
+            ? `No upcoming events for ${chapterSelectionLabel(selection)} need volunteers in your roles right now.`
+            : `No upcoming events for ${chapterSelectionLabel(selection)}.`}
         </p>
       ) : (
         shownEvents.map((event) => {

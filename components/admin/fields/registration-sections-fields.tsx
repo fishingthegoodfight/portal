@@ -26,6 +26,11 @@ export function RegistrationSectionsFields({
   return (
     <div className="grid gap-2">
       <span className="text-sm font-medium">Registration sections</span>
+      <p className="text-xs text-muted-foreground">
+        What we&apos;ll ask people when they register. Emergency contact is always collected. Add
+        dietary if food is served, or sizing if you&apos;re lending gear. Answers save to their
+        profile, so returning participants aren&apos;t asked twice.
+      </p>
       {OPTIONAL_REGISTRATION_SECTIONS.map((section) => (
         <label
           key={section.id}

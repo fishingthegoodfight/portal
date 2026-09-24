@@ -25,7 +25,7 @@ export default function AdminEventTypesPage() {
         <h1 className="font-bold text-2xl mb-1">Event types</h1>
         <p className="text-sm text-muted-foreground">
           Deactivating hides a type from the create wizard but never changes an event that already
-          has it.
+          has it. A type no event or template uses can be deleted outright.
         </p>
       </div>
       <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>

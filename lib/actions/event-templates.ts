@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { requireAdmin } from "@/lib/admin/require-admin";
+import { countLabel, type DeleteResult, type UsageResult } from "@/lib/admin/usage";
 import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 import type { ShiftAnchor } from "@/lib/event-templates";
@@ -10,6 +11,8 @@ export type ActionResult = { ok: true } | { ok: false; error: string };
 
 export type TemplateRoleInput = {
   roleTypeId: string;
+  /** Optional display label; "" = use the role type's name. */
+  title: string;
   description: string;
   whatToBring: string;
   /** Each boundary anchors independently to the event's start or end — see
@@ -88,6 +91,7 @@ async function replaceRoles(
     roles.map((role, i) => ({
       template_id: templateId,
       role_type_id: Number(role.roleTypeId),
+      title: role.title.trim() || null,
       description: role.description.trim() || null,
       what_to_bring: role.whatToBring.trim() || null,
       shift_start_anchor: role.shiftStartAnchor,
@@ -168,7 +172,8 @@ export async function updateTemplateAction(id: number, input: TemplateInput): Pr
 
 /** Deactivating hides a template from the create wizard's picker but keeps
  * it for reference — editing or deactivating it never changes an event
- * already created from it, since nothing links back. */
+ * already created from it (events.created_from_template_id is provenance
+ * only). */
 export async function setTemplateActiveAction(id: number, active: boolean): Promise<ActionResult> {
   const supabase = await createClient();
   const adminCheck = await requireAdmin(supabase);
@@ -179,6 +184,57 @@ export async function setTemplateActiveAction(id: number, active: boolean): Prom
   return { ok: true };
 }
 
+async function templateUsage(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  id: number,
+): Promise<UsageResult> {
+  const { count, error } = await supabase
+    .from("events")
+    .select("id", { count: "exact", head: true })
+    .eq("created_from_template_id", id);
+  if (error) return { ok: false, error: error.message };
+  const n = count ?? 0;
+  return {
+    ok: true,
+    usage: n > 0 ? [`${countLabel(n, "event")} ${n === 1 ? "was" : "were"} created from this template`] : [],
+  };
+}
+
+/** What still references a template — empty means it can be deleted. Only
+ * events created since events.created_from_template_id was added count. */
+export async function templateUsageAction(id: number): Promise<UsageResult> {
+  const supabase = await createClient();
+  const adminCheck = await requireAdmin(supabase);
+  if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
+  return templateUsage(supabase, id);
+}
+
+/** Deletes a template (its roles cascade) only if no event was created from
+ * it — re-checked here, and enforced by the FK regardless. */
+export async function deleteTemplateAction(id: number): Promise<DeleteResult> {
+  const supabase = await createClient();
+  const adminCheck = await requireAdmin(supabase);
+  if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
+
+  const usage = await templateUsage(supabase, id);
+  if (!usage.ok) return { ok: false, error: usage.error };
+  if (usage.usage.length > 0) {
+    return { ok: false, error: "This template is in use", usage: usage.usage };
+  }
+
+  const { error } = await supabase.from("event_templates").delete().eq("id", id);
+  if (error) {
+    return {
+      ok: false,
+      error:
+        error.code === "23503"
+          ? "An event was just created from this template, so it can't be deleted — deactivate it instead."
+          : error.message,
+    };
+  }
+  return { ok: true };
+}
+
 export type SaveAsTemplateResult =
   | { ok: true; templateId: number; skippedRoles: number }
   | { ok: false; error: string };
@@ -186,6 +242,7 @@ export type SaveAsTemplateResult =
 /**
  * Turns an existing event into a reusable template: copies its description,
  * capacity, registration sections, virtual details, and volunteer roles
+ * (with their titles)
  * (only ones with a catalog role_type_id — a free-text "Custom / other" role
  * has nothing to carry into a template's role_type_id, which is NOT NULL, so
  * those are silently skipped and the caller is told how many). Shift times
@@ -223,7 +280,7 @@ export async function saveEventAsTemplateAction(
 
   const { data: opportunities } = await supabase
     .from("volunteer_opportunities")
-    .select("role_type_id, description, what_to_bring, shift_start, shift_end, slots")
+    .select("role, role_type_id, description, what_to_bring, shift_start, shift_end, slots")
     .eq("event_id", eventId)
     .is("cancelled_at", null);
 
@@ -231,6 +288,20 @@ export async function saveEventAsTemplateAction(
   const endsAt = event.ends_at ? new Date(event.ends_at as string).getTime() : null;
   const withRoleType = (opportunities ?? []).filter((o) => o.role_type_id != null);
   const skipped = (opportunities ?? []).length - withRoleType.length;
+
+  // A role still titled exactly its role type's name saves with no title of
+  // its own, so it keeps following the role type if that's renamed later.
+  const { data: roleTypeRows } = withRoleType.length
+    ? await supabase
+        .from("volunteer_role_types")
+        .select("id, name")
+        .in("id", withRoleType.map((o) => o.role_type_id))
+    : { data: [] };
+  const roleTypeNames = new Map((roleTypeRows ?? []).map((rt) => [rt.id, rt.name as string]));
+  const ownTitle = (o: { role: string | null; role_type_id: number | null }) => {
+    const title = (o.role ?? "").trim();
+    return title && title !== roleTypeNames.get(o.role_type_id) ? title : null;
+  };
 
   const { data: created, error } = await supabase
     .from("event_templates")
@@ -253,6 +324,7 @@ export async function saveEventAsTemplateAction(
       withRoleType.map((o, i) => ({
         template_id: created.id,
         role_type_id: o.role_type_id,
+        title: ownTitle(o),
         description: o.description,
         what_to_bring: o.what_to_bring,
         shift_start_anchor: "event_start" as const,
