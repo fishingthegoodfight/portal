@@ -423,6 +423,7 @@ export function adminChangeNotificationEmail({
   action,
   actorLabel,
   eventName,
+  chapter = null,
   eventAdminUrl,
   diff,
   reason,
@@ -430,11 +431,14 @@ export function adminChangeNotificationEmail({
   action: EventChangeAction;
   actorLabel: string;
   eventName: string;
+  /** "Denver" → "Denver chapter"; "Virtual" stays "Virtual". */
+  chapter?: string | null;
   eventAdminUrl: string;
   diff: EventChangeDiffEntry[];
   reason?: string | null;
 }): RenderedEmail {
-  const subject = `Event ${action}: ${eventName}`;
+  const chapterLabel = chapter ? (chapter === "Virtual" ? "Virtual" : `${chapter} chapter`) : null;
+  const subject = `Event ${action}: ${eventName}${chapterLabel ? ` (${chapterLabel})` : ""}`;
 
   const diffRowsHtml = diff
     .map(
@@ -446,7 +450,7 @@ export function adminChangeNotificationEmail({
   const html = wrapHtml(
     [
       `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">Event ${action}</p>`,
-      `<p style="margin:0 0 16px;"><strong>${escapeHtml(actorLabel)}</strong> ${action} <strong>${escapeHtml(eventName)}</strong>.</p>`,
+      `<p style="margin:0 0 16px;"><strong>${escapeHtml(actorLabel)}</strong> ${action} <strong>${escapeHtml(eventName)}</strong>${chapterLabel ? ` — ${escapeHtml(chapterLabel)}` : ""}.</p>`,
       reason
         ? `<p style="margin:0 0 16px;"><strong>Reason:</strong> ${htmlWithLineBreaks(reason)}</p>`
         : "",
@@ -462,7 +466,7 @@ export function adminChangeNotificationEmail({
   const text = [
     `Event ${action}`,
     "",
-    `${actorLabel} ${action} ${eventName}.`,
+    `${actorLabel} ${action} ${eventName}${chapterLabel ? ` — ${chapterLabel}` : ""}.`,
     reason ? `Reason: ${reason}` : "",
     "",
     ...diff.map((d) => `${d.label}: ${d.before || "—"} -> ${d.after || "—"}`),

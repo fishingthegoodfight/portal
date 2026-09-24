@@ -1,7 +1,8 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
-import { requireAdmin } from "@/lib/admin/require-admin";
+import { requireAdmin, requireEventManager } from "@/lib/admin/require-admin";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { profileValueFromColumn, REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 import {
   isWaiverState,
@@ -124,7 +125,7 @@ export type WalkupLookupResult =
   | { ok: false; error: string };
 
 /**
- * Admin-only: what the walk-up form should show for this event and email —
+ * For whoever manages the event (can_manage_event): what the walk-up form should show for this event and email —
  * their waiver situation (nothing, the "Signed for …" line, or the waiver to
  * sign) and what their profile already has for the registration sections, so
  * the form can skip anything already on file, like the RSVP form does.
@@ -135,16 +136,28 @@ export async function walkupLookupAction(
   email: string,
 ): Promise<WalkupLookupResult> {
   const supabase = await createClient();
-  const adminCheck = await requireAdmin(supabase);
+  const adminCheck = await requireEventManager(supabase, eventId);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
 
   const event = await loadWaiverEvent(supabase, eventId);
   if (!event) return { ok: false, error: "Event not found" };
 
+  // The walk-up usually isn't on any of a chapter lead's events yet, so RLS
+  // wouldn't show their profile or signatures — looked up with the
+  // service-role client, authorized by the gate above (same as
+  // addWalkupRsvpAction). Only the waiver status and registration answers
+  // go back to the form.
+  let lookup: ReturnType<typeof createAdminClient>;
+  try {
+    lookup = createAdminClient();
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Admin client unavailable" };
+  }
+
   const trimmed = email.trim().toLowerCase();
   let profile: Record<string, unknown> | null = null;
   if (trimmed) {
-    const { data } = await supabase.from("profiles").select("*").ilike("email", trimmed).maybeSingle();
+    const { data } = await lookup.from("profiles").select("*").ilike("email", trimmed).maybeSingle();
     profile = data as Record<string, unknown> | null;
   }
 
@@ -160,7 +173,7 @@ export async function walkupLookupAction(
 
   return {
     ok: true,
-    info: await waiverInfoForUser(supabase, event, (profile?.id as string | undefined) ?? null),
+    info: await waiverInfoForUser(lookup, event, (profile?.id as string | undefined) ?? null),
     profileFields,
   };
 }

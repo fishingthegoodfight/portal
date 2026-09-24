@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requireAdmin } from "@/lib/admin/require-admin";
+import { requireEventManager } from "@/lib/admin/require-admin";
 import { CHAPTERS, NOT_LOCAL_CHAPTER } from "@/lib/chapters";
 import { waiverInfoForUser } from "@/lib/waivers";
 import { formatEventDateRange } from "@/lib/format-date";
@@ -69,8 +69,21 @@ export async function addWalkupRsvpAction(input: {
   force: boolean;
 }): Promise<WalkupResult> {
   const supabase = await createClient();
-  const adminCheck = await requireAdmin(supabase);
+  const adminCheck = await requireEventManager(supabase, input.eventId);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
+
+  // Everything about the walk-up PERSON (do they have a profile, have they
+  // signed this waiver, are they volunteering here) is looked up with the
+  // service-role client: a chapter lead can only read the profiles of people
+  // already on their events, and a walk-up usually isn't yet. The gate above
+  // (can_manage_event) is what authorizes this; the final write still goes
+  // through admin_upsert_walkup_rsvp as the caller, which re-checks it.
+  let lookup: ReturnType<typeof createAdminClient>;
+  try {
+    lookup = createAdminClient();
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Admin client unavailable" };
+  }
 
   const firstName = input.firstName.trim();
   const lastName = input.lastName.trim();
@@ -93,7 +106,7 @@ export async function addWalkupRsvpAction(input: {
     return { ok: false, error: "Emergency contact name and phone are required" };
   }
 
-  const { data: existingProfile } = await supabase
+  const { data: existingProfile } = await lookup
     .from("profiles")
     .select("*")
     .ilike("email", email)
@@ -119,7 +132,7 @@ export async function addWalkupRsvpAction(input: {
     .maybeSingle();
   if (waiverEvent) {
     const info = await waiverInfoForUser(
-      supabase,
+      lookup,
       waiverEvent,
       (existingProfile?.id as string | undefined) ?? null,
     );
@@ -141,7 +154,7 @@ export async function addWalkupRsvpAction(input: {
   // admin's call, so it's a warning to confirm, not a block. Checked before
   // anything is written, like the waiver above.
   if (existingProfile && waiverEvent && !input.allowVolunteerConflict) {
-    const shifts = await confirmedShiftsAtEvent(supabase, existingProfile.id as string, input.eventId);
+    const shifts = await confirmedShiftsAtEvent(lookup, existingProfile.id as string, input.eventId);
     if (shifts.length > 0) {
       return {
         ok: true,

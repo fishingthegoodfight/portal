@@ -1,14 +1,8 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
-import { requireAdmin } from "@/lib/admin/require-admin";
-import {
-  activeRsvpStatus,
-  approvedRoleTypeIds,
-  isApprovedVolunteer,
-  isRoleEligible,
-  type VolunteerOpportunity,
-} from "@/lib/volunteer-signups";
+import { requireEventManager } from "@/lib/admin/require-admin";
+import { activeRsvpStatus } from "@/lib/volunteer-signups";
 import {
   sendLeadVolunteerSignupChangeEmail,
   sendVolunteerSignupConfirmationEmail,
@@ -23,7 +17,9 @@ const EVENT_COLUMNS =
 export type AdminAddVolunteerResult =
   | { ok: true; status: "confirmed" }
   | { ok: true; status: "capacity_exceeded" }
-  | { ok: true; status: "not_approved"; approvedForRole: boolean }
+  /** `canOverride` is false for a chapter lead: only an admin may add
+   * someone who isn't approved for the role (the database enforces it). */
+  | { ok: true; status: "not_approved"; approvedForRole: boolean; canOverride: boolean }
   /** They're registered to attend this event ('confirmed' / 'waitlisted' /
    * 'offered'). Someone can't normally be both — adding them anyway is the
    * admin's call (overrideRsvp), and leaves the RSVP in place. */
@@ -49,21 +45,9 @@ export async function adminAddVolunteerSignupAction(input: {
   forceCapacity?: boolean;
 }): Promise<AdminAddVolunteerResult> {
   const supabase = await createClient();
-  const adminCheck = await requireAdmin(supabase);
-  if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
 
   const email = input.email.trim().toLowerCase();
   if (!email) return { ok: false, error: "Email is required" };
-
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("id, first_name, last_name, email")
-    .ilike("email", email)
-    .maybeSingle();
-  if (!profile) {
-    return { ok: false, error: "No profile found for that email — they need an account first." };
-  }
-  const userId = profile.id as string;
 
   const { data: opportunity } = await supabase
     .from("volunteer_opportunities")
@@ -71,6 +55,30 @@ export async function adminAddVolunteerSignupAction(input: {
     .eq("id", input.opportunityId)
     .maybeSingle();
   if (!opportunity) return { ok: false, error: "This volunteer role no longer exists." };
+  const adminCheck = await requireEventManager(supabase, opportunity.event_id as number);
+  if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
+  const isAdmin = adminCheck.actor.role === "admin";
+
+  // The person and their approval for this role, via volunteer_for_shift —
+  // so a chapter lead can add approved volunteers without reading the
+  // volunteer registry itself.
+  const { data: matches, error: lookupError } = await supabase.rpc("volunteer_for_shift", {
+    p_opportunity_id: input.opportunityId,
+    p_email: email,
+  });
+  if (lookupError) return { ok: false, error: lookupError.message };
+  const profile = ((matches ?? []) as {
+    user_id: string;
+    first_name: string | null;
+    last_name: string | null;
+    email: string | null;
+    approved: boolean;
+    approved_for_role: boolean;
+  }[])[0];
+  if (!profile) {
+    return { ok: false, error: "No profile found for that email — they need an account first." };
+  }
+  const userId = profile.user_id;
   // admin_add_volunteer_signup's p_force would otherwise book a cancelled role.
   if (opportunity.cancelled_at) return { ok: false, error: "This volunteer role was cancelled." };
 
@@ -81,13 +89,15 @@ export async function adminAddVolunteerSignupAction(input: {
     .maybeSingle();
   if (!event) return { ok: false, error: "Event not found" };
 
-  if (!input.overrideApproval) {
-    const approved = await isApprovedVolunteer(supabase, userId);
-    const approvedTypes = approved ? await approvedRoleTypeIds(supabase, userId) : new Set<number>();
-    const roleOk = approved && isRoleEligible(opportunity as VolunteerOpportunity, approvedTypes);
-    if (!roleOk) {
-      return { ok: true, status: "not_approved", approvedForRole: approved };
-    }
+  // Only an admin can override approval (admin_add_volunteer_signup
+  // refuses it for anyone else).
+  if (!profile.approved_for_role && (!input.overrideApproval || !isAdmin)) {
+    return {
+      ok: true,
+      status: "not_approved",
+      approvedForRole: profile.approved,
+      canOverride: isAdmin,
+    };
   }
 
   if (!input.overrideRsvp) {

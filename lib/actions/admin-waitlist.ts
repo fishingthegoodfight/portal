@@ -1,7 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
-import { requireAdmin } from "@/lib/admin/require-admin";
+import { requireEventManager } from "@/lib/admin/require-admin";
 import { emailRemovedParticipant, emailWaitlistOffers, type OfferedSpot } from "@/lib/waitlist";
 
 export type AdminWaitlistResult = { ok: true } | { ok: false; error: string };
@@ -21,7 +21,11 @@ const OFFER_ERRORS: Record<string, string> = {
  */
 export async function adminOfferSpotAction(rsvpId: number): Promise<AdminWaitlistResult> {
   const supabase = await createClient();
-  const adminCheck = await requireAdmin(supabase);
+  // Visible only if the caller can see the RSVP at all; admin_offer_spot
+  // re-checks can_manage_event on the RSVP's own event.
+  const { data: rsvp } = await supabase.from("rsvps").select("event_id").eq("id", rsvpId).maybeSingle();
+  if (!rsvp) return { ok: false, error: OFFER_ERRORS.not_found };
+  const adminCheck = await requireEventManager(supabase, rsvp.event_id as number);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
 
   const { data, error } = await supabase.rpc("admin_offer_spot", { p_rsvp_id: rsvpId });
@@ -60,7 +64,8 @@ export async function adminRemoveRsvpAction(
   eventId: number,
 ): Promise<AdminWaitlistResult> {
   const supabase = await createClient();
-  const adminCheck = await requireAdmin(supabase);
+  // admin_remove_rsvp re-checks can_manage_event on the RSVP's own event.
+  const adminCheck = await requireEventManager(supabase, eventId);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
 
   const { data, error } = await supabase.rpc("admin_remove_rsvp", { p_rsvp_id: rsvpId });

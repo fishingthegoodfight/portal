@@ -68,6 +68,7 @@ export function EventEditForm({
   eventTypes,
   roleTypes,
   signedUpByRoleId,
+  allowedChapters,
 }: {
   eventId: number;
   /** "https://…/events/" — shown in front of the slug field. */
@@ -88,6 +89,9 @@ export function EventEditForm({
   roleTypes: VolunteerRoleTypeOption[];
   /** Confirmed signups per existing role id. */
   signedUpByRoleId: Record<number, number>;
+  /** Chapters this person may move the event to (manageable_chapters) —
+   * the current one always stays. */
+  allowedChapters: string[];
 }) {
   const router = useRouter();
   const [form, setForm] = useState<EventEditInput>(initial);
@@ -258,7 +262,12 @@ export function EventEditForm({
               </p>
             )}
             <div className="grid grid-cols-2 gap-4">
-              <ChapterField idPrefix="edit" value={form.chapter} onChange={setField("chapter")} />
+              <ChapterField
+                idPrefix="edit"
+                value={form.chapter}
+                onChange={setField("chapter")}
+                allowed={allowedChapters}
+              />
               <EventTypeField
                 idPrefix="edit"
                 value={form.eventType}
@@ -330,6 +339,8 @@ export function EventEditForm({
               onChangeName={setField("leadName")}
               onChangePhone={setField("leadPhone")}
               onChangeEmail={setField("leadEmail")}
+              leadUserId={form.leadUserId}
+              onChangeLeadUserId={setField("leadUserId")}
             />
 
             <CustomEmailNoteField

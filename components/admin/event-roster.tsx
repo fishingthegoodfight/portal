@@ -90,6 +90,7 @@ export function EventRoster({
   seriesId,
   volunteersCancelledWithEvent,
   shareCard,
+  canSaveAsTemplate = false,
 }: {
   eventId: number;
   eventCard: EventCardEvent;
@@ -118,6 +119,9 @@ export function EventRoster({
   /** The "Share" block (public link + QR) — built by the server page, which
    * knows the site URL. */
   shareCard?: React.ReactNode;
+  /** Templates are admin-only setup, so a chapter lead doesn't get "Save as
+   * template". */
+  canSaveAsTemplate?: boolean;
 }) {
   const router = useRouter();
   const isCancelled = status === "cancelled";
@@ -535,12 +539,19 @@ export function EventRoster({
       return;
     }
     if (result.status === "not_approved") {
-      setAddVolunteerConfirm("not_approved");
-      setAddVolunteerError(
-        result.approvedForRole
-          ? "This person is an approved volunteer but not for this specific role."
-          : "This person isn't an approved volunteer.",
-      );
+      const why = result.approvedForRole
+        ? "This person is an approved volunteer but not for this specific role."
+        : "This person isn't an approved volunteer.";
+      // Only an admin can add someone anyway — approving volunteers is
+      // admin-only, so a chapter lead just gets the reason.
+      if (result.canOverride) {
+        setAddVolunteerConfirm("not_approved");
+        setAddVolunteerError(why);
+      } else {
+        setAddVolunteerAcked(new Set());
+        setAddVolunteerConfirm(null);
+        setAddVolunteerError(`${why} Only an admin can add them — ask an admin to approve them first.`);
+      }
       return;
     }
     if (result.status === "capacity_exceeded") {
@@ -621,11 +632,13 @@ export function EventRoster({
               <Link href={`/protected/admin/events/series/${seriesId}`}>View series</Link>
             </Button>
           )}
-          <SaveAsTemplateButton
-            eventId={eventId}
-            eventName={eventCard.name}
-            eventChapter={eventCard.chapter}
-          />
+          {canSaveAsTemplate && (
+            <SaveAsTemplateButton
+              eventId={eventId}
+              eventName={eventCard.name}
+              eventChapter={eventCard.chapter}
+            />
+          )}
           {!isCancelled && (
             <div className="ml-auto">
               <CancelEventDialog

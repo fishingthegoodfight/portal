@@ -11,11 +11,13 @@ import {
   chapterSelectionLabel,
   chapterSelectionParam,
   matchesChapterSelection,
+  memberDefaultChapterSelection,
   parseChapterSelection,
   type ChapterSelection,
 } from "@/lib/chapters";
 import { ChapterFilterPills, FilterPill, filterHref } from "@/components/filter-pills";
 import { isApprovedVolunteer, loadOpenShiftsForVolunteer } from "@/lib/volunteer-signups";
+import { loadManagedEventIds } from "@/lib/admin/require-admin";
 
 async function ConfirmationBannerLoader({
   searchParams,
@@ -96,14 +98,20 @@ async function EventsListLoader({
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("chapter, is_admin")
+    .select("chapter")
     .eq("id", userId)
     .maybeSingle();
-  const isAdmin = profile?.is_admin ?? false;
+  // "Manage" shows on exactly the events this person can manage
+  // (can_manage_event) — every event for an admin, their chapters' for a
+  // chapter lead, the ones they lead for an event lead.
+  const managedEventIds = await loadManagedEventIds(supabase);
 
   // An explicit `?chapter=` wins; otherwise the member's own chapter plus
   // Virtual (or All if they have no local chapter).
-  const selection = parseChapterSelection(chapterParam, profile?.chapter);
+  const selection = parseChapterSelection(
+    chapterParam,
+    memberDefaultChapterSelection(profile?.chapter),
+  );
 
   const { data: events, error: eventsError } = await supabase
     .from("events")
@@ -226,7 +234,7 @@ async function EventsListLoader({
               rsvpStatus={rsvpStatus}
               action={
                 <div className="flex gap-2">
-                  {isAdmin && (
+                  {managedEventIds.has(event.id) && (
                     <Button asChild variant="outline">
                       <Link href={`/protected/admin/events/${event.id}`}>
                         Manage

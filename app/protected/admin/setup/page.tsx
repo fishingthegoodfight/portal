@@ -5,6 +5,11 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 
 const SETUP_LINKS = [
   {
+    href: "/protected/admin/roles",
+    title: "People & roles",
+    description: "Make someone an admin or a chapter lead, and pick which chapters a lead covers.",
+  },
+  {
     href: "/protected/admin/event-types",
     title: "Event types",
     description: "Add, rename, reorder, and deactivate the types offered when creating an event.",

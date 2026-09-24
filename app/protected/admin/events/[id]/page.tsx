@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
+import { loadEventAdminAccess } from "@/lib/admin/require-admin";
 import { loadEventRoster } from "@/lib/admin/roster";
 import { countSignupsCancelledWithEvent } from "@/lib/admin/event-roles";
 import { formatEventDateRange } from "@/lib/format-date";
@@ -18,7 +19,10 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
   }
 
   const supabase = await createClient();
-  const data = await loadEventRoster(supabase, eventId);
+  const [data, access] = await Promise.all([
+    loadEventRoster(supabase, eventId),
+    loadEventAdminAccess(supabase),
+  ]);
   if (!data) {
     notFound();
   }
@@ -58,6 +62,7 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
       initialVolunteerRoster={volunteerRoster}
       seriesId={event.series_id}
       volunteersCancelledWithEvent={volunteersCancelledWithEvent}
+      canSaveAsTemplate={access?.isAdmin ?? false}
       shareCard={
         <ShareEventCard
           url={`${getSiteUrl()}${publicEventPath(event.slug)}`}

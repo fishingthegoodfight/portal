@@ -4264,3 +4264,954 @@ update public.volunteer_role_types
 -- role type alone still decides who's eligible to sign up.
 alter table public.event_template_roles
   add column if not exists title text;
+
+-- =============================================================================
+-- 2026-09-24 — Chapter lead privileges: profiles.role, led chapters, event
+-- lead accounts, can_manage_event()
+-- =============================================================================
+-- A middle tier between participant and admin.
+--
+-- Roles: profiles.role ('participant' | 'chapter_lead' | 'admin') replaces
+-- profiles.is_admin as the source of truth. is_admin stays as a column, kept
+-- equal to (role = 'admin') by profiles_role_guard, so anything that still
+-- reads it keeps working; setting it directly (e.g. from the Table Editor)
+-- maps back onto role. is_admin() now reads role, so every existing
+-- admin-only policy and function (setup tables, volunteer registry, role
+-- approvals, invites, screening notes, waivers) stays admin-only without
+-- being rewritten. can_view_volunteer_screening stays a separate flag, now
+-- only honoured for admins.
+--
+-- profiles.led_chapters: the chapters a chapter lead is responsible for
+-- (events.chapter names). Always empty unless role = 'chapter_lead'.
+--
+-- events.lead_user_id: the event's lead as an account (nullable). The
+-- free-text lead_name / lead_email / lead_phone stay for display and for
+-- leads without an account.
+--
+-- Who can manage an event — ONE definition, can_manage_event(event_id),
+-- used by the RLS policies below, the SECURITY DEFINER RPCs, and the app's
+-- server actions (via rpc): an admin, OR a chapter lead whose led_chapters
+-- includes the event's chapter, OR the event's lead_user_id. The logic sits
+-- in can_manage_event_row(chapter, lead_user_id), which can_manage_event
+-- looks up and calls, and the events table's own policies call directly
+-- (see there). The chapter half is can_manage_chapter(chapter), which also
+-- decides where an event may be CREATED (there's no event id yet then).
+-- Nothing else re-implements any of them.
+--
+-- Chapter leads get, for events they manage (all via new, additive
+-- permissive policies — the admin ones are untouched): read/insert/update
+-- the event, its volunteer roles, RSVPs and volunteer signups (check-in),
+-- the profiles and waiver signatures of people on those events (roster
+-- contact details, emergency contacts, registration answers), slug aliases;
+-- plus read-only access to event types, templates and volunteer role types
+-- so the create/edit forms work. Everything else stays admin-only because
+-- its policy is is_admin(): the setup tables' writes, volunteers,
+-- volunteer_role_approvals, volunteer_certifications,
+-- volunteer_screening_notes, waivers' writes. Role changes are admin-only,
+-- enforced by profiles_role_guard (and admin_set_user_role).
+--
+-- Also closes a gap: nothing previously stopped a user from setting
+-- is_admin = true on their own profile row (the profile form updates it
+-- from the browser). profiles_role_guard now rejects any non-admin change
+-- to role / led_chapters / is_admin / can_view_volunteer_screening.
+--
+-- Wrapped in one transaction: if any statement fails, nothing is applied.
+
+begin;
+
+-- ---- Roles ---------------------------------------------------------------------
+alter table public.profiles
+  add column if not exists role text not null default 'participant'
+    check (role in ('participant', 'chapter_lead', 'admin')),
+  add column if not exists led_chapters text[] not null default '{}'::text[];
+
+update public.profiles set role = 'admin' where is_admin and role <> 'admin';
+
+create or replace function public.is_admin(p_user_id uuid default auth.uid())
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce(
+    (select role = 'admin' from public.profiles where id = p_user_id),
+    false
+  );
+$function$;
+
+-- The flag only counts for an admin — a demoted admin who still has it set
+-- sees nothing (and it comes back if they're made admin again).
+create or replace function public.can_view_volunteer_screening(p_user_id uuid default auth.uid())
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce(
+    (select role = 'admin' and can_view_volunteer_screening
+       from public.profiles where id = p_user_id),
+    false
+  );
+$function$;
+
+-- Only an admin (or a trusted server context with no signed-in user: the
+-- service role, the SQL editor, the signup trigger) may change role,
+-- led_chapters, is_admin or can_view_volunteer_screening. Keeps is_admin =
+-- (role = 'admin') and led_chapters empty for anyone who isn't a lead.
+create or replace function public.profiles_role_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_privileged boolean := auth.uid() is null or public.is_admin();
+begin
+  if tg_op = 'INSERT' then
+    if not v_privileged then
+      new.role := 'participant';
+      new.led_chapters := '{}'::text[];
+      new.can_view_volunteer_screening := false;
+    end if;
+  else
+    if not v_privileged and (
+      new.role is distinct from old.role
+      or new.led_chapters is distinct from old.led_chapters
+      or new.is_admin is distinct from old.is_admin
+      or new.can_view_volunteer_screening is distinct from old.can_view_volunteer_screening
+    ) then
+      raise exception 'Only admins can change roles' using errcode = '42501';
+    end if;
+    -- Back-compat: a trusted write that flips is_admin alone (the old way of
+    -- making someone an admin) is mapped onto role.
+    if new.is_admin is distinct from old.is_admin and new.role is not distinct from old.role then
+      new.role := case
+        when new.is_admin then 'admin'
+        when old.role = 'admin' then 'participant'
+        else old.role
+      end;
+    end if;
+  end if;
+
+  if new.role is distinct from 'chapter_lead' then
+    new.led_chapters := '{}'::text[];
+  end if;
+  new.is_admin := (new.role = 'admin');
+  return new;
+end $function$;
+
+drop trigger if exists profiles_role_guard on public.profiles;
+create trigger profiles_role_guard
+  before insert or update on public.profiles
+  for each row execute function public.profiles_role_guard();
+
+revoke all on function public.profiles_role_guard() from public, anon, authenticated;
+
+-- ---- Event lead account ----------------------------------------------------------
+alter table public.events
+  add column if not exists lead_user_id uuid references public.profiles(id) on delete set null;
+
+create index if not exists events_lead_user_idx
+  on public.events (lead_user_id)
+  where lead_user_id is not null;
+
+-- ---- Who can manage what -----------------------------------------------------------
+-- The chapter half of the rule: an admin, or a chapter lead who leads it.
+create or replace function public.can_manage_chapter(p_chapter text)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce(
+    (select p.role = 'admin'
+            or (p.role = 'chapter_lead' and p_chapter is not null and p_chapter = any(p.led_chapters))
+       from public.profiles p
+      where p.id = auth.uid()),
+    false
+  );
+$function$;
+
+-- THE rule, on an event's values: admin, or chapter lead for its chapter,
+-- or its own lead_user_id. The events policies call this form directly on
+-- the row's columns — a policy that looked the event up by id couldn't see
+-- a row the same INSERT ... RETURNING is creating.
+create or replace function public.can_manage_event_row(p_chapter text, p_lead_user_id uuid)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select public.can_manage_chapter(p_chapter)
+      or coalesce(p_lead_user_id is not null and p_lead_user_id = auth.uid(), false);
+$function$;
+
+-- The same rule by event id — what everything else calls (other tables'
+-- policies, the RPCs, the app's server actions).
+create or replace function public.can_manage_event(p_event_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce(
+    (select public.can_manage_event_row(e.chapter, e.lead_user_id)
+       from public.events e
+      where e.id = p_event_id),
+    false
+  );
+$function$;
+
+-- can_manage_event for a volunteer role's event. SECURITY DEFINER so the
+-- volunteer_signups policies can use it without recursing through
+-- volunteer_opportunities' own policies (which read volunteer_signups).
+create or replace function public.can_manage_opportunity(p_opportunity_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce(
+    (select public.can_manage_event(vo.event_id)
+       from public.volunteer_opportunities vo
+      where vo.id = p_opportunity_id),
+    false
+  );
+$function$;
+
+-- Every event the caller can manage (can_manage_event, row by row).
+create or replace function public.managed_event_ids()
+returns setof bigint
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select e.id from public.events e where public.can_manage_event(e.id);
+$function$;
+
+-- Which of p_chapters the caller may create events in (can_manage_chapter
+-- for each) — the create wizard's chapter options. The chapter list itself
+-- lives in the app (lib/chapters.ts), so it's passed in.
+create or replace function public.manageable_chapters(p_chapters text[])
+returns text[]
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce(array_agg(c order by ord), '{}'::text[])
+    from unnest(p_chapters) with ordinality as t(c, ord)
+   where public.can_manage_chapter(c);
+$function$;
+
+-- Whether the caller gets the event-management area at all: an admin or
+-- chapter lead, or anyone who manages at least one event. For anyone else
+-- that can only be an event they're the lead_user_id of, so only those rows
+-- are put through can_manage_event (this runs inside per-row policies, so
+-- it mustn't scan every event for every plain participant).
+create or replace function public.has_event_admin_access()
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce(
+    (select p.role in ('admin', 'chapter_lead') from public.profiles p where p.id = auth.uid()),
+    false
+  ) or exists (
+    select 1 from public.events e
+     where e.lead_user_id = auth.uid() and public.can_manage_event(e.id)
+  );
+$function$;
+
+-- A person the caller may see the profile (and waiver signatures) of:
+-- themselves, or anyone with an RSVP or volunteer signup — any status — on
+-- an event the caller manages. Admins already read every profile through
+-- admin_select_all_profiles.
+create or replace function public.can_view_person(p_user_id uuid)
+returns boolean
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+begin
+  if auth.uid() is null then
+    return false;
+  end if;
+  if p_user_id = auth.uid() or public.is_admin() then
+    return true;
+  end if;
+  -- Cheap exit for the common case: a plain participant who leads nothing.
+  if not exists (
+    select 1 from public.profiles where id = auth.uid() and role in ('admin', 'chapter_lead')
+  ) and not exists (
+    select 1 from public.events where lead_user_id = auth.uid()
+  ) then
+    return false;
+  end if;
+  return exists (
+    select 1 from public.rsvps r
+     where r.user_id = p_user_id and public.can_manage_event(r.event_id)
+  ) or exists (
+    select 1 from public.volunteer_signups s
+      join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+     where s.user_id = p_user_id and public.can_manage_event(vo.event_id)
+  );
+end $function$;
+
+-- Events can only be created in, or moved to, a chapter the caller manages
+-- (can_manage_chapter). Covers what an UPDATE policy can't: a WITH CHECK
+-- can't compare against the old row. Trusted contexts (no signed-in user)
+-- are exempt.
+create or replace function public.events_chapter_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if auth.uid() is null then
+    return new;
+  end if;
+  if (tg_op = 'INSERT' or new.chapter is distinct from old.chapter)
+     and not public.can_manage_chapter(new.chapter) then
+    raise exception 'You can only put events in a chapter you manage' using errcode = '42501';
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists events_chapter_guard on public.events;
+create trigger events_chapter_guard
+  before insert or update of chapter on public.events
+  for each row execute function public.events_chapter_guard();
+
+revoke all on function public.events_chapter_guard() from public, anon, authenticated;
+
+-- ---- Policies for event managers (additive; admin policies unchanged) -------------
+drop policy if exists events_select_managed on public.events;
+create policy events_select_managed on public.events
+  for select to authenticated
+  using (public.can_manage_event_row(chapter, lead_user_id));
+
+drop policy if exists events_update_managed on public.events;
+-- WITH CHECK on the new values: whoever saves must still manage the event
+-- afterwards. (Moving it to another chapter is checked separately by
+-- events_chapter_guard, since an event's lead could otherwise move it
+-- anywhere while staying its lead.)
+create policy events_update_managed on public.events
+  for update to authenticated
+  using (public.can_manage_event_row(chapter, lead_user_id))
+  with check (public.can_manage_event_row(chapter, lead_user_id));
+
+drop policy if exists events_insert_chapter_manager on public.events;
+create policy events_insert_chapter_manager on public.events
+  for insert to authenticated
+  with check (public.can_manage_chapter(chapter));
+
+drop policy if exists rsvps_select_managed on public.rsvps;
+create policy rsvps_select_managed on public.rsvps
+  for select to authenticated
+  using (public.can_manage_event(event_id));
+
+-- The roster's check-in toggle writes checked_in_at from the browser.
+drop policy if exists rsvps_update_managed on public.rsvps;
+create policy rsvps_update_managed on public.rsvps
+  for update to authenticated
+  using (public.can_manage_event(event_id))
+  with check (public.can_manage_event(event_id));
+
+drop policy if exists profiles_select_managed_people on public.profiles;
+create policy profiles_select_managed_people on public.profiles
+  for select to authenticated
+  using (public.can_view_person(id));
+
+drop policy if exists waiver_signatures_select_managed_people on public.waiver_signatures;
+create policy waiver_signatures_select_managed_people on public.waiver_signatures
+  for select to authenticated
+  using (public.can_view_person(user_id));
+
+drop policy if exists volunteer_opportunities_select_managed on public.volunteer_opportunities;
+create policy volunteer_opportunities_select_managed on public.volunteer_opportunities
+  for select to authenticated
+  using (public.can_manage_event(event_id));
+
+drop policy if exists volunteer_opportunities_insert_managed on public.volunteer_opportunities;
+create policy volunteer_opportunities_insert_managed on public.volunteer_opportunities
+  for insert to authenticated
+  with check (public.can_manage_event(event_id));
+
+drop policy if exists volunteer_opportunities_update_managed on public.volunteer_opportunities;
+create policy volunteer_opportunities_update_managed on public.volunteer_opportunities
+  for update to authenticated
+  using (public.can_manage_event(event_id))
+  with check (public.can_manage_event(event_id));
+
+drop policy if exists volunteer_signups_select_managed on public.volunteer_signups;
+create policy volunteer_signups_select_managed on public.volunteer_signups
+  for select to authenticated
+  using (public.can_manage_opportunity(opportunity_id));
+
+-- Volunteer check-in from the roster.
+drop policy if exists volunteer_signups_update_managed on public.volunteer_signups;
+create policy volunteer_signups_update_managed on public.volunteer_signups
+  for update to authenticated
+  using (public.can_manage_opportunity(opportunity_id))
+  with check (public.can_manage_opportunity(opportunity_id));
+
+drop policy if exists event_slug_aliases_select_managed on public.event_slug_aliases;
+create policy event_slug_aliases_select_managed on public.event_slug_aliases
+  for select to authenticated
+  using (public.can_manage_event(event_id));
+
+-- Read-only catalog access for chapter leads, so the create/edit forms can
+-- offer event types, templates and volunteer role types. Writes stay on the
+-- admin-only *_admin_all policies.
+drop policy if exists event_types_select_chapter_lead on public.event_types;
+create policy event_types_select_chapter_lead on public.event_types
+  for select to authenticated
+  using (public.has_event_admin_access());
+
+drop policy if exists event_templates_select_chapter_lead on public.event_templates;
+create policy event_templates_select_chapter_lead on public.event_templates
+  for select to authenticated
+  using (public.has_event_admin_access());
+
+drop policy if exists event_template_roles_select_chapter_lead on public.event_template_roles;
+create policy event_template_roles_select_chapter_lead on public.event_template_roles
+  for select to authenticated
+  using (public.has_event_admin_access());
+
+drop policy if exists volunteer_role_types_select_chapter_lead on public.volunteer_role_types;
+create policy volunteer_role_types_select_chapter_lead on public.volunteer_role_types
+  for select to authenticated
+  using (public.has_event_admin_access());
+
+-- ---- Event-scoped RPCs: is_admin() -> can_manage_event() --------------------------
+-- Bodies unchanged apart from the gate (and, where the event id has to be
+-- looked up first, the lookup moving above it).
+
+-- Same as the 2026-09-23 version; gate is can_manage_event.
+create or replace function public.admin_upsert_walkup_rsvp(
+  p_event_id bigint,
+  p_profile_id uuid,
+  p_force boolean default false
+)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_existing_status text;
+  v_claimed boolean;
+begin
+  if not public.can_manage_event(p_event_id) then
+    raise exception 'Only someone who manages this event can add walk-ups';
+  end if;
+
+  if not exists (
+    select 1 from public.events where id = p_event_id and status = 'scheduled'
+  ) then
+    raise exception 'Event is not scheduled';
+  end if;
+
+  if not public.has_signed_event_waiver(p_profile_id, p_event_id, 'participant') then
+    return 'waiver_unsigned';
+  end if;
+
+  if public.registration_incomplete_section(p_profile_id, p_event_id) is not null then
+    return 'registration_incomplete';
+  end if;
+
+  select status into v_existing_status
+    from public.rsvps
+   where event_id = p_event_id and user_id = p_profile_id;
+
+  if v_existing_status = 'confirmed' then
+    update public.rsvps
+       set checked_in_at = now(), updated_at = now()
+     where event_id = p_event_id and user_id = p_profile_id;
+    return 'confirmed';
+  end if;
+
+  v_claimed := public.try_claim_event_spot(p_event_id, p_profile_id);
+
+  if not v_claimed and not p_force then
+    return 'capacity_exceeded';
+  end if;
+
+  if not v_claimed and p_force then
+    update public.events
+       set spots_taken = spots_taken + 1, updated_at = now()
+     where id = p_event_id;
+  end if;
+
+  insert into public.rsvps (event_id, user_id, status, checked_in_at)
+  values (p_event_id, p_profile_id, 'confirmed', now())
+  on conflict (event_id, user_id)
+  do update set status = excluded.status,
+                checked_in_at = excluded.checked_in_at,
+                offer_expires_at = null,
+                updated_at = now();
+
+  return 'confirmed';
+end $function$;
+
+-- Same as the 2026-09-21 null-safe version; gate is can_manage_event.
+create or replace function public.admin_offer_spot(p_rsvp_id bigint)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_event_id bigint;
+  v_rsvp public.rsvps%rowtype;
+  v_event public.events%rowtype;
+  v_free integer;
+begin
+  select event_id into v_event_id from public.rsvps where id = p_rsvp_id;
+  if not found then
+    if not public.has_event_admin_access() then
+      raise exception 'Only someone who manages this event can offer spots';
+    end if;
+    return jsonb_build_object('ok', false, 'reason', 'not_found');
+  end if;
+
+  if not public.can_manage_event(v_event_id) then
+    raise exception 'Only someone who manages this event can offer spots';
+  end if;
+
+  perform 1 from public.events where id = v_event_id for update;
+  select * into v_event from public.events where id = v_event_id;
+  select * into v_rsvp from public.rsvps where id = p_rsvp_id for update;
+
+  if not found or v_rsvp.status not in ('waitlisted', 'expired') then
+    return jsonb_build_object('ok', false, 'reason', 'not_waitlisted');
+  end if;
+  if coalesce(v_event.status, 'scheduled') <> 'scheduled'
+     or not coalesce(v_event.is_published, false) then
+    return jsonb_build_object('ok', false, 'reason', 'event_unavailable');
+  end if;
+
+  if v_event.capacity is not null then
+    v_free := v_event.capacity - coalesce(v_event.spots_taken, 0) - (
+      select count(*) from public.rsvps where event_id = v_event_id and status = 'offered'
+    );
+    if v_free <= 0 then
+      return jsonb_build_object('ok', false, 'reason', 'no_capacity');
+    end if;
+  end if;
+
+  update public.rsvps
+     set status = 'offered',
+         offer_expires_at = now() + interval '24 hours',
+         updated_at = now()
+   where id = p_rsvp_id;
+
+  return jsonb_build_object(
+    'ok', true,
+    'event_id', v_event_id,
+    'user_id', v_rsvp.user_id,
+    'expires_at', now() + interval '24 hours'
+  );
+end $function$;
+
+-- Same as the 2026-09-21 version; gate is can_manage_event.
+create or replace function public.admin_remove_rsvp(p_rsvp_id bigint)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_event_id bigint;
+  v_user_id uuid;
+  v_status text;
+  v_offered jsonb := '[]'::jsonb;
+begin
+  select event_id into v_event_id from public.rsvps where id = p_rsvp_id;
+  if not found then
+    if not public.has_event_admin_access() then
+      raise exception 'Only someone who manages this event can remove RSVPs';
+    end if;
+    return jsonb_build_object('removed', false, 'offered', v_offered);
+  end if;
+
+  if not public.can_manage_event(v_event_id) then
+    raise exception 'Only someone who manages this event can remove RSVPs';
+  end if;
+
+  perform 1 from public.events where id = v_event_id for update;
+
+  delete from public.rsvps
+   where id = p_rsvp_id
+  returning status, user_id into v_status, v_user_id;
+
+  if v_status is null then
+    return jsonb_build_object('removed', false, 'offered', v_offered);
+  end if;
+
+  if v_status = 'confirmed' then
+    update public.events
+       set spots_taken = greatest(spots_taken - 1, 0), updated_at = now()
+     where id = v_event_id;
+  end if;
+
+  if v_status in ('confirmed', 'offered') then
+    select coalesce(jsonb_agg(jsonb_build_object('user_id', o_user_id, 'expires_at', o_expires_at)), '[]'::jsonb)
+      into v_offered
+      from public.offer_waitlisted_spots(v_event_id);
+  end if;
+
+  return jsonb_build_object(
+    'removed', true,
+    'previous_status', v_status,
+    'user_id', v_user_id,
+    'offered', v_offered
+  );
+end $function$;
+
+-- Same as the 2026-09-22 version; gate is can_manage_opportunity, and only
+-- an admin may add someone who isn't approved for the role (a chapter lead
+-- can add approved volunteers only — approving is admin-only).
+create or replace function public.admin_add_volunteer_signup(
+  p_opportunity_id bigint,
+  p_user_id uuid,
+  p_force boolean default false
+)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_existing_status text;
+  v_claimed boolean;
+begin
+  if not public.can_manage_opportunity(p_opportunity_id) then
+    raise exception 'Only someone who manages this event can add a volunteer signup';
+  end if;
+
+  if not public.is_admin()
+     and public.volunteer_signup_blocker(p_user_id, p_opportunity_id) in ('not_approved', 'role_not_approved') then
+    raise exception 'Only an admin can add someone who isn''t approved for this role';
+  end if;
+
+  select status into v_existing_status
+    from public.volunteer_signups
+   where opportunity_id = p_opportunity_id and user_id = p_user_id;
+
+  if v_existing_status = 'confirmed' then
+    return 'confirmed';
+  end if;
+
+  v_claimed := public.try_claim_volunteer_slot(p_opportunity_id);
+
+  if not v_claimed and not p_force then
+    return 'capacity_exceeded';
+  end if;
+
+  if not v_claimed and p_force then
+    update public.volunteer_opportunities
+       set slots_taken = slots_taken + 1
+     where id = p_opportunity_id;
+  end if;
+
+  insert into public.volunteer_signups (opportunity_id, user_id, status, signed_up_at, cancelled_at, checked_in_at)
+  values (p_opportunity_id, p_user_id, 'confirmed', now(), null, null)
+  on conflict (opportunity_id, user_id)
+  do update set status = 'confirmed',
+                signed_up_at = now(),
+                cancelled_at = null,
+                checked_in_at = null;
+
+  return 'confirmed';
+end $function$;
+
+-- Same as the 2026-09-22 version; gate is can_manage_opportunity.
+create or replace function public.admin_delete_volunteer_opportunity(p_opportunity_id bigint)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if not public.can_manage_opportunity(p_opportunity_id) then
+    if exists (select 1 from public.volunteer_opportunities where id = p_opportunity_id)
+       or not public.has_event_admin_access() then
+      raise exception 'Only someone who manages this event can delete a volunteer role';
+    end if;
+    return 'not_found';
+  end if;
+
+  perform 1 from public.volunteer_opportunities where id = p_opportunity_id for update;
+  if not found then
+    return 'not_found';
+  end if;
+
+  if exists (
+    select 1 from public.volunteer_signups
+     where opportunity_id = p_opportunity_id and status = 'confirmed'
+  ) then
+    return 'has_signups';
+  end if;
+
+  delete from public.volunteer_opportunities where id = p_opportunity_id;
+  return 'deleted';
+end $function$;
+
+-- Same as the 2026-09-22 version; gate is can_manage_opportunity.
+create or replace function public.admin_cancel_volunteer_opportunity(p_opportunity_id bigint)
+returns table (user_id uuid)
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if not public.can_manage_opportunity(p_opportunity_id) then
+    if exists (select 1 from public.volunteer_opportunities where id = p_opportunity_id)
+       or not public.has_event_admin_access() then
+      raise exception 'Only someone who manages this event can cancel a volunteer role';
+    end if;
+    return;
+  end if;
+
+  perform 1 from public.volunteer_opportunities
+   where id = p_opportunity_id and cancelled_at is null
+   for update;
+  if not found then
+    return;
+  end if;
+
+  return query
+    with cancelled as (
+      update public.volunteer_signups s
+         set status = 'cancelled', cancelled_at = now()
+       where s.opportunity_id = p_opportunity_id and s.status = 'confirmed'
+      returning s.user_id as cancelled_user_id
+    )
+    select c.cancelled_user_id from cancelled c;
+
+  update public.volunteer_opportunities
+     set cancelled_at = now(), slots_taken = 0
+   where id = p_opportunity_id;
+end $function$;
+
+-- Same as the 2026-09-22 version; every id passed must be manageable.
+create or replace function public.admin_delete_empty_events(p_event_ids bigint[])
+returns setof bigint
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_id bigint;
+begin
+  if not public.has_event_admin_access() or exists (
+    select 1 from unnest(p_event_ids) as t(id)
+     where exists (select 1 from public.events e where e.id = t.id)
+       and not public.can_manage_event(t.id)
+  ) then
+    raise exception 'Only someone who manages these events can delete them';
+  end if;
+
+  for v_id in
+    select id from public.events where id = any(p_event_ids) order by id for update
+  loop
+    if exists (
+      select 1 from public.rsvps
+       where event_id = v_id and status in ('confirmed', 'waitlisted', 'offered')
+    ) or exists (
+      select 1 from public.volunteer_signups s
+        join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+       where vo.event_id = v_id and s.status = 'confirmed'
+    ) then
+      continue;
+    end if;
+
+    delete from public.rsvps where event_id = v_id;
+    delete from public.volunteer_opportunities where event_id = v_id;
+    delete from public.events where id = v_id;
+    return next v_id;
+  end loop;
+end $function$;
+
+-- ---- New RPCs --------------------------------------------------------------------
+
+-- The event lead person-picker. Admins can pick anyone; chapter leads and
+-- event leads can pick admins, chapter leads, themselves, and members whose
+-- home chapter they lead — so the picker can't be used to list every
+-- member's contact details.
+create or replace function public.event_lead_candidates(p_query text)
+returns table (
+  id uuid,
+  first_name text,
+  last_name text,
+  email text,
+  phone text,
+  role text,
+  chapter text
+)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+declare
+  v_q text := btrim(coalesce(p_query, ''));
+  v_pattern text;
+  v_is_admin boolean := public.is_admin();
+  v_led text[];
+begin
+  if not public.has_event_admin_access() then
+    raise exception 'Not allowed' using errcode = '42501';
+  end if;
+  if length(v_q) < 2 then
+    return;
+  end if;
+  v_pattern := '%' || replace(replace(replace(v_q, '\', '\\'), '%', '\%'), '_', '\_') || '%';
+  select p.led_chapters into v_led from public.profiles p where p.id = auth.uid();
+
+  return query
+    select p.id, p.first_name, p.last_name, p.email, p.phone, p.role, p.chapter
+      from public.profiles p
+     where (
+             p.first_name ilike v_pattern
+             or p.last_name ilike v_pattern
+             or p.email ilike v_pattern
+             or concat_ws(' ', p.first_name, p.last_name) ilike v_pattern
+           )
+       and (
+             v_is_admin
+             or p.role in ('admin', 'chapter_lead')
+             or p.id = auth.uid()
+             or p.chapter = any(coalesce(v_led, '{}'::text[]))
+           )
+     order by p.first_name nulls last, p.last_name nulls last
+     limit 10;
+end $function$;
+
+-- "Add a volunteer" on the roster: looks a person up by email for one
+-- volunteer role, with whether they're approved (and approved for this
+-- role). Lets a chapter lead add approved volunteers without reading the
+-- volunteer registry itself.
+create or replace function public.volunteer_for_shift(p_opportunity_id bigint, p_email text)
+returns table (
+  user_id uuid,
+  first_name text,
+  last_name text,
+  email text,
+  approved boolean,
+  approved_for_role boolean
+)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+declare
+  v_blocker text;
+  v_profile public.profiles%rowtype;
+begin
+  if not public.can_manage_opportunity(p_opportunity_id) then
+    raise exception 'Only someone who manages this event can add volunteers' using errcode = '42501';
+  end if;
+
+  select * into v_profile from public.profiles p
+   where lower(p.email) = lower(btrim(coalesce(p_email, '')))
+   limit 1;
+  if not found then
+    return;
+  end if;
+
+  v_blocker := public.volunteer_signup_blocker(v_profile.id, p_opportunity_id);
+  return query select
+    v_profile.id,
+    v_profile.first_name,
+    v_profile.last_name,
+    v_profile.email,
+    coalesce(v_blocker, '') <> 'not_approved',
+    coalesce(v_blocker, '') not in ('not_approved', 'role_not_approved');
+end $function$;
+
+-- Admin-only role change. Refuses to demote the last admin; clears
+-- led_chapters for anyone who isn't a chapter lead (profiles_role_guard).
+create or replace function public.admin_set_user_role(
+  p_user_id uuid,
+  p_role text,
+  p_led_chapters text[] default '{}'::text[]
+)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_old_role text;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can change roles' using errcode = '42501';
+  end if;
+  if p_role not in ('participant', 'chapter_lead', 'admin') then
+    raise exception 'Unknown role %', p_role;
+  end if;
+
+  -- Serializes concurrent demotions so two admins can't each remove the
+  -- other and leave nobody.
+  perform 1 from public.profiles where role = 'admin' for update;
+  select role into v_old_role from public.profiles where id = p_user_id for update;
+  if not found then
+    raise exception 'Person not found';
+  end if;
+
+  if v_old_role = 'admin' and p_role <> 'admin'
+     and (select count(*) from public.profiles where role = 'admin') <= 1 then
+    raise exception 'There has to be at least one admin' using errcode = '42501';
+  end if;
+
+  update public.profiles
+     set role = p_role,
+         led_chapters = case
+           when p_role = 'chapter_lead' then coalesce(p_led_chapters, '{}'::text[])
+           else '{}'::text[]
+         end
+   where id = p_user_id;
+end $function$;
+
+-- ---- Grants ----------------------------------------------------------------------
+-- The helpers are called from RLS policies as the querying role, and from
+-- the app via rpc, so authenticated needs EXECUTE; anon never does.
+revoke all on function public.can_manage_chapter(text) from public, anon;
+grant execute on function public.can_manage_chapter(text) to authenticated, service_role;
+revoke all on function public.can_manage_event_row(text, uuid) from public, anon;
+grant execute on function public.can_manage_event_row(text, uuid) to authenticated, service_role;
+revoke all on function public.can_manage_event(bigint) from public, anon;
+grant execute on function public.can_manage_event(bigint) to authenticated, service_role;
+revoke all on function public.can_manage_opportunity(bigint) from public, anon;
+grant execute on function public.can_manage_opportunity(bigint) to authenticated, service_role;
+revoke all on function public.managed_event_ids() from public, anon;
+grant execute on function public.managed_event_ids() to authenticated, service_role;
+revoke all on function public.manageable_chapters(text[]) from public, anon;
+grant execute on function public.manageable_chapters(text[]) to authenticated, service_role;
+revoke all on function public.has_event_admin_access() from public, anon;
+grant execute on function public.has_event_admin_access() to authenticated, service_role;
+revoke all on function public.can_view_person(uuid) from public, anon;
+grant execute on function public.can_view_person(uuid) to authenticated, service_role;
+revoke all on function public.event_lead_candidates(text) from public, anon;
+grant execute on function public.event_lead_candidates(text) to authenticated;
+revoke all on function public.volunteer_for_shift(bigint, text) from public, anon;
+grant execute on function public.volunteer_for_shift(bigint, text) to authenticated;
+revoke all on function public.admin_set_user_role(uuid, text, text[]) from public, anon;
+grant execute on function public.admin_set_user_role(uuid, text, text[]) to authenticated;
+
+commit;

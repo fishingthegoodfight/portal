@@ -11,15 +11,8 @@ async function AdminGate({ children }: { children: React.ReactNode }) {
     redirect("/auth/login");
   }
 
-  const userId = data.claims.sub as string;
-
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("is_admin")
-    .eq("id", userId)
-    .maybeSingle();
-
-  if (!profile?.is_admin) {
+  const { data: hasAccess } = await supabase.rpc("has_event_admin_access");
+  if (!hasAccess) {
     redirect("/protected/events");
   }
 
@@ -27,11 +20,15 @@ async function AdminGate({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * Single choke point for every /protected/admin/* route: only members with
- * profiles.is_admin get past here, everyone else is bounced back to the
- * events list. The auth/admin check is cookie-based (dynamic), so it's
- * wrapped in its own Suspense boundary here rather than left bare in the
- * layout — same reasoning as the per-page loaders under app/protected/*.
+ * Single choke point for every /protected/admin/* route: admins, chapter
+ * leads, and anyone who leads an event (has_event_admin_access) get past
+ * here; everyone else is bounced back to the events list. Admin-only
+ * sections (setup, volunteers, waivers, roles) add their own AdminOnlyGate
+ * layout, and each event's pages check can_manage_event — all of it backed
+ * by RLS, so this is about sending people somewhere sensible, not security.
+ * The check is cookie-based (dynamic), so it's wrapped in its own Suspense
+ * boundary rather than left bare in the layout — same reasoning as the
+ * per-page loaders under app/protected/*.
  */
 export default function AdminLayout({
   children,

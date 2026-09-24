@@ -372,6 +372,8 @@ export async function sendAdminChangeNotificationEmail(params: {
   actorLabel: string;
   eventName: string;
   eventId: number;
+  /** The event's chapter, named in the subject and body. */
+  chapter?: string | null;
   diff: EventChangeDiffEntry[];
   reason?: string | null;
   /** Where "View event" links, when the event itself is gone (a deleted
@@ -392,6 +394,7 @@ export async function sendAdminChangeNotificationEmail(params: {
     action: params.action,
     actorLabel: params.actorLabel,
     eventName: params.eventName,
+    chapter: params.chapter ?? null,
     eventAdminUrl: `${getSiteUrl()}${params.adminPath ?? `/protected/admin/events/${params.eventId}`}`,
     diff: params.diff,
     reason: params.reason,

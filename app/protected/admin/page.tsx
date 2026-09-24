@@ -7,12 +7,20 @@ import { Button } from "@/components/ui/button";
 import { ChapterTag } from "@/components/chapter-tag";
 import { ChapterFilterPills, FilterPill, filterHref } from "@/components/filter-pills";
 import {
+  chapterSelectionFor,
   chapterSelectionLabel,
   chapterSelectionParam,
+  CHAPTERS,
   matchesChapterSelection,
   parseChapterSelection,
+  VIRTUAL_CHAPTER,
   type ChapterSelection,
 } from "@/lib/chapters";
+import {
+  loadEventAdminAccess,
+  loadManageableChapters,
+  loadManagedEventIds,
+} from "@/lib/admin/require-admin";
 import { formatEventDateRange } from "@/lib/format-date";
 import { cn } from "@/lib/utils";
 
@@ -101,11 +109,19 @@ async function AdminEventsLoader({ searchParams }: { searchParams: Promise<Admin
   const { chapter: chapterParam, status: statusParam } = await searchParams;
   const supabase = await createClient();
 
-  // Defaults to All chapters (no profile chapter passed), unlike the
-  // participant list: an admin oversees every chapter, so nothing should be
-  // hidden on first load. Chapter-lead accounts, once they exist, could
-  // default to their own chapter here instead.
-  const selection = parseChapterSelection(chapterParam, null);
+  // An admin oversees every chapter, so defaults to All; a chapter lead to
+  // the chapters they lead; an event's own lead (no chapters) to All of the
+  // events they manage.
+  const access = await loadEventAdminAccess(supabase);
+  const isAdmin = access?.isAdmin ?? false;
+  const selection = parseChapterSelection(
+    chapterParam,
+    access?.role === "chapter_lead" ? chapterSelectionFor(access.ledChapters) : null,
+  );
+  // Everyone but an admin sees only the events they manage
+  // (managed_event_ids — can_manage_event per event). RLS alone would also
+  // show them other chapters' published events.
+  const managed = isAdmin ? null : await loadManagedEventIds(supabase);
   const status: StatusFilter =
     STATUS_FILTERS.find((f) => f.slug === statusParam)?.slug ?? "all";
 
@@ -128,8 +144,13 @@ async function AdminEventsLoader({ searchParams }: { searchParams: Promise<Admin
     );
   }
 
-  if (!events || events.length === 0) {
-    return <p className="text-sm text-muted-foreground">No events yet.</p>;
+  const visibleEvents = (events ?? []).filter((e) => !managed || managed.has(e.id as number));
+  if (visibleEvents.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        {isAdmin ? "No events yet." : "You don't manage any events yet."}
+      </p>
+    );
   }
 
   // Volunteer slots filled vs needed, per event (cancelled roles excluded).
@@ -166,7 +187,7 @@ async function AdminEventsLoader({ searchParams }: { searchParams: Promise<Admin
         return true;
     }
   };
-  const rows = (events as AdminEventRow[]).filter(
+  const rows = (visibleEvents as AdminEventRow[]).filter(
     (e) => matchesChapterSelection(selection, e.chapter) && matchesStatus(e),
   );
   const upcoming = rows.filter((e) => !isPast(e)); // soonest first (query order)
@@ -314,9 +335,43 @@ function FillFigure({ label, fill, low }: { label: string; fill: Fill; low: bool
  * cancelled and past included, not just the published/scheduled/upcoming
  * ones the participant list (app/protected/events) filters to — since this
  * is the only place a "Manage" link to a cancelled event exists, and
- * restoring one requires reaching it first. The chapter filter defaults to
- * All here (the participant list defaults to the person's own chapter).
+ * restoring one requires reaching it first. Chapter leads and event leads
+ * see only the events they manage. The chapter filter defaults to All for
+ * an admin and to a chapter lead's own chapters.
  */
+/** The header buttons, limited to what this person can reach: the volunteer
+ * registry, waivers and setup are admin-only; "New event" needs a chapter
+ * they can create events in (manageable_chapters). */
+async function AdminIndexActions() {
+  const supabase = await createClient();
+  const [access, creatableChapters] = await Promise.all([
+    loadEventAdminAccess(supabase),
+    loadManageableChapters(supabase, [...CHAPTERS.map((c) => c.name), VIRTUAL_CHAPTER]),
+  ]);
+  return (
+    <div className="flex flex-wrap gap-2">
+      {access?.isAdmin && (
+        <>
+          <Button asChild variant="outline">
+            <Link href="/protected/admin/volunteers">Volunteers</Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link href="/protected/admin/waivers">Waivers</Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link href="/protected/admin/setup">Setup</Link>
+          </Button>
+        </>
+      )}
+      {creatableChapters.length > 0 && (
+        <Button asChild>
+          <Link href="/protected/admin/events/new">New event</Link>
+        </Button>
+      )}
+    </div>
+  );
+}
+
 export default function AdminEventsIndexPage({
   searchParams,
 }: {
@@ -328,26 +383,15 @@ export default function AdminEventsIndexPage({
         <div>
           <h1 className="font-bold text-2xl mb-1">Manage events</h1>
           <p className="text-sm text-muted-foreground">
-            Events for the chapters and status chosen below, soonest first, with past ones
-            below. Amber marks an event in the
+            Events you manage, for the chapters and status chosen below, soonest first, with
+            past ones below. Amber marks an event in the
             next 3 weeks that&apos;s under a third full (fewer than 3 registered with no limit)
             or still has open volunteer slots.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button asChild variant="outline">
-            <Link href="/protected/admin/volunteers">Volunteers</Link>
-          </Button>
-          <Button asChild variant="outline">
-            <Link href="/protected/admin/waivers">Waivers</Link>
-          </Button>
-          <Button asChild variant="outline">
-            <Link href="/protected/admin/setup">Setup</Link>
-          </Button>
-          <Button asChild>
-            <Link href="/protected/admin/events/new">New event</Link>
-          </Button>
-        </div>
+        <Suspense fallback={null}>
+          <AdminIndexActions />
+        </Suspense>
       </div>
       <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>
         <AdminEventsLoader searchParams={searchParams} />

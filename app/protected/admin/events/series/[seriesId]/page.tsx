@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
+import { loadManagedEventIds } from "@/lib/admin/require-admin";
 import { formatEventDateRange } from "@/lib/format-date";
 import { EMPTY_PEOPLE, isEmptyOccurrence, peopleByEvent } from "@/lib/admin/series";
 import { SeriesOccurrences, type SeriesOccurrence } from "@/components/admin/series-occurrences";
@@ -16,12 +17,15 @@ async function SeriesLoader({ params }: { params: Promise<{ seriesId: string }> 
   const { seriesId } = await params;
 
   const supabase = await createClient();
+  // Only the occurrences this person manages (can_manage_event) — a chapter
+  // lead can read other chapters' published events, but not manage them.
+  const managed = await loadManagedEventIds(supabase);
   const { data: rows } = await supabase
     .from("events")
     .select("id, name, starts_at, ends_at, timezone, status, capacity, recurrence_frequency")
     .eq("series_id", seriesId)
     .order("starts_at", { ascending: true });
-  const events = (rows ?? []) as {
+  const allEvents = (rows ?? []) as {
     id: number;
     name: string;
     starts_at: string;
@@ -31,6 +35,7 @@ async function SeriesLoader({ params }: { params: Promise<{ seriesId: string }> 
     capacity: number | null;
     recurrence_frequency: string | null;
   }[];
+  const events = allEvents.filter((e) => managed.has(e.id));
   if (events.length === 0) notFound();
 
   const people = await peopleByEvent(

@@ -69,6 +69,7 @@ function emptyForm(prefill: AdminPrefill): CreateEventInput {
     leadName: prefill.leadName,
     leadEmail: prefill.leadEmail,
     leadPhone: prefill.leadPhone,
+    leadUserId: "",
     customEmailNote: "",
     registrationSections: [],
     volunteersNeeded: false,
@@ -196,8 +197,11 @@ export function EventCreateWizard({
   roleTypes,
   eventTypes,
   templates,
+  allowedChapters,
 }: {
   adminPrefill: AdminPrefill;
+  /** The chapters this person may create events in (manageable_chapters). */
+  allowedChapters: string[];
   /** Active volunteer_role_types with for_chapter_events true — the only
    * ones offered for an event role (see lib/volunteers.ts). */
   roleTypes: ChapterEventRoleType[];
@@ -322,12 +326,14 @@ export function EventCreateWizard({
   // chapter-specific one sets the chapter); after, only that chapter's and
   // the all-chapter ones — plus whichever is already selected, so the picker
   // never shows a selection that isn't in its list.
+  // Never a template for a chapter this person can't create events in.
   const templatesForChapter = templates.filter(
     (t) =>
-      !form.chapter ||
-      t.chapter === null ||
-      t.chapter === form.chapter ||
-      String(t.id) === form.templateId,
+      (t.chapter === null || allowedChapters.includes(t.chapter)) &&
+      (!form.chapter ||
+        t.chapter === null ||
+        t.chapter === form.chapter ||
+        String(t.id) === form.templateId),
   );
 
   // Anything a template would overwrite — used to decide whether switching
@@ -605,7 +611,12 @@ export function EventCreateWizard({
             )}
 
             <div className="grid grid-cols-2 gap-4">
-              <ChapterField idPrefix="create" value={form.chapter} onChange={updateChapter} />
+              <ChapterField
+                idPrefix="create"
+                value={form.chapter}
+                onChange={updateChapter}
+                allowed={allowedChapters}
+              />
               <EventTypeField
                 idPrefix="create"
                 value={form.eventType}
@@ -679,6 +690,8 @@ export function EventCreateWizard({
               onChangeName={setField("leadName")}
               onChangePhone={setField("leadPhone")}
               onChangeEmail={setField("leadEmail")}
+              leadUserId={form.leadUserId}
+              onChangeLeadUserId={setField("leadUserId")}
             />
 
             <CustomEmailNoteField

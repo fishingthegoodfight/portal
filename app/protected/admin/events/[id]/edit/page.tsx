@@ -3,7 +3,8 @@ import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
 import { toZonedDateTimeInputs } from "@/lib/timezone";
-import { timezoneForChapter } from "@/lib/chapters";
+import { CHAPTERS, timezoneForChapter, VIRTUAL_CHAPTER } from "@/lib/chapters";
+import { loadManageableChapters } from "@/lib/admin/require-admin";
 import { WAIVER_STATES, waiverStateForChapter } from "@/lib/waivers";
 import { loadActiveRoles, toEditableRole } from "@/lib/admin/event-roles";
 import { EventEditForm } from "@/components/admin/event-edit-form";
@@ -18,11 +19,11 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
   }
 
   const supabase = await createClient();
-  const [{ data: event }, { data: eventTypes }, { data: roleTypes }, roles] = await Promise.all([
+  const [{ data: event }, { data: eventTypes }, { data: roleTypes }, roles, allowedChapters] = await Promise.all([
     supabase
       .from("events")
       .select(
-        "id, slug, name, event_type, series_id, description, occurrence_note, location, venue_name, street_address, city, state, virtual_link, virtual_access_notes, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, starts_at, ends_at, timezone, chapter, status, waiver_state",
+        "id, slug, name, event_type, series_id, description, occurrence_note, location, venue_name, street_address, city, state, virtual_link, virtual_access_notes, capacity, lead_name, lead_user_id, lead_phone, lead_email, custom_email_note, registration_sections, starts_at, ends_at, timezone, chapter, status, waiver_state",
       )
       .eq("id", eventId)
       .maybeSingle(),
@@ -37,6 +38,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
       .select("id, name, for_chapter_events, active")
       .order("sort_order", { ascending: true }),
     loadActiveRoles(supabase, [eventId]),
+    loadManageableChapters(supabase, [...CHAPTERS.map((c) => c.name), VIRTUAL_CHAPTER]),
   ]);
 
   if (!event) {
@@ -67,6 +69,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
       eventTypes={(eventTypes ?? []) as EventTypeOption[]}
       roleTypes={roleTypeOptions}
       signedUpByRoleId={Object.fromEntries(roles.map((r) => [r.id, r.confirmed]))}
+      allowedChapters={allowedChapters}
       legacyLocation={
         !event.venue_name && !event.street_address && !event.city && !event.state
           ? event.location
@@ -95,6 +98,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
         leadName: event.lead_name ?? "",
         leadPhone: event.lead_phone ?? "",
         leadEmail: event.lead_email ?? "",
+        leadUserId: event.lead_user_id ?? "",
         customEmailNote: event.custom_email_note ?? "",
         registrationSections: event.registration_sections ?? [],
         date,

@@ -92,24 +92,35 @@ export const CHAPTER_FILTER_OPTIONS: ChapterFilterOption[] = [
 export type ChapterSelection = string[] | null;
 
 /**
- * The selection from the `?chapter=` param. With no param (or nothing
- * recognisable in it) it defaults to the person's own chapter plus Virtual —
- * virtual events are open to everyone — or All for anyone with no local
- * chapter.
+ * The selection from the `?chapter=` param, or `defaultSelection` when
+ * there's no param (or nothing recognisable in it).
  */
 export function parseChapterSelection(
   param: string | null | undefined,
-  profileChapter: string | null | undefined,
+  defaultSelection: ChapterSelection,
 ): ChapterSelection {
   if (param === "all") return null;
   const slugs = (param ?? "").split(",");
   const selected = CHAPTER_FILTER_OPTIONS.filter((o) => slugs.includes(o.slug)).map((o) => o.slug);
-  if (selected.length > 0) return selected;
+  return selected.length > 0 ? selected : defaultSelection;
+}
 
+/** The participant list's default: the person's own chapter plus Virtual —
+ * virtual events are open to everyone — or All with no local chapter. */
+export function memberDefaultChapterSelection(
+  profileChapter: string | null | undefined,
+): ChapterSelection {
   const own = CHAPTER_FILTER_OPTIONS.find(
     (o) => o.chapter === profileChapter && !isVirtualChapter(o.chapter),
   );
   return own ? [own.slug, "virtual"] : null;
+}
+
+/** A selection of exactly these event chapters (e.g. a chapter lead's
+ * led_chapters), or All when none of them has a pill. */
+export function chapterSelectionFor(chapters: string[]): ChapterSelection {
+  const slugs = CHAPTER_FILTER_OPTIONS.filter((o) => chapters.includes(o.chapter)).map((o) => o.slug);
+  return slugs.length > 0 ? slugs : null;
 }
 
 /** The `?chapter=` value for a selection — always explicit, so a chosen

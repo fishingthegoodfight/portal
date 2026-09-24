@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 
 import { createClient } from "@/lib/supabase/server";
-import { actorLabel, requireAdmin } from "@/lib/admin/require-admin";
+import { actorLabel, requireChapterManager } from "@/lib/admin/require-admin";
 import { CHAPTERS, isVirtualChapter, timezoneForChapter } from "@/lib/chapters";
 import { formatEventDateRange } from "@/lib/format-date";
 import { generateRecurrenceDates, type RecurrenceFrequency } from "@/lib/admin/recurrence";
@@ -62,6 +62,9 @@ export type CreateEventInput = {
   leadName: string;
   leadEmail: string;
   leadPhone: string;
+  /** profiles.id of the lead's account, or "" for none — that person gets
+   * manage rights on the event (can_manage_event). */
+  leadUserId: string;
   /** Shown in the RSVP confirmation email, if set. */
   customEmailNote: string;
   registrationSections: string[];
@@ -90,14 +93,18 @@ export type CreateEventResult =
  */
 export async function createEventAction(input: CreateEventInput): Promise<CreateEventResult> {
   const supabase = await createClient();
-  const adminCheck = await requireAdmin(supabase);
-  if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
-
   // --- Step 1: Basics ---
   const title = input.title.trim();
   if (!title) return { ok: false, error: "Title is required" };
   if (!CHAPTERS.some((c) => c.name === input.chapter) && !isVirtualChapter(input.chapter)) {
     return { ok: false, error: "Choose a chapter" };
+  }
+  // Admins, and chapter leads for their own chapters (can_manage_chapter).
+  // A chapter lead's event goes live immediately, same as an admin's.
+  const adminCheck = await requireChapterManager(supabase, input.chapter);
+  if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
+  if (input.leadUserId && !/^[0-9a-f-]{36}$/i.test(input.leadUserId)) {
+    return { ok: false, error: "Choose the lead again" };
   }
   // A new event can only take an active, currently-offered type — unlike
   // editing, where an event may already carry one that's since been
@@ -234,6 +241,7 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
         lead_name: input.leadName.trim() || null,
         lead_email: input.leadEmail.trim() || null,
         lead_phone: input.leadPhone.trim() || null,
+        lead_user_id: input.leadUserId || null,
         custom_email_note: input.customEmailNote.trim() || null,
         registration_sections: registrationSections,
         waiver_state: waiverState,
@@ -319,6 +327,7 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
       actorLabel: actorLabel(adminCheck.actor),
       eventName: title,
       eventId: eventIds[0],
+      chapter: input.chapter,
       diff,
     });
   } catch (err) {

@@ -1,7 +1,12 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
-import { actorLabel, requireAdmin } from "@/lib/admin/require-admin";
+import {
+  actorLabel,
+  loadManagedEventIds,
+  requireEventAdminAccess,
+  requireEventManager,
+} from "@/lib/admin/require-admin";
 import { sendAdminChangeNotificationEmail } from "@/lib/email/send";
 import {
   isEmptyOccurrence,
@@ -25,7 +30,7 @@ export type ScopeSummaryResult = ({ ok: true } & ScopeSummary) | { ok: false; er
  * events" step before the admin confirms. */
 export async function seriesScopeSummaryAction(eventId: number): Promise<ScopeSummaryResult> {
   const supabase = await createClient();
-  const adminCheck = await requireAdmin(supabase);
+  const adminCheck = await requireEventManager(supabase, eventId);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
 
   const { data: event } = await supabase
@@ -36,7 +41,12 @@ export async function seriesScopeSummaryAction(eventId: number): Promise<ScopeSu
   if (!event) return { ok: false, error: "Event not found" };
   if (!event.series_id) return { ok: false, error: "This event isn't part of a series" };
 
-  const laterIds = await laterOccurrenceIds(supabase, event.series_id as string, event.starts_at as string);
+  // Only the later occurrences the caller manages — the same set an edit or
+  // cancel with "future" scope actually reaches (see admin-event.ts).
+  const managed = await loadManagedEventIds(supabase);
+  const laterIds = (
+    await laterOccurrenceIds(supabase, event.series_id as string, event.starts_at as string)
+  ).filter((id) => managed.has(id));
   const people = await peopleByEvent(supabase, [eventId, ...laterIds]);
   const thisPeople = people.get(eventId) as OccurrencePeople;
 
@@ -87,15 +97,20 @@ export async function deleteSeriesOccurrencesAction(
   which: number[] | "future_empty",
 ): Promise<DeleteOccurrencesResult> {
   const supabase = await createClient();
-  const adminCheck = await requireAdmin(supabase);
+  const adminCheck = await requireEventAdminAccess(supabase);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
 
+  // Only occurrences the caller manages (admin_delete_empty_events refuses
+  // any other id anyway).
+  const managed = await loadManagedEventIds(supabase);
   const { data: rows } = await supabase
     .from("events")
-    .select("id, name, starts_at, timezone")
+    .select("id, name, chapter, starts_at, timezone")
     .eq("series_id", seriesId)
     .order("starts_at", { ascending: true });
-  const occurrences = (rows ?? []) as { id: number; name: string; starts_at: string; timezone: string }[];
+  const occurrences = (
+    (rows ?? []) as { id: number; name: string; chapter: string | null; starts_at: string; timezone: string }[]
+  ).filter((o) => managed.has(o.id));
   if (occurrences.length === 0) return { ok: false, error: "Series not found" };
 
   let candidates: typeof occurrences;
@@ -139,6 +154,7 @@ export async function deleteSeriesOccurrencesAction(
         actorLabel: actorLabel(adminCheck.actor),
         eventName: deletedRows[0].name,
         eventId: deletedRows[0].id,
+        chapter: deletedRows[0].chapter,
         adminPath: `/protected/admin/events/series/${seriesId}`,
         diff: [
           {

@@ -1,7 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
-import { actorLabel, requireAdmin } from "@/lib/admin/require-admin";
+import { actorLabel, loadManagedEventIds, requireEventManager } from "@/lib/admin/require-admin";
 import { formatEventDateRange } from "@/lib/format-date";
 import { normalizeSlug, publicEventPath, slugError } from "@/lib/event-slug";
 import { toZonedDateTimeInputs, zonedDateTimeToUtc } from "@/lib/timezone";
@@ -46,6 +46,8 @@ import {
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 type EventRow = {
   id: number;
   name: string;
@@ -61,6 +63,9 @@ type EventRow = {
   virtual_access_notes: string | null;
   capacity: number | null;
   lead_name: string | null;
+  /** The lead's account, if they have one — gives them manage rights on
+   * this event (can_manage_event). */
+  lead_user_id: string | null;
   lead_phone: string | null;
   lead_email: string | null;
   custom_email_note: string | null;
@@ -80,7 +85,7 @@ type EventRow = {
 };
 
 const EVENT_COLUMNS =
-  "id, slug, name, event_type, description, occurrence_note, location, venue_name, street_address, city, state, virtual_link, virtual_access_notes, capacity, lead_name, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason, cancelled_at, series_id";
+  "id, slug, name, event_type, description, occurrence_note, location, venue_name, street_address, city, state, virtual_link, virtual_access_notes, capacity, lead_name, lead_user_id, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason, cancelled_at, series_id";
 
 async function loadEvent(
   supabase: SupabaseServerClient,
@@ -101,7 +106,13 @@ async function loadLaterOccurrences(
   event: EventRow,
 ): Promise<EventRow[]> {
   if (!event.series_id) return [];
-  const ids = await laterOccurrenceIds(supabase, event.series_id, event.starts_at);
+  // Only occurrences the caller also manages (can_manage_event) — a series
+  // normally shares its chapter and lead, but one occurrence may since have
+  // been moved or re-led.
+  const managed = await loadManagedEventIds(supabase);
+  const ids = (await laterOccurrenceIds(supabase, event.series_id, event.starts_at)).filter((id) =>
+    managed.has(id),
+  );
   if (ids.length === 0) return [];
   const { data } = await supabase
     .from("events")
@@ -256,6 +267,11 @@ function buildDiff(before: EventRow, after: EventRow): EventChangeDiffEntry[] {
   push("Meeting link", before.virtual_link ?? "", after.virtual_link ?? "");
   push("Capacity", capacityLabel(before.capacity), capacityLabel(after.capacity));
   push("Lead name", before.lead_name ?? "", after.lead_name ?? "");
+  if ((before.lead_user_id ?? null) !== (after.lead_user_id ?? null)) {
+    const account = (row: EventRow) =>
+      row.lead_user_id ? `Linked account (${row.lead_email || row.lead_name || "no contact on file"})` : "None";
+    entries.push({ label: "Lead account (manage rights)", before: account(before), after: account(after) });
+  }
   push("Lead phone", before.lead_phone ?? "", after.lead_phone ?? "");
   push("Lead email", before.lead_email ?? "", after.lead_email ?? "");
   push("Custom email note", before.custom_email_note ?? "", after.custom_email_note ?? "");
@@ -302,6 +318,9 @@ export type EventEditInput = {
   leadName: string;
   leadPhone: string;
   leadEmail: string;
+  /** profiles.id of the lead's account, or "" for none — that person gets
+   * manage rights on the event. */
+  leadUserId: string;
   customEmailNote: string;
   /** Optional section ids only (lib/registration-sections.ts) — an
    * alwaysRequired section applies to every event regardless and isn't part
@@ -452,7 +471,7 @@ function applyToLaterOccurrence(
   copy("name");
   copy("description");
   copy("capacity");
-  copy("lead_name");
+  copy("lead_name", "lead_user_id");
   copy("lead_phone");
   copy("lead_email");
   copy("registration_sections");
@@ -537,6 +556,7 @@ function eventUpdateColumns(row: EventRow, icsSequence: number) {
     virtual_access_notes: row.virtual_access_notes,
     capacity: row.capacity,
     lead_name: row.lead_name,
+    lead_user_id: row.lead_user_id,
     lead_phone: row.lead_phone,
     lead_email: row.lead_email,
     custom_email_note: row.custom_email_note,
@@ -589,7 +609,7 @@ export async function updateEventAction(
   options: EditScopeOptions = { scope: "this", applyOccurrenceNote: false },
 ): Promise<UpdateEventResult> {
   const supabase = await createClient();
-  const adminCheck = await requireAdmin(supabase);
+  const adminCheck = await requireEventManager(supabase, eventId);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
 
   const before = await loadEvent(supabase, eventId);
@@ -628,6 +648,16 @@ export async function updateEventAction(
   // both, so an already-deactivated type stays selectable), or left
   // unchanged (an older event may carry a value that predates the table
   // entirely).
+  // Moving an event is creating it somewhere else: only into a chapter the
+  // caller leads (can_manage_chapter — events_chapter_guard enforces it too).
+  if (input.chapter !== before.chapter) {
+    const { data: canMove } = await supabase.rpc("can_manage_chapter", { p_chapter: input.chapter });
+    if (!canMove) return { ok: false, error: "You can only move an event to a chapter you lead" };
+  }
+  if (input.leadUserId && !UUID_PATTERN.test(input.leadUserId)) {
+    return { ok: false, error: "Choose the lead again" };
+  }
+
   if (input.eventType !== before.event_type) {
     const { data: eventTypeRow } = await supabase
       .from("event_types")
@@ -697,6 +727,7 @@ export async function updateEventAction(
     virtual_access_notes: isVirtual ? virtualAccessNotes || null : null,
     capacity,
     lead_name: input.leadName.trim() || null,
+    lead_user_id: input.leadUserId || null,
     lead_phone: input.leadPhone.trim() || null,
     lead_email: input.leadEmail.trim() || null,
     custom_email_note: input.customEmailNote.trim() || null,
@@ -947,6 +978,7 @@ export async function updateEventAction(
         actorLabel: actorLabel(adminCheck.actor),
         eventName: after.name,
         eventId: after.id,
+        chapter: after.chapter,
         diff,
       });
     }
@@ -1051,7 +1083,7 @@ export async function previewEventCancellationAction(
   scope: EditScope = "this",
 ): Promise<CancelPreviewResult> {
   const supabase = await createClient();
-  const adminCheck = await requireAdmin(supabase);
+  const adminCheck = await requireEventManager(supabase, eventId);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
 
   const trimmedReason = reason.trim();
@@ -1108,7 +1140,7 @@ export async function cancelEventAction(
   scope: EditScope = "this",
 ): Promise<CancelEventResult> {
   const supabase = await createClient();
-  const adminCheck = await requireAdmin(supabase);
+  const adminCheck = await requireEventManager(supabase, eventId);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
 
   const trimmedReason = reason.trim();
@@ -1197,6 +1229,7 @@ export async function cancelEventAction(
       actorLabel: actorLabel(adminCheck.actor),
       eventName: anchor.name,
       eventId: anchor.id,
+      chapter: anchor.chapter,
       diff,
       reason: trimmedReason,
     });
@@ -1243,7 +1276,7 @@ export async function restoreEventAction(
   notifyVolunteers = false,
 ): Promise<RestoreEventResult> {
   const supabase = await createClient();
-  const adminCheck = await requireAdmin(supabase);
+  const adminCheck = await requireEventManager(supabase, eventId);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
 
   const before = await loadEvent(supabase, eventId);
@@ -1317,6 +1350,7 @@ export async function restoreEventAction(
       actorLabel: actorLabel(adminCheck.actor),
       eventName: before.name,
       eventId: before.id,
+      chapter: before.chapter,
       diff,
     });
   } catch (err) {

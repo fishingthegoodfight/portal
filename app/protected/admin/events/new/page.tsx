@@ -2,6 +2,8 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
+import { loadManageableChapters } from "@/lib/admin/require-admin";
+import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
 import { EventCreateWizard } from "@/components/admin/event-create-wizard";
 import type { EventTypeOption } from "@/lib/event-types";
 import { TEMPLATE_WITH_ROLES_COLUMNS, type EventTemplateWithRoles } from "@/lib/event-templates";
@@ -13,6 +15,16 @@ async function NewEventLoader() {
     redirect("/auth/login");
   }
   const userId = data.claims.sub as string;
+
+  // Admins can create anywhere; a chapter lead only in the chapters they
+  // lead (can_manage_chapter); anyone else can't create events at all.
+  const allowedChapters = await loadManageableChapters(supabase, [
+    ...CHAPTERS.map((c) => c.name),
+    VIRTUAL_CHAPTER,
+  ]);
+  if (allowedChapters.length === 0) {
+    redirect("/protected/admin");
+  }
 
   const [{ data: profile }, { data: roleTypes }, { data: eventTypes }, { data: templates }] =
     await Promise.all([
@@ -43,6 +55,7 @@ async function NewEventLoader() {
       roleTypes={roleTypes ?? []}
       eventTypes={(eventTypes ?? []) as EventTypeOption[]}
       templates={(templates ?? []) as unknown as EventTemplateWithRoles[]}
+      allowedChapters={allowedChapters}
     />
   );
 }
