@@ -12,7 +12,11 @@ import {
   type TemplateInput,
   type TemplateRoleInput,
 } from "@/lib/actions/event-templates";
-import type { EventTemplateWithRoles, ShiftAnchor } from "@/lib/event-templates";
+import { templateLocation, type EventTemplateWithRoles, type ShiftAnchor } from "@/lib/event-templates";
+import { EMPTY_LOCATION } from "@/lib/event-location";
+import { isVirtualChapter } from "@/lib/chapters";
+import type { Venue } from "@/lib/venues";
+import { LocationFields } from "@/components/admin/fields/location-fields";
 import type { EventTypeOption } from "@/lib/event-types";
 import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
 import { DescriptionField, EventTypeField } from "@/components/admin/fields/event-text-fields";
@@ -45,6 +49,7 @@ const EMPTY_ROLE: TemplateRoleInput = {
 
 const EMPTY_TEMPLATE: TemplateInput = {
   name: "",
+  defaultTitle: "",
   eventType: "",
   chapter: "",
   description: "",
@@ -52,12 +57,14 @@ const EMPTY_TEMPLATE: TemplateInput = {
   defaultRegistrationSections: [],
   defaultVirtualLink: "",
   defaultVirtualAccessNotes: "",
+  defaultLocation: EMPTY_LOCATION,
   roles: [],
 };
 
 function toInput(template: EventTemplateWithRoles): TemplateInput {
   return {
     name: template.name,
+    defaultTitle: template.default_title ?? "",
     eventType: template.event_type,
     chapter: template.chapter ?? "",
     description: template.description ?? "",
@@ -65,6 +72,7 @@ function toInput(template: EventTemplateWithRoles): TemplateInput {
     defaultRegistrationSections: template.default_registration_sections,
     defaultVirtualLink: template.default_virtual_link ?? "",
     defaultVirtualAccessNotes: template.default_virtual_access_notes ?? "",
+    defaultLocation: templateLocation(template),
     roles: template.roles
       .slice()
       .sort((a, b) => a.sort_order - b.sort_order)
@@ -270,12 +278,14 @@ function TemplateFormFields({
   onChange,
   roleTypes,
   eventTypes,
+  venues,
   idPrefix,
 }: {
   value: TemplateInput;
   onChange: (next: TemplateInput) => void;
   roleTypes: TemplateRoleTypeOption[];
   eventTypes: EventTypeOption[];
+  venues: Venue[];
   idPrefix: string;
 }) {
   const addRole = () => onChange({ ...value, roles: [...value.roles, { ...EMPTY_ROLE }] });
@@ -295,6 +305,22 @@ function TemplateFormFields({
           value={value.name}
           onChange={(e) => onChange({ ...value, name: e.target.value })}
         />
+      </div>
+      <div className="grid gap-2">
+        <Label htmlFor={`${idPrefix}_default_title`}>
+          Event title <span className="font-normal text-muted-foreground">(optional)</span>
+        </Label>
+        <Input
+          id={`${idPrefix}_default_title`}
+          aria-describedby={`${idPrefix}_default_title_help`}
+          placeholder="e.g. Fish A-Long at Clear Creek"
+          value={value.defaultTitle}
+          onChange={(e) => onChange({ ...value, defaultTitle: e.target.value })}
+        />
+        <p id={`${idPrefix}_default_title_help`} className="text-xs text-muted-foreground">
+          Pre-fills the new event&apos;s title, which stays editable. Leave blank to have the
+          title start empty.
+        </p>
       </div>
       <div className="grid grid-cols-2 gap-4">
         <EventTypeField
@@ -325,6 +351,23 @@ function TemplateFormFields({
         value={value.description}
         onChange={(description) => onChange({ ...value, description })}
       />
+      {!isVirtualChapter(value.chapter) && (
+        <div className="flex flex-col gap-1">
+          <LocationFields
+            idPrefix={`${idPrefix}_location`}
+            value={value.defaultLocation}
+            onChange={(patch) =>
+              onChange({ ...value, defaultLocation: { ...value.defaultLocation, ...patch } })
+            }
+            required={false}
+            venues={venues}
+            chapter={value.chapter}
+          />
+          <p className="text-xs text-muted-foreground">
+            Optional default location — pre-fills the event&apos;s address, which stays editable.
+          </p>
+        </div>
+      )}
       <div className="grid grid-cols-3 gap-4">
         <div className="grid gap-2">
           <Label htmlFor={`${idPrefix}_capacity`}>Default capacity</Label>
@@ -394,10 +437,13 @@ export function EventTemplatesManager({
   templates,
   roleTypes,
   eventTypes,
+  venues,
 }: {
   templates: EventTemplateWithRoles[];
   roleTypes: TemplateRoleTypeOption[];
   eventTypes: EventTypeOption[];
+  /** Active saved venues, for the default-location picker. */
+  venues: Venue[];
 }) {
   const router = useRouter();
   const [showAdd, setShowAdd] = useState(false);
@@ -486,6 +532,7 @@ export function EventTemplatesManager({
                 onChange={setAddInput}
                 roleTypes={roleTypes}
                 eventTypes={eventTypes}
+                venues={venues}
                 idPrefix="add_template"
               />
               {addError && <p className="text-sm text-red-500">{addError}</p>}
@@ -524,6 +571,7 @@ export function EventTemplatesManager({
                     onChange={setEditInput}
                     roleTypes={roleTypes}
                     eventTypes={eventTypes}
+                    venues={venues}
                     idPrefix={`edit_template_${template.id}`}
                   />
                   {editError && <p className="text-sm text-red-500">{editError}</p>}
@@ -550,6 +598,16 @@ export function EventTemplatesManager({
                     <p className="text-sm text-muted-foreground">
                       {template.event_type} · {template.chapter ?? "All chapters"}
                     </p>
+                    {(template.default_title || template.default_venue_name) && (
+                      <p className="text-sm text-muted-foreground">
+                        {[
+                          template.default_title && `Title: ${template.default_title}`,
+                          template.default_venue_name && `Venue: ${template.default_venue_name}`,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </p>
+                    )}
                     <p className="text-sm text-muted-foreground">
                       Capacity: {template.default_capacity ?? "Unlimited"} · Sections:{" "}
                       {sectionsLabel(template.default_registration_sections)}

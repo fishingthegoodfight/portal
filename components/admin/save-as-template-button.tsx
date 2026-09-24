@@ -12,9 +12,9 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 
 /** A good event can become a template without re-entering it — copies
- * description, capacity, registration sections, virtual details, and
- * catalog-backed volunteer roles (shift times become offsets from the
- * event's start). */
+ * title, description, capacity, registration sections, location, virtual
+ * details, and catalog-backed volunteer roles (shift times become offsets
+ * from the event's start). */
 export function SaveAsTemplateButton({
   eventId,
   eventName,

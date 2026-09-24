@@ -6,6 +6,7 @@ import { countLabel, type DeleteResult, type UsageResult } from "@/lib/admin/usa
 import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 import type { ShiftAnchor } from "@/lib/event-templates";
+import { isLocationEmpty, locationErrors, type LocationFieldsValue } from "@/lib/event-location";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
@@ -27,6 +28,8 @@ export type TemplateRoleInput = {
 
 export type TemplateInput = {
   name: string;
+  /** Pre-fills the event title; "" = the title starts blank. */
+  defaultTitle: string;
   eventType: string;
   /** "" = available to every chapter. */
   chapter: string;
@@ -36,6 +39,8 @@ export type TemplateInput = {
   defaultRegistrationSections: string[];
   defaultVirtualLink: string;
   defaultVirtualAccessNotes: string;
+  /** All blank = no default location. */
+  defaultLocation: LocationFieldsValue;
   roles: TemplateRoleInput[];
 };
 
@@ -56,6 +61,12 @@ function validate(input: TemplateInput): string | null {
   if (input.defaultRegistrationSections.some((id) => !VALID_SECTION_IDS.has(id))) {
     return "Unknown registration section";
   }
+  // Optional as a whole, but a partial address would pre-fill a location the
+  // wizard then rejects.
+  if (!isLocationEmpty(input.defaultLocation)) {
+    const problems = locationErrors(input.defaultLocation);
+    if (problems.length > 0) return `Default location: ${problems.join("; ")}`;
+  }
   for (const role of input.roles) {
     if (!role.roleTypeId.trim()) return "Every template role needs a role type";
     const needed = Number(role.numberNeeded.trim());
@@ -72,6 +83,26 @@ function validate(input: TemplateInput): string | null {
     // checks the concrete, applied times instead.
   }
   return null;
+}
+
+function templateColumns(input: TemplateInput) {
+  const loc = input.defaultLocation;
+  return {
+    name: input.name.trim(),
+    default_title: input.defaultTitle.trim() || null,
+    event_type: input.eventType,
+    chapter: input.chapter || null,
+    description: input.description.trim() || null,
+    default_capacity: input.defaultCapacity.trim() ? Number(input.defaultCapacity.trim()) : null,
+    default_registration_sections: input.defaultRegistrationSections,
+    default_virtual_link: input.defaultVirtualLink.trim() || null,
+    default_virtual_access_notes: input.defaultVirtualAccessNotes.trim() || null,
+    default_venue_name: loc.venueName.trim() || null,
+    default_street_address: loc.streetAddress.trim() || null,
+    default_city: loc.city.trim() || null,
+    default_state: loc.state.trim().toUpperCase() || null,
+    default_postal_code: loc.postalCode.trim() || null,
+  };
 }
 
 async function replaceRoles(
@@ -115,16 +146,7 @@ export async function createTemplateAction(input: TemplateInput): Promise<Action
 
   const { data: created, error } = await supabase
     .from("event_templates")
-    .insert({
-      name: input.name.trim(),
-      event_type: input.eventType,
-      chapter: input.chapter || null,
-      description: input.description.trim() || null,
-      default_capacity: input.defaultCapacity.trim() ? Number(input.defaultCapacity.trim()) : null,
-      default_registration_sections: input.defaultRegistrationSections,
-      default_virtual_link: input.defaultVirtualLink.trim() || null,
-      default_virtual_access_notes: input.defaultVirtualAccessNotes.trim() || null,
-    })
+    .insert(templateColumns(input))
     .select("id")
     .single();
   if (error || !created) return { ok: false, error: error?.message ?? "Failed to create template" };
@@ -150,16 +172,7 @@ export async function updateTemplateAction(id: number, input: TemplateInput): Pr
 
   const { error } = await supabase
     .from("event_templates")
-    .update({
-      name: input.name.trim(),
-      event_type: input.eventType,
-      chapter: input.chapter || null,
-      description: input.description.trim() || null,
-      default_capacity: input.defaultCapacity.trim() ? Number(input.defaultCapacity.trim()) : null,
-      default_registration_sections: input.defaultRegistrationSections,
-      default_virtual_link: input.defaultVirtualLink.trim() || null,
-      default_virtual_access_notes: input.defaultVirtualAccessNotes.trim() || null,
-    })
+    .update(templateColumns(input))
     .eq("id", id);
   if (error) return { ok: false, error: error.message };
 
@@ -240,8 +253,9 @@ export type SaveAsTemplateResult =
   | { ok: false; error: string };
 
 /**
- * Turns an existing event into a reusable template: copies its description,
- * capacity, registration sections, virtual details, and volunteer roles
+ * Turns an existing event into a reusable template: copies its title,
+ * description, capacity, registration sections, location, virtual details,
+ * and volunteer roles
  * (with their titles)
  * (only ones with a catalog role_type_id — a free-text "Custom / other" role
  * has nothing to carry into a template's role_type_id, which is NOT NULL, so
@@ -272,7 +286,7 @@ export async function saveEventAsTemplateAction(
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, event_type, starts_at, ends_at, description, capacity, registration_sections, virtual_link, virtual_access_notes",
+      "id, name, event_type, starts_at, ends_at, description, capacity, registration_sections, virtual_link, virtual_access_notes, venue_name, street_address, city, state, postal_code",
     )
     .eq("id", eventId)
     .maybeSingle();
@@ -307,6 +321,7 @@ export async function saveEventAsTemplateAction(
     .from("event_templates")
     .insert({
       name,
+      default_title: event.name,
       event_type: event.event_type,
       chapter: input.chapter || null,
       description: event.description,
@@ -314,6 +329,11 @@ export async function saveEventAsTemplateAction(
       default_registration_sections: event.registration_sections ?? [],
       default_virtual_link: event.virtual_link,
       default_virtual_access_notes: event.virtual_access_notes,
+      default_venue_name: event.venue_name || null,
+      default_street_address: event.street_address || null,
+      default_city: event.city || null,
+      default_state: event.state || null,
+      default_postal_code: event.postal_code || null,
     })
     .select("id")
     .single();

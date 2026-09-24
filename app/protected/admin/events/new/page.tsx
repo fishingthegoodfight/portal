@@ -7,6 +7,7 @@ import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
 import { EventCreateWizard } from "@/components/admin/event-create-wizard";
 import type { EventTypeOption } from "@/lib/event-types";
 import { TEMPLATE_WITH_ROLES_COLUMNS, type EventTemplateWithRoles } from "@/lib/event-templates";
+import { VENUE_COLUMNS, type Venue } from "@/lib/venues";
 
 async function NewEventLoader() {
   const supabase = await createClient();
@@ -26,8 +27,13 @@ async function NewEventLoader() {
     redirect("/protected/admin");
   }
 
-  const [{ data: profile }, { data: roleTypes }, { data: eventTypes }, { data: templates }] =
-    await Promise.all([
+  const [
+    { data: profile },
+    { data: roleTypes },
+    { data: eventTypes },
+    { data: templates },
+    { data: venues },
+  ] = await Promise.all([
       supabase.from("profiles").select("first_name, last_name, email, phone").eq("id", userId).maybeSingle(),
       supabase
         .from("volunteer_role_types")
@@ -41,6 +47,7 @@ async function NewEventLoader() {
         .eq("active", true)
         .order("sort_order", { ascending: true }),
       supabase.from("event_templates").select(TEMPLATE_WITH_ROLES_COLUMNS).eq("active", true).order("name", { ascending: true }),
+      supabase.from("venues").select(VENUE_COLUMNS).eq("active", true).order("name", { ascending: true }),
     ]);
 
   const leadName = [profile?.first_name, profile?.last_name].filter(Boolean).join(" ");
@@ -56,6 +63,7 @@ async function NewEventLoader() {
       eventTypes={(eventTypes ?? []) as EventTypeOption[]}
       templates={(templates ?? []) as unknown as EventTemplateWithRoles[]}
       allowedChapters={allowedChapters}
+      venues={(venues ?? []) as Venue[]}
     />
   );
 }

@@ -2,6 +2,7 @@ import { cache } from "react";
 
 import { createAnonClient } from "@/lib/supabase/anon";
 import { isVirtualChapter } from "@/lib/chapters";
+import { cityStateZip } from "@/lib/event-location";
 
 /**
  * Exactly the columns granted to anon on events (see the 2026-09-23 "Public
@@ -10,7 +11,7 @@ import { isVirtualChapter } from "@/lib/chapters";
  * leaking, so this list can only ever be a subset of that grant.
  */
 const PUBLIC_EVENT_COLUMNS =
-  "id, slug, name, chapter, event_type, starts_at, ends_at, timezone, location, venue_name, street_address, city, state, description, occurrence_note, capacity, spots_taken, status, cancellation_reason";
+  "id, slug, name, chapter, event_type, starts_at, ends_at, timezone, location, venue_name, street_address, city, state, postal_code, description, occurrence_note, capacity, spots_taken, status, cancellation_reason";
 
 export type PublicEvent = {
   id: number;
@@ -26,6 +27,7 @@ export type PublicEvent = {
   street_address: string | null;
   city: string | null;
   state: string | null;
+  postal_code: string | null;
   description: string | null;
   occurrence_note: string | null;
   capacity: number | null;
@@ -95,12 +97,16 @@ export const loadPublicEvent = cache(async (param: string): Promise<PublicEventL
   return { kind: "found", event: event as PublicEvent, spotsLeft };
 });
 
-/** The address as shown publicly: venue, street, "City, ST" on separate
- * lines, or the older free-text location; nothing for a virtual event. */
+/** The address as shown publicly: venue, street, "City, ST 80202" on
+ * separate lines, or the older free-text location; nothing for a virtual
+ * event. */
 export function publicLocationLines(event: PublicEvent): string[] {
   if (isVirtualChapter(event.chapter)) return [];
-  const cityState = [event.city, event.state].filter(Boolean).join(", ");
-  const lines = [event.venue_name, event.street_address, cityState].filter(
+  const lines = [
+    event.venue_name,
+    event.street_address,
+    cityStateZip(event.city, event.state, event.postal_code),
+  ].filter(
     (line): line is string => Boolean(line?.trim()),
   );
   if (lines.length > 0) return lines;

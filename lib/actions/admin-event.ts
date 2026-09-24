@@ -59,6 +59,7 @@ type EventRow = {
   street_address: string | null;
   city: string | null;
   state: string | null;
+  postal_code: string | null;
   virtual_link: string | null;
   virtual_access_notes: string | null;
   capacity: number | null;
@@ -85,7 +86,7 @@ type EventRow = {
 };
 
 const EVENT_COLUMNS =
-  "id, slug, name, event_type, description, occurrence_note, location, venue_name, street_address, city, state, virtual_link, virtual_access_notes, capacity, lead_name, lead_user_id, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason, cancelled_at, series_id";
+  "id, slug, name, event_type, description, occurrence_note, location, venue_name, street_address, city, state, postal_code, virtual_link, virtual_access_notes, capacity, lead_name, lead_user_id, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason, cancelled_at, series_id";
 
 async function loadEvent(
   supabase: SupabaseServerClient,
@@ -310,6 +311,8 @@ export type EventEditInput = {
   streetAddress: string;
   city: string;
   state: string;
+  /** Optional ZIP. */
+  postalCode: string;
   /** Required, ignored otherwise, when chapter is VIRTUAL_CHAPTER. */
   virtualLink: string;
   virtualAccessNotes: string;
@@ -493,6 +496,7 @@ function applyToLaterOccurrence(
       "street_address",
       "city",
       "state",
+      "postal_code",
       "virtual_link",
       "virtual_access_notes",
     );
@@ -552,6 +556,7 @@ function eventUpdateColumns(row: EventRow, icsSequence: number) {
     street_address: row.street_address,
     city: row.city,
     state: row.state,
+    postal_code: row.postal_code,
     virtual_link: row.virtual_link,
     virtual_access_notes: row.virtual_access_notes,
     capacity: row.capacity,
@@ -680,8 +685,8 @@ export async function updateEventAction(
   const waiverState = waiverStateForChapter(input.chapter);
   const isVirtual = isVirtualChapter(input.chapter);
 
-  // Same four fields and rule as the create wizard. An older event that only
-  // has free text keeps it if the admin leaves all four blank. A virtual
+  // Same fields and rule as the create wizard. An older event that only
+  // has free text keeps it if the admin leaves them all blank. A virtual
   // event skips physical-location validation entirely and needs a meeting
   // link instead.
   const virtualLink = input.virtualLink.trim();
@@ -723,6 +728,11 @@ export async function updateEventAction(
         : input.streetAddress.trim(),
     city: isVirtual ? null : keepLegacyLocation ? before.city : input.city.trim(),
     state: isVirtual ? null : keepLegacyLocation ? before.state : input.state.trim(),
+    postal_code: isVirtual
+      ? null
+      : keepLegacyLocation
+        ? before.postal_code
+        : input.postalCode.trim() || null,
     virtual_link: isVirtual ? virtualLink : null,
     virtual_access_notes: isVirtual ? virtualAccessNotes || null : null,
     capacity,

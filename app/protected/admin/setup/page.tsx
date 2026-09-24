@@ -17,7 +17,12 @@ const SETUP_LINKS = [
   {
     href: "/protected/admin/event-templates",
     title: "Event templates",
-    description: "Reusable starting points for the create wizard — description, capacity, and volunteer roles.",
+    description: "Reusable starting points for the create wizard — title, description, location, capacity, and volunteer roles.",
+  },
+  {
+    href: "/protected/admin/venues",
+    title: "Venues",
+    description: "Saved places the event forms can pick from to fill in the address. Retire old ones without touching past events.",
   },
   {
     href: "/protected/admin/volunteers/roles",

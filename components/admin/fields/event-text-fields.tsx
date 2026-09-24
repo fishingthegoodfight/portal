@@ -23,7 +23,7 @@ export function TitleField({
 }) {
   return (
     <div className="grid gap-2">
-      <Label htmlFor={`${idPrefix}_title`}>Title</Label>
+      <Label htmlFor={`${idPrefix}_title`}>Event title</Label>
       <Input
         id={`${idPrefix}_title`}
         required

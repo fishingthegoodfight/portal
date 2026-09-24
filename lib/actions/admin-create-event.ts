@@ -49,6 +49,8 @@ export type CreateEventInput = {
   streetAddress: string;
   city: string;
   state: string;
+  /** Optional ZIP. */
+  postalCode: string;
   /** Required, ignored otherwise, when chapter is VIRTUAL_CHAPTER. */
   virtualLink: string;
   virtualAccessNotes: string;
@@ -151,6 +153,7 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
   const streetAddress = isVirtual ? "" : input.streetAddress.trim();
   const city = isVirtual ? "" : input.city.trim();
   const state = isVirtual ? "" : input.state.trim();
+  const postalCode = isVirtual ? "" : input.postalCode.trim();
   const virtualLink = isVirtual ? input.virtualLink.trim() : "";
   const virtualAccessNotes = isVirtual ? input.virtualAccessNotes.trim() : "";
   if (isVirtual) {
@@ -233,6 +236,7 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
         street_address: streetAddress,
         city,
         state,
+        postal_code: postalCode || null,
         location,
         virtual_link: virtualLink || null,
         virtual_access_notes: virtualAccessNotes || null,

@@ -5215,3 +5215,104 @@ revoke all on function public.admin_set_user_role(uuid, text, text[]) from publi
 grant execute on function public.admin_set_user_role(uuid, text, text[]) to authenticated;
 
 commit;
+
+-- =============================================================================
+-- 2026-09-24 — Event ZIP codes, template title + location, saved venues
+-- =============================================================================
+-- 1. events.postal_code: optional ZIP next to state. The composed
+--    events.location string (cards, emails, .ics LOCATION) now ends
+--    "City, ST 80202" when one is given; existing rows are untouched until
+--    edited. Granted to anon alongside the other address columns so the
+--    public event page can show it (see the 2026-09-23 "Public event pages"
+--    entry — anon only ever gets an explicit column list).
+--
+-- 2. event_templates.default_title: pre-fills the new event's title (null =
+--    the title starts blank; the template's own `name` is never copied).
+--    event_templates.default_venue_name / _street_address / _city / _state /
+--    _postal_code: an optional default location. Like everything else on a
+--    template, applying it copies values — nothing links back.
+--
+-- 3. venues: saved places the event forms' venue picker offers. Picking one
+--    COPIES its address onto the event (events keep their own venue_name,
+--    street_address, city, state, postal_code), so editing, retiring
+--    (active = false) or deleting a venue never changes any event or
+--    template. chapter null = offered to every chapter.
+--    - read: anyone with the event-management area (has_event_admin_access)
+--    - add: admins, and chapter leads for a chapter they lead
+--      (can_manage_chapter) — the forms' "Save this venue for next time";
+--      an all-chapter venue (chapter null) is admin-only
+--    - edit / retire / delete: admins only
+--    One venue per name per chapter (case-insensitive).
+--
+-- Wrapped in one transaction: if any statement fails, nothing is applied.
+
+begin;
+
+-- ---- 1. Event ZIP code ----------------------------------------------------------
+alter table public.events add column if not exists postal_code text;
+
+grant select (postal_code) on public.events to anon;
+
+-- ---- 2. Template title + default location ---------------------------------------
+alter table public.event_templates
+  add column if not exists default_title text,
+  add column if not exists default_venue_name text,
+  add column if not exists default_street_address text,
+  add column if not exists default_city text,
+  add column if not exists default_state text,
+  add column if not exists default_postal_code text;
+
+-- ---- 3. Saved venues ------------------------------------------------------------
+create table if not exists public.venues (
+  id bigserial primary key,
+  name text not null check (btrim(name) <> ''),
+  street_address text,
+  city text,
+  state text,
+  postal_code text,
+  -- Null = offered to every chapter; otherwise an events.chapter name.
+  chapter text,
+  active boolean not null default true,
+  created_by uuid default auth.uid() references auth.users(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+
+create unique index if not exists venues_chapter_name_key
+  on public.venues (coalesce(chapter, ''), lower(btrim(name)));
+
+alter table public.venues enable row level security;
+
+drop policy if exists venues_select on public.venues;
+create policy venues_select on public.venues
+  for select to authenticated
+  using (public.has_event_admin_access());
+
+-- can_manage_chapter is true for admins in any chapter; a null chapter
+-- (all chapters) only passes the is_admin() half. A lead can only add an
+-- active venue.
+drop policy if exists venues_insert on public.venues;
+create policy venues_insert on public.venues
+  for insert to authenticated
+  with check (
+    public.is_admin()
+    or (active and chapter is not null and public.can_manage_chapter(chapter))
+  );
+
+drop policy if exists venues_update_admin on public.venues;
+create policy venues_update_admin on public.venues
+  for update to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+drop policy if exists venues_delete_admin on public.venues;
+create policy venues_delete_admin on public.venues
+  for delete to authenticated
+  using (public.is_admin());
+
+revoke all on public.venues from anon;
+grant select, insert, update, delete on public.venues to authenticated;
+grant usage, select on sequence public.venues_id_seq to authenticated;
+grant all on public.venues to service_role;
+grant usage, select on sequence public.venues_id_seq to service_role;
+
+commit;

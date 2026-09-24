@@ -4,10 +4,11 @@ import { createClient } from "@/lib/supabase/server";
 import { EventTemplatesManager } from "@/components/admin/event-templates-manager";
 import { TEMPLATE_WITH_ROLES_COLUMNS, type EventTemplateWithRoles } from "@/lib/event-templates";
 import type { EventTypeOption } from "@/lib/event-types";
+import { VENUE_COLUMNS, type Venue } from "@/lib/venues";
 
 async function EventTemplatesLoader() {
   const supabase = await createClient();
-  const [{ data: templates, error }, { data: roleTypes }, { data: eventTypes }] = await Promise.all([
+  const [{ data: templates, error }, { data: roleTypes }, { data: eventTypes }, { data: venues }] = await Promise.all([
     supabase.from("event_templates").select(TEMPLATE_WITH_ROLES_COLUMNS).order("name", { ascending: true }),
     supabase
       .from("volunteer_role_types")
@@ -19,6 +20,7 @@ async function EventTemplatesLoader() {
       .from("event_types")
       .select("id, key, name, default_registration_sections, sort_order, active")
       .order("sort_order", { ascending: true }),
+    supabase.from("venues").select(VENUE_COLUMNS).eq("active", true).order("name", { ascending: true }),
   ]);
 
   if (error) {
@@ -30,6 +32,7 @@ async function EventTemplatesLoader() {
       templates={(templates ?? []) as unknown as EventTemplateWithRoles[]}
       roleTypes={roleTypes ?? []}
       eventTypes={(eventTypes ?? []) as EventTypeOption[]}
+      venues={(venues ?? []) as Venue[]}
     />
   );
 }

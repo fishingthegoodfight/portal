@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
@@ -22,10 +22,21 @@ import { capacityError } from "@/lib/event-capacity";
 import { ChapterField } from "@/components/admin/fields/chapter-field";
 import { LocationFields } from "@/components/admin/fields/location-fields";
 import { VirtualEventFields } from "@/components/admin/fields/virtual-event-fields";
-import { locationErrors } from "@/lib/event-location";
+import {
+  composeLocation,
+  isLocationEmpty,
+  locationErrors,
+  type LocationFieldsValue,
+} from "@/lib/event-location";
 import { isVirtualChapter } from "@/lib/chapters";
 import type { EventTypeOption } from "@/lib/event-types";
-import type { EventTemplateWithRoles, ShiftAnchor } from "@/lib/event-templates";
+import {
+  templateLocation,
+  type EventTemplateWithRoles,
+  type ShiftAnchor,
+} from "@/lib/event-templates";
+import { saveVenueFromEventAction } from "@/lib/actions/venues";
+import { findVenueByName, venuesForChapter, type Venue } from "@/lib/venues";
 import { formatEventDateRange } from "@/lib/format-date";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 import { zonedDateTimeToUtc } from "@/lib/timezone";
@@ -61,6 +72,7 @@ function emptyForm(prefill: AdminPrefill): CreateEventInput {
     streetAddress: "",
     city: "",
     state: "",
+    postalCode: "",
     virtualLink: "",
     virtualAccessNotes: "",
     description: "",
@@ -198,6 +210,7 @@ export function EventCreateWizard({
   eventTypes,
   templates,
   allowedChapters,
+  venues,
 }: {
   adminPrefill: AdminPrefill;
   /** The chapters this person may create events in (manageable_chapters). */
@@ -210,6 +223,8 @@ export function EventCreateWizard({
   /** Active event_templates with their roles, for the "Start from a
    * template" picker — filtered client-side to the selected chapter. */
   templates: EventTemplateWithRoles[];
+  /** Active saved venues, for the venue picker. */
+  venues: Venue[];
 }) {
   const router = useRouter();
   const initialForm = useMemo(() => emptyForm(adminPrefill), [adminPrefill]);
@@ -220,6 +235,10 @@ export function EventCreateWizard({
   const [stepErrors, setStepErrors] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // "Save this venue for next time" — only offered in a chapter this person
+  // leads (the venues insert policy's rule too).
+  const [saveVenue, setSaveVenue] = useState(false);
+  const canSaveVenue = allowedChapters.includes(form.chapter);
   const cardRef = useRef<HTMLDivElement>(null);
   const hasRestoredDraft = useRef(false);
   const isSubmittedRef = useRef(false);
@@ -237,11 +256,13 @@ export function EventCreateWizard({
         form: CreateEventInput;
         step: number;
         timezoneOverridden: boolean;
+        saveVenue?: boolean;
       };
       // eslint-disable-next-line react-hooks/set-state-in-effect -- Restoring a saved draft from localStorage, which only exists in the browser: reading it during render would mismatch the server-rendered HTML, so it has to happen after mount (once, guarded by hasRestoredDraft).
       setForm((prev) => ({ ...prev, ...draft.form }));
       setStep(draft.step);
       setTimezoneOverridden(draft.timezoneOverridden);
+      setSaveVenue(draft.saveVenue ?? false);
     } catch {
       // Corrupt or unreadable draft — ignore, start fresh.
     }
@@ -250,14 +271,19 @@ export function EventCreateWizard({
   const isDirty = JSON.stringify(form) !== JSON.stringify(initialForm);
 
   useEffect(() => {
-    if (!isDirty) return;
+    // After a successful create the finished form is still in state until the
+    // page is hidden (see the reset below) — never write it back as a draft.
+    if (!isDirty || isSubmittedRef.current) return;
     try {
-      window.localStorage.setItem(DRAFT_KEY, JSON.stringify({ form, step, timezoneOverridden }));
+      window.localStorage.setItem(
+        DRAFT_KEY,
+        JSON.stringify({ form, step, timezoneOverridden, saveVenue }),
+      );
     } catch {
       // Storage full or unavailable (private browsing) — persistence is a
       // nicety, not something to block on.
     }
-  }, [form, step, timezoneOverridden, isDirty]);
+  }, [form, step, timezoneOverridden, saveVenue, isDirty]);
 
   // Catches an actual page unload (tab close, refresh, typed URL) — the App
   // Router has no supported hook for intercepting in-app Link navigation,
@@ -322,6 +348,30 @@ export function EventCreateWizard({
   // tracking the template.
   const [templateRoleTracking, setTemplateRoleTracking] = useState<TemplateRoleTracking[]>([]);
 
+  // With cacheComponents on, navigating away after a successful create
+  // doesn't unmount this wizard — Next.js hides the page in <Activity> and
+  // keeps its state, and every effect re-runs when it's shown again. So
+  // "Admin > New event" would reopen on the Review step of the event just
+  // created, and the draft-saving effect would write that back to
+  // localStorage. Reset to a blank form when the page is hidden after a
+  // successful submit (see node_modules/next/dist/docs/01-app/02-guides/
+  // preserving-ui-state.md, "Resetting stale status messages"). A draft the
+  // admin navigated away from WITHOUT submitting is left alone.
+  useLayoutEffect(() => {
+    return () => {
+      if (!isSubmittedRef.current) return;
+      isSubmittedRef.current = false;
+      setForm(initialForm);
+      setStep(1);
+      setTimezoneOverridden(false);
+      setTemplateRoleTracking([]);
+      setStepErrors([]);
+      setSubmitError(null);
+      setIsSubmitting(false);
+      setSaveVenue(false);
+    };
+  }, [initialForm]);
+
   // Before a chapter is chosen every template is offered (picking a
   // chapter-specific one sets the chapter); after, only that chapter's and
   // the all-chapter ones — plus whichever is already selected, so the picker
@@ -336,25 +386,58 @@ export function EventCreateWizard({
         String(t.id) === form.templateId),
   );
 
-  // Anything a template would overwrite — used to decide whether switching
-  // or clearing the selection needs to ask first.
-  const hasTemplateApplicableContent = () =>
-    Boolean(
-      form.description.trim() ||
-        form.capacity.trim() ||
-        form.registrationSections.length > 0 ||
-        form.virtualLink.trim() ||
-        form.virtualAccessNotes.trim() ||
-        form.volunteerRoles.length > 0,
-    );
+  // Title and location only follow the template while they still hold what
+  // the previously applied template put there (or nothing) — once the admin
+  // has typed their own, switching templates keeps it unless the new
+  // template has its own value to replace it with. A template with no title
+  // (or location) never leaves the previous template's behind.
+  const currentTemplate = templates.find((t) => String(t.id) === form.templateId);
+  const formLocation = (f: CreateEventInput): LocationFieldsValue => ({
+    venueName: f.venueName,
+    streetAddress: f.streetAddress,
+    city: f.city,
+    state: f.state,
+    postalCode: f.postalCode,
+  });
+  const titleIsOwn = (f: CreateEventInput) =>
+    f.title.trim() !== "" && f.title.trim() !== (currentTemplate?.default_title ?? "").trim();
+  const locationIsOwn = (f: CreateEventInput) =>
+    !isLocationEmpty(formLocation(f)) &&
+    (!currentTemplate ||
+      JSON.stringify(formLocation(f)) !== JSON.stringify(templateLocation(currentTemplate)));
+
+  // The fields `next` (a template, or null to clear) would overwrite that
+  // hold something — decides whether switching or clearing asks first, and
+  // what it names.
+  const templateOverwrites = (next: EventTemplateWithRoles | null): string[] => {
+    const fields: string[] = [];
+    if (next?.default_title?.trim() && titleIsOwn(form)) fields.push("title");
+    if (form.description.trim()) fields.push("description");
+    if (next && !isLocationEmpty(templateLocation(next)) && locationIsOwn(form)) {
+      fields.push("location");
+    }
+    if (form.capacity.trim()) fields.push("capacity");
+    if (form.registrationSections.length > 0) fields.push("registration sections");
+    if (form.virtualLink.trim() || form.virtualAccessNotes.trim()) fields.push("virtual details");
+    if (form.volunteerRoles.length > 0) fields.push("volunteer roles");
+    return fields;
+  };
 
   const roleTypeName = (id: number) => roleTypes.find((rt) => rt.id === id)?.name ?? "";
 
   const applyTemplate = (template: EventTemplateWithRoles) => {
     const sortedRoles = template.roles.slice().sort((a, b) => a.sort_order - b.sort_order);
+    const location = templateLocation(template);
+    const hasLocation = !isLocationEmpty(location);
     setForm((prev) => ({
       ...prev,
       templateId: String(template.id),
+      title: template.default_title?.trim() || (titleIsOwn(prev) ? prev.title : ""),
+      ...(hasLocation
+        ? location
+        : locationIsOwn(prev)
+          ? {}
+          : { venueName: "", streetAddress: "", city: "", state: "", postalCode: "" }),
       ...(template.chapter && template.chapter !== prev.chapter
         ? {
             chapter: template.chapter,
@@ -403,6 +486,10 @@ export function EventCreateWizard({
     setForm((prev) => ({
       ...prev,
       templateId: "",
+      title: titleIsOwn(prev) ? prev.title : "",
+      ...(locationIsOwn(prev)
+        ? {}
+        : { venueName: "", streetAddress: "", city: "", state: "", postalCode: "" }),
       description: "",
       capacity: "",
       registrationSections: [],
@@ -415,22 +502,27 @@ export function EventCreateWizard({
   };
 
   const handleTemplateChange = (value: string) => {
+    const template = value ? templates.find((t) => String(t.id) === value) ?? null : null;
+    const overwrites = templateOverwrites(template);
+    const list =
+      overwrites.length > 1
+        ? `${overwrites.slice(0, -1).join(", ")}, and ${overwrites[overwrites.length - 1]}`
+        : overwrites[0];
     if (
-      hasTemplateApplicableContent() &&
+      overwrites.length > 0 &&
       !window.confirm(
         value
-          ? "Choosing a different template will overwrite the description, capacity, registration sections, virtual details, and volunteer roles you've already entered. Continue?"
-          : "Clearing the template will reset the description, capacity, registration sections, virtual details, and volunteer roles it filled in. Continue?",
+          ? `Choosing a different template will overwrite the ${list} you've already entered. Continue?`
+          : `Clearing the template will reset the ${list} it filled in. Continue?`,
       )
     ) {
       return;
     }
-    if (!value) {
+    if (!template) {
       clearTemplateFields();
       return;
     }
-    const template = templates.find((t) => String(t.id) === value);
-    if (template) applyTemplate(template);
+    applyTemplate(template);
   };
 
   // Once a date/time exist, keep any still-template-derived role's shift
@@ -527,13 +619,34 @@ export function EventCreateWizard({
     }
     setIsSubmitting(true);
     setSubmitError(null);
-    const result = await createEventAction(form);
-    setIsSubmitting(false);
 
+    // Saved before the event, so a problem here can't leave a created event
+    // behind to be duplicated on retry.
+    if (
+      saveVenue &&
+      canSaveVenue &&
+      !isVirtualChapter(form.chapter) &&
+      !findVenueByName(venuesForChapter(venues, form.chapter), form.venueName)
+    ) {
+      const venueResult = await saveVenueFromEventAction({ ...formLocation(form), chapter: form.chapter });
+      if (!venueResult.ok) {
+        setIsSubmitting(false);
+        setSubmitError(
+          `Couldn't save the venue for next time: ${venueResult.error}. Untick "Save this venue for next time" on the Details step to create the event without it.`,
+        );
+        return;
+      }
+    }
+
+    const result = await createEventAction(form);
     if (!result.ok) {
+      setIsSubmitting(false);
       setSubmitError(result.error);
       return;
     }
+    // Clear the draft now, before navigating, and stop anything re-saving it.
+    // The button stays disabled ("Creating...") until the page is hidden,
+    // when the useLayoutEffect cleanup above resets the whole form.
     isSubmittedRef.current = true;
     clearDraft();
     router.push(`/protected/admin/events/${result.eventIds[0]}`);
@@ -604,8 +717,9 @@ export function EventCreateWizard({
                   ))}
                 </Select>
                 <p className="text-xs text-muted-foreground">
-                  A shortcut: pre-fills the event type, description, capacity, registration
-                  sections, virtual details, and volunteer roles. Everything stays editable.
+                  A shortcut: pre-fills the event type, title, description, location, capacity,
+                  registration sections, virtual details, and volunteer roles — whichever the
+                  template has. Everything stays editable.
                 </p>
               </div>
             )}
@@ -664,7 +778,11 @@ export function EventCreateWizard({
               <LocationFields
                 idPrefix="create"
                 value={form}
-                onChange={(field, value) => setField(field)(value)}
+                onChange={(patch) => setForm((prev) => ({ ...prev, ...patch }))}
+                venues={venues}
+                chapter={form.chapter}
+                saveVenue={saveVenue}
+                onSaveVenueChange={canSaveVenue ? setSaveVenue : undefined}
               />
             )}
 
@@ -822,12 +940,14 @@ export function EventCreateWizard({
               {isVirtualChapter(form.chapter) ? (
                 <ReviewRow label="Meeting link" value={form.virtualLink || "—"} />
               ) : (
-                <ReviewRow
-                  label="Location"
-                  value={[form.venueName, form.streetAddress, `${form.city}, ${form.state}`]
-                    .filter(Boolean)
-                    .join(", ")}
-                />
+                <>
+                  <ReviewRow label="Location" value={composeLocation(formLocation(form)) ?? "—"} />
+                  {saveVenue &&
+                    canSaveVenue &&
+                    !findVenueByName(venuesForChapter(venues, form.chapter), form.venueName) && (
+                      <ReviewRow label="Saved venues" value={`"${form.venueName.trim()}" will be added for ${form.chapter}`} />
+                    )}
+                </>
               )}
               <ReviewRow label="About this event" value={form.description || "—"} />
               <ReviewRow label="What's different about this one" value={form.occurrenceNote.trim() || "—"} />

@@ -40,6 +40,8 @@ import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/componen
 import type { EventTypeOption } from "@/lib/event-types";
 import { Label } from "@/components/ui/label";
 import { normalizeSlug, slugError } from "@/lib/event-slug";
+import { saveVenueFromEventAction } from "@/lib/actions/venues";
+import { findVenueByName, venuesForChapter, type Venue } from "@/lib/venues";
 
 type StringField = Exclude<keyof EventEditInput, "registrationSections" | "volunteerRoles">;
 
@@ -69,6 +71,7 @@ export function EventEditForm({
   roleTypes,
   signedUpByRoleId,
   allowedChapters,
+  venues,
 }: {
   eventId: number;
   /** "https://…/events/" — shown in front of the slug field. */
@@ -92,6 +95,8 @@ export function EventEditForm({
   /** Chapters this person may move the event to (manageable_chapters) —
    * the current one always stays. */
   allowedChapters: string[];
+  /** Active saved venues, for the venue picker. */
+  venues: Venue[];
 }) {
   const router = useRouter();
   const [form, setForm] = useState<EventEditInput>(initial);
@@ -115,6 +120,10 @@ export function EventEditForm({
   const [applyOccurrenceNote, setApplyOccurrenceNote] = useState(false);
   // The existing role (by index) whose "Remove" is asking to cancel instead.
   const [cancelAsk, setCancelAsk] = useState<number | null>(null);
+  // "Save this venue for next time" — only offered to someone who leads the
+  // event's chapter (the venues insert policy's rule too).
+  const [saveVenue, setSaveVenue] = useState(false);
+  const canSaveVenue = allowedChapters.includes(form.chapter);
 
   const edit = (updater: (prev: EventEditInput) => EventEditInput) => {
     setForm(updater);
@@ -217,6 +226,26 @@ export function EventEditForm({
       }
 
       setNotifyPrompt(null);
+      // After the event itself is saved, so a venue problem never blocks it.
+      if (
+        saveVenue &&
+        canSaveVenue &&
+        !findVenueByName(venuesForChapter(venues, form.chapter), form.venueName)
+      ) {
+        const venueResult = await saveVenueFromEventAction({
+          venueName: form.venueName,
+          streetAddress: form.streetAddress,
+          city: form.city,
+          state: form.state,
+          postalCode: form.postalCode,
+          chapter: form.chapter,
+        });
+        if (!venueResult.ok) {
+          setError(`The event was saved, but the venue wasn't added to the saved list: ${venueResult.error}`);
+          return;
+        }
+        setSaveVenue(false);
+      }
       setSuccess(true);
       setTimeout(() => router.push(`/protected/admin/events/${eventId}`), 900);
     } catch (err) {
@@ -307,9 +336,13 @@ export function EventEditForm({
               <LocationFields
                 idPrefix="edit"
                 value={form}
-                onChange={(field, value) => setField(field)(value)}
+                onChange={(patch) => edit((prev) => ({ ...prev, ...patch }))}
                 required={false}
                 legacyLocation={legacyLocation}
+                venues={venues}
+                chapter={form.chapter}
+                saveVenue={saveVenue}
+                onSaveVenueChange={canSaveVenue ? setSaveVenue : undefined}
               />
             )}
 

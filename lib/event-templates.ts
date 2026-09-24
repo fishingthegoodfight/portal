@@ -1,3 +1,5 @@
+import type { LocationFieldsValue } from "@/lib/event-location";
+
 /**
  * Event templates (tables `event_templates` / `event_template_roles`, see
  * the 2026-09-22 "event templates" schema-changes.sql entry) — a reusable
@@ -35,7 +37,11 @@ export type EventTemplateRole = {
 
 export type EventTemplate = {
   id: number;
+  /** The template's own name in the picker, e.g. "Standard Fish A-Long" —
+   * never copied onto an event. */
   name: string;
+  /** Pre-fills the new event's title; null = the title starts blank. */
+  default_title: string | null;
   event_type: string;
   /** Null = available to every chapter's create wizard. */
   chapter: string | null;
@@ -44,6 +50,13 @@ export type EventTemplate = {
   default_registration_sections: string[];
   default_virtual_link: string | null;
   default_virtual_access_notes: string | null;
+  /** A default physical location, copied onto the event like everything
+   * else here (never a live link to a saved venue). */
+  default_venue_name: string | null;
+  default_street_address: string | null;
+  default_city: string | null;
+  default_state: string | null;
+  default_postal_code: string | null;
   active: boolean;
 };
 
@@ -53,4 +66,15 @@ export type EventTemplateWithRoles = EventTemplate & { roles: EventTemplateRole[
  * by the template admin screen and the create wizard's loader so neither can
  * miss a column. */
 export const TEMPLATE_WITH_ROLES_COLUMNS =
-  "id, name, event_type, chapter, description, default_capacity, default_registration_sections, default_virtual_link, default_virtual_access_notes, active, roles:event_template_roles(id, role_type_id, title, description, what_to_bring, shift_start_anchor, shift_start_offset, shift_end_anchor, shift_end_offset, number_needed, sort_order)";
+  "id, name, default_title, event_type, chapter, description, default_capacity, default_registration_sections, default_virtual_link, default_virtual_access_notes, default_venue_name, default_street_address, default_city, default_state, default_postal_code, active, roles:event_template_roles(id, role_type_id, title, description, what_to_bring, shift_start_anchor, shift_start_offset, shift_end_anchor, shift_end_offset, number_needed, sort_order)";
+
+/** A template's default location as form fields (all blank for none). */
+export function templateLocation(template: EventTemplate): LocationFieldsValue {
+  return {
+    venueName: template.default_venue_name ?? "",
+    streetAddress: template.default_street_address ?? "",
+    city: template.default_city ?? "",
+    state: template.default_state ?? "",
+    postalCode: template.default_postal_code ?? "",
+  };
+}
