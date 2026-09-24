@@ -22,7 +22,8 @@ export type SeriesOccurrence = {
   isPast: boolean;
   capacity: number | null;
   people: OccurrencePeople;
-  /** Nobody on it — the only kind that can be deleted. */
+  /** Nobody has ever registered or volunteered, cancelled signups included
+   * (eventsWithRegistrations) — the only kind that can be deleted. */
   isEmpty: boolean;
 };
 
@@ -66,7 +67,7 @@ export function SeriesOccurrences({
     const parts = [`Deleted ${result.deletedCount} ${result.deletedCount === 1 ? "occurrence" : "occurrences"}.`];
     if (result.skippedCount > 0) {
       parts.push(
-        `${result.skippedCount} ${result.skippedCount === 1 ? "wasn't" : "weren't"} deleted because someone registered in the meantime — cancel ${result.skippedCount === 1 ? "it" : "them"} instead.`,
+        `${result.skippedCount} ${result.skippedCount === 1 ? "wasn't" : "weren't"} deleted because someone has registered or signed up — cancel ${result.skippedCount === 1 ? "it" : "them"} instead.`,
       );
     }
     setMessage({ tone: result.skippedCount > 0 ? "error" : "ok", text: parts.join(" ") });
@@ -117,7 +118,7 @@ export function SeriesOccurrences({
         >
           <p className="text-red-700 dark:text-red-400">
             Permanently delete <strong>{futureEmpty.length}</strong> upcoming{" "}
-            {futureEmpty.length === 1 ? "occurrence" : "occurrences"} nobody has registered or
+            {futureEmpty.length === 1 ? "occurrence" : "occurrences"} nobody has ever registered or
             volunteered for? {futureEmpty.map((o) => o.dateRange).join("; ")}. This can&apos;t be
             undone.
           </p>
@@ -160,6 +161,9 @@ export function SeriesOccurrences({
                   {o.people.volunteers > 0 &&
                     ` · ${o.people.volunteers} ${o.people.volunteers === 1 ? "volunteer" : "volunteers"}`}
                   {o.name !== seriesName && ` · “${o.name}”`}
+                  {!o.isEmpty &&
+                    o.people.confirmed + o.people.waiting + o.people.volunteers === 0 &&
+                    " · had registrations, so it can’t be deleted"}
                 </span>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -198,7 +202,7 @@ export function SeriesOccurrences({
                       variant="ghost"
                       size="sm"
                       disabled={busy}
-                      title="Nobody is registered or volunteering, so this can be deleted"
+                      title="Nobody has ever registered or volunteered, so this can be deleted"
                       onClick={() => {
                         setMessage(null);
                         setConfirmDelete(o.id);

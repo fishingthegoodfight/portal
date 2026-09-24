@@ -7,6 +7,8 @@ import { loadEventRoster } from "@/lib/admin/roster";
 import { countSignupsCancelledWithEvent } from "@/lib/admin/event-roles";
 import { formatEventDateRange } from "@/lib/format-date";
 import { EventRoster } from "@/components/admin/event-roster";
+import { DeleteEventSection } from "@/components/admin/delete-event-section";
+import { eventsWithRegistrations } from "@/lib/admin/event-delete";
 import { ShareEventCard } from "@/components/admin/share-event-card";
 import { publicEventPath } from "@/lib/event-slug";
 import { getSiteUrl } from "@/lib/site-url";
@@ -19,9 +21,10 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
   }
 
   const supabase = await createClient();
-  const [data, access] = await Promise.all([
+  const [data, access, registered] = await Promise.all([
     loadEventRoster(supabase, eventId),
     loadEventAdminAccess(supabase),
+    eventsWithRegistrations(supabase, [eventId]),
   ]);
   if (!data) {
     notFound();
@@ -35,43 +38,53 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
       : 0;
 
   return (
-    <EventRoster
-      eventId={event.id}
-      eventCard={{
-        id: event.id,
-        name: event.name,
-        chapter: event.chapter,
-        location: event.location,
-        description: event.description,
-        occurrenceNote: event.occurrence_note,
-        dateRange: formatEventDateRange(event.starts_at, event.ends_at, event.timezone),
-        capacity: event.capacity,
-        // Open offers hold a spot, so count them as taken on the card.
-        spots_taken: (event.spots_taken ?? 0) + offeredCount,
-      }}
-      virtualLink={event.virtual_link}
-      virtualAccessNotes={event.virtual_access_notes}
-      status={event.status}
-      cancellationReason={event.cancellation_reason}
-      initialRoster={roster}
-      initialWaitlist={waitlist}
-      waiver={waiver}
-      dietary={dietary}
-      registrationSectionIds={event.registration_sections ?? []}
-      volunteerRoles={volunteerRoles}
-      initialVolunteerRoster={volunteerRoster}
-      seriesId={event.series_id}
-      volunteersCancelledWithEvent={volunteersCancelledWithEvent}
-      canSaveAsTemplate={access?.isAdmin ?? false}
-      shareCard={
-        <ShareEventCard
-          url={`${getSiteUrl()}${publicEventPath(event.slug)}`}
-          slug={event.slug}
-          published={Boolean(event.is_published)}
-          cancelled={event.status === "cancelled"}
-        />
-      }
-    />
+    <>
+      <EventRoster
+        eventId={event.id}
+        eventCard={{
+          id: event.id,
+          name: event.name,
+          chapter: event.chapter,
+          location: event.location,
+          description: event.description,
+          occurrenceNote: event.occurrence_note,
+          dateRange: formatEventDateRange(event.starts_at, event.ends_at, event.timezone),
+          capacity: event.capacity,
+          // Open offers hold a spot, so count them as taken on the card.
+          spots_taken: (event.spots_taken ?? 0) + offeredCount,
+        }}
+        virtualLink={event.virtual_link}
+        virtualAccessNotes={event.virtual_access_notes}
+        status={event.status}
+        cancellationReason={event.cancellation_reason}
+        initialRoster={roster}
+        initialWaitlist={waitlist}
+        waiver={waiver}
+        dietary={dietary}
+        registrationSectionIds={event.registration_sections ?? []}
+        volunteerRoles={volunteerRoles}
+        initialVolunteerRoster={volunteerRoster}
+        seriesId={event.series_id}
+        volunteersCancelledWithEvent={volunteersCancelledWithEvent}
+        canSaveAsTemplate={access?.isAdmin ?? false}
+        shareCard={
+          <ShareEventCard
+            url={`${getSiteUrl()}${publicEventPath(event.slug)}`}
+            slug={event.slug}
+            published={Boolean(event.is_published)}
+            cancelled={event.status === "cancelled"}
+          />
+        }
+      />
+      {/* Set apart below everything else, so it can't be hit by accident. */}
+      <DeleteEventSection
+        eventId={event.id}
+        eventName={event.name}
+        seriesId={event.series_id}
+        canDelete={!registered.has(event.id)}
+        isCancelled={event.status === "cancelled"}
+      />
+    </>
   );
 }
 

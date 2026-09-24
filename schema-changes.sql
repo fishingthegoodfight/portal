@@ -5316,3 +5316,403 @@ grant all on public.venues to service_role;
 grant usage, select on sequence public.venues_id_seq to service_role;
 
 commit;
+
+-- =============================================================================
+-- 2026-09-24 — Deleting an event nobody ever registered for
+-- =============================================================================
+-- "Delete event" on an event's Manage page, for events that were never really
+-- going to happen (typically surplus occurrences of a bulk-created series) —
+-- cancelling one leaves it in the admin list and on its public page as
+-- "cancelled".
+--
+-- The rule: an event can be deleted only if NOBODY has ever registered or
+-- signed up for it — no rsvps row in any status (confirmed, waitlisted,
+-- offered, cancelled, walk-up) and no volunteer_signups row in any status.
+-- (The series page's admin_delete_empty_events ignored cancelled rows at
+-- this point; the next entry moves it onto this same rule.) A cancelled
+-- event whose attendees were all emailed a cancellation still has their
+-- cancelled RSVPs, and deleting it would break the link in that email. Past
+-- events follow the same rule.
+--
+-- 1. event_has_registrations(event_id): the rule, in one place (internal —
+--    not callable from the app).
+--
+-- 2. admin_delete_event(event_id, include_later): deletes the event and
+--    everything hanging off it, in one transaction:
+--      rsvps (registrations, the waitlist and open offers are all rsvps rows)
+--      volunteer_signups -> volunteer_opportunities
+--      event_slug_aliases (also on delete cascade)
+--    Refuses with a clear error if the caller doesn't manage it
+--    (can_manage_event — admins, the chapter's lead, the event's own lead)
+--    or it has registrations. With include_later, also deletes every LATER
+--    occurrence of its series (any status) that the caller manages and that
+--    has no registrations; the rest are left alone. Returns the deleted ids.
+--    Nothing else in a series changes — a series left with one event is fine.
+--
+-- 3. events_delete_guard: a BEFORE DELETE trigger enforcing the same rule on
+--    ANY delete of an events row (the table editor, the SQL editor, a future
+--    code path) — delete an event's registrations deliberately first if you
+--    ever really mean to. admin_delete_event and admin_delete_empty_events
+--    remove the rows they're allowed to remove before the event, so they
+--    pass it.
+--
+-- There's no audit-log table in this schema. Who deleted what and when is
+-- recorded the same way as every other event change: the admin change
+-- notification email (ADMIN_NOTIFICATION_EMAILS), sent by the app after a
+-- delete.
+--
+-- Step 0 checks the live database for any foreign key pointing at events
+-- (or at the tables deleted along with it) beyond the ones listed above.
+-- events, rsvps and volunteer_opportunities were created in the dashboard
+-- before this file existed, so their constraints aren't recorded here. If
+-- anything unexpected references them, the whole script stops with the
+-- list and nothing is applied — send it over rather than editing around it.
+--
+-- Wrapped in one transaction: if any statement fails, nothing is applied.
+
+begin;
+
+-- ---- 0. Every foreign key into events (and its child tables) is accounted for -----
+do $check$
+declare
+  v_unexpected text;
+begin
+  select string_agg(
+           format('%s.%s -> %s (%s)', src.relname, a.attname, tgt.relname, c.conname),
+           E'\n' order by src.relname, c.conname
+         )
+    into v_unexpected
+    from pg_constraint c
+    join pg_class src on src.oid = c.conrelid
+    join pg_namespace srcns on srcns.oid = src.relnamespace
+    join pg_class tgt on tgt.oid = c.confrelid
+    join pg_namespace tgtns on tgtns.oid = tgt.relnamespace
+    join pg_attribute a on a.attrelid = c.conrelid and a.attnum = c.conkey[1]
+   where c.contype = 'f'
+     and tgtns.nspname = 'public'
+     and tgt.relname in ('events', 'rsvps', 'volunteer_opportunities', 'volunteer_signups')
+     and not (srcns.nspname = 'public' and (src.relname, tgt.relname) in (
+       ('rsvps', 'events'),
+       ('volunteer_opportunities', 'events'),
+       ('event_slug_aliases', 'events'),
+       ('volunteer_signups', 'volunteer_opportunities')
+     ));
+  if v_unexpected is not null then
+    raise exception E'Unexpected foreign keys reference events or its child tables — nothing was applied:\n%', v_unexpected;
+  end if;
+end $check$;
+
+-- ---- 1. The rule -------------------------------------------------------------------
+create or replace function public.event_has_registrations(p_event_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select exists (select 1 from public.rsvps r where r.event_id = p_event_id)
+      or exists (
+           select 1 from public.volunteer_signups s
+             join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+            where vo.event_id = p_event_id
+         );
+$function$;
+
+-- ---- 2. Delete ---------------------------------------------------------------------
+create or replace function public.admin_delete_event(
+  p_event_id bigint,
+  p_include_later boolean default false
+)
+returns setof bigint
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_event public.events%rowtype;
+  v_ids bigint[];
+  v_id bigint;
+begin
+  if not public.can_manage_event(p_event_id) then
+    raise exception 'Only someone who manages this event can delete it' using errcode = '42501';
+  end if;
+
+  select * into v_event from public.events where id = p_event_id;
+  if not found then
+    raise exception 'Event not found';
+  end if;
+
+  -- This event plus, if asked, the later occurrences of its series the
+  -- caller manages. Locked in id order (as admin_delete_empty_events does)
+  -- so a registration can't land between the check and the delete.
+  v_ids := array[p_event_id];
+  if p_include_later and v_event.series_id is not null then
+    v_ids := v_ids || coalesce((
+      select array_agg(e.id)
+        from public.events e
+       where e.series_id = v_event.series_id
+         and e.starts_at > v_event.starts_at
+         and public.can_manage_event(e.id)
+    ), '{}'::bigint[]);
+  end if;
+  perform 1 from public.events where id = any(v_ids) order by id for update;
+
+  if public.event_has_registrations(p_event_id) then
+    raise exception 'This event has registrations or volunteer signups, so it can''t be deleted — cancel it instead'
+      using errcode = '23503';
+  end if;
+
+  foreach v_id in array v_ids loop
+    -- The event asked for was checked above; a later occurrence with people
+    -- on it is simply left alone.
+    if v_id <> p_event_id and public.event_has_registrations(v_id) then
+      continue;
+    end if;
+    delete from public.rsvps where event_id = v_id;
+    delete from public.volunteer_signups
+     where opportunity_id in (select id from public.volunteer_opportunities where event_id = v_id);
+    delete from public.volunteer_opportunities where event_id = v_id;
+    delete from public.event_slug_aliases where event_id = v_id;
+    delete from public.events where id = v_id;
+    return next v_id;
+  end loop;
+end $function$;
+
+-- ---- 3. Any delete, however it's made, follows the rule --------------------------
+create or replace function public.events_delete_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if public.event_has_registrations(old.id) then
+    raise exception 'Event % has registrations or volunteer signups, so it can''t be deleted — cancel it instead', old.id
+      using errcode = '23503';
+  end if;
+  return old;
+end $function$;
+
+drop trigger if exists events_delete_guard on public.events;
+create trigger events_delete_guard
+  before delete on public.events
+  for each row execute function public.events_delete_guard();
+
+-- ---- Grants ------------------------------------------------------------------------
+-- Internal only (the app counts through RLS): granted to signed-in users it
+-- would say whether ANY event has registrations.
+revoke all on function public.event_has_registrations(bigint) from public, anon, authenticated;
+grant execute on function public.event_has_registrations(bigint) to service_role;
+revoke all on function public.admin_delete_event(bigint, boolean) from public, anon;
+grant execute on function public.admin_delete_event(bigint, boolean) to authenticated;
+revoke all on function public.events_delete_guard() from public, anon, authenticated;
+
+commit;
+
+-- =============================================================================
+-- 2026-09-24 — One definition of an "empty" event
+-- =============================================================================
+-- The series page's "Delete" / "Delete all future empty occurrences"
+-- (admin_delete_empty_events) now uses the same rule as the Manage page's
+-- "Delete event" (admin_delete_event): an event is empty only if NOBODY has
+-- ever registered or signed up — no rsvps row and no volunteer_signups row
+-- in ANY status, cancelled included. Before, it counted only confirmed /
+-- waitlisted / offered RSVPs and confirmed volunteer signups, so an
+-- occurrence whose people had all cancelled (or that was cancelled with
+-- attendees on it) could be deleted from the series page but not from its
+-- own Manage page. Both now call event_has_registrations(), and the
+-- events_delete_guard trigger enforces the same thing on any delete.
+--
+-- Otherwise unchanged: same signature and permission check (every id must
+-- be one the caller manages), rows locked in id order, anything with people
+-- on it is skipped rather than failing the whole call, returns the deleted
+-- ids. It now also clears volunteer_signups and event_slug_aliases
+-- explicitly, same as admin_delete_event (both would cascade anyway).
+--
+-- Needs event_has_registrations() from the "Deleting an event nobody ever
+-- registered for" entry just above — run that first.
+
+begin;
+
+do $check$
+begin
+  if to_regprocedure('public.event_has_registrations(bigint)') is null then
+    raise exception 'Run the "Deleting an event nobody ever registered for" SQL first — event_has_registrations() is missing. Nothing was applied.';
+  end if;
+end $check$;
+
+create or replace function public.admin_delete_empty_events(p_event_ids bigint[])
+returns setof bigint
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_id bigint;
+begin
+  if not public.has_event_admin_access() or exists (
+    select 1 from unnest(p_event_ids) as t(id)
+     where exists (select 1 from public.events e where e.id = t.id)
+       and not public.can_manage_event(t.id)
+  ) then
+    raise exception 'Only someone who manages these events can delete them';
+  end if;
+
+  for v_id in
+    select id from public.events where id = any(p_event_ids) order by id for update
+  loop
+    if public.event_has_registrations(v_id) then
+      continue;
+    end if;
+
+    delete from public.rsvps where event_id = v_id;
+    delete from public.volunteer_signups
+     where opportunity_id in (select id from public.volunteer_opportunities where event_id = v_id);
+    delete from public.volunteer_opportunities where event_id = v_id;
+    delete from public.event_slug_aliases where event_id = v_id;
+    delete from public.events where id = v_id;
+    return next v_id;
+  end loop;
+end $function$;
+
+revoke all on function public.admin_delete_empty_events(bigint[]) from public, anon;
+grant execute on function public.admin_delete_empty_events(bigint[]) to authenticated;
+
+commit;
+
+-- =============================================================================
+-- 2026-09-24 — Unlimited capacity: events.capacity nullable, null = no limit
+-- =============================================================================
+-- Creating an event with capacity left blank ("unlimited") failed with
+-- 'null value in column "capacity" of relation "events" violates not-null
+-- constraint'. The app has always meant NULL = unlimited (lib/event-capacity.ts,
+-- and every capacity function since the 2026-09-21 "Unlimited events" and
+-- "Null-safe capacity checks" entries: try_claim_event_spot,
+-- offer_waitlisted_spots, admin_offer_spot, expire_excess_offers — an
+-- unlimited event never waitlists anyone), but events was created in the
+-- dashboard with capacity NOT NULL, so no event could actually be unlimited.
+--
+-- 1. events.capacity: drop NOT NULL and any default, so a missing value is
+--    NULL = unlimited too — one convention, no "0 means unlimited".
+--
+-- 2. One rule for a capacity that IS set: at least 1 (the forms' rule,
+--    capacityError). Added as events_capacity_check and
+--    event_templates_default_capacity_check — but only when no existing row
+--    breaks it; a row with capacity 0 or less would otherwise make every
+--    later update of that event fail (even a spots_taken change from someone
+--    cancelling). Any such rows are listed by the report at the end instead,
+--    to be fixed by hand (set to NULL for unlimited, or a real number), after
+--    which re-running this script adds the check.
+--
+-- Safe to re-run. One transaction: if any statement fails, nothing is
+-- applied. The report after COMMIT only reads.
+
+begin;
+
+-- ---- 1. Nullable, no default -----------------------------------------------------
+alter table public.events alter column capacity drop not null;
+alter table public.events alter column capacity drop default;
+
+-- ---- 2. A set capacity is at least 1 ---------------------------------------------
+do $capacity$
+begin
+  if exists (select 1 from public.events where capacity < 1) then
+    raise notice 'events_capacity_check not added: some events have capacity < 1 (see the report below)';
+  else
+    alter table public.events drop constraint if exists events_capacity_check;
+    alter table public.events
+      add constraint events_capacity_check check (capacity is null or capacity >= 1);
+  end if;
+
+  if exists (select 1 from public.event_templates where default_capacity < 1) then
+    raise notice 'event_templates_default_capacity_check not added: some templates have default_capacity < 1';
+  else
+    alter table public.event_templates drop constraint if exists event_templates_default_capacity_check;
+    alter table public.event_templates
+      add constraint event_templates_default_capacity_check
+      check (default_capacity is null or default_capacity >= 1);
+  end if;
+end $capacity$;
+
+commit;
+
+-- ---- Report (read-only) ------------------------------------------------------------
+-- Everything the event forms have to satisfy on events and
+-- volunteer_opportunities, plus any capacity values still outside the rule.
+-- Please paste this result back — events and volunteer_opportunities were
+-- created in the dashboard, so this is the only record of their constraints.
+select 'capacity < 1' as kind, format('event %s "%s": capacity %s', id, name, capacity) as detail
+  from public.events where capacity < 1
+union all
+select 'template capacity < 1', format('template %s "%s": default_capacity %s', id, name, default_capacity)
+  from public.event_templates where default_capacity < 1
+union all
+select 'not null', format('%s.%s%s', c.table_name, c.column_name,
+         case when c.column_default is not null then ' (default ' || c.column_default || ')' else '' end)
+  from information_schema.columns c
+ where c.table_schema = 'public'
+   and c.table_name in ('events', 'volunteer_opportunities')
+   and c.is_nullable = 'NO'
+union all
+select 'check', format('%s: %s', con.conname, pg_get_constraintdef(con.oid))
+  from pg_constraint con
+ where con.conrelid in ('public.events'::regclass, 'public.volunteer_opportunities'::regclass)
+   and con.contype = 'c'
+union all
+select 'unique', format('%s: %s', con.conname, pg_get_constraintdef(con.oid))
+  from pg_constraint con
+ where con.conrelid in ('public.events'::regclass, 'public.volunteer_opportunities'::regclass)
+   and con.contype in ('u', 'x')
+order by 1, 2;
+
+-- =============================================================================
+-- 2026-09-24 — Rename spots_within_capacity to what it checks
+-- =============================================================================
+-- events.spots_within_capacity (created in the dashboard, not in this file)
+-- is CHECK (spots_taken >= 0): a lower bound only, despite the name. The
+-- 2026-09-24 capacity change didn't alter it — that only dropped NOT NULL and
+-- the default on capacity and added events_capacity_check.
+--
+-- It deliberately does NOT also check spots_taken <= capacity. Two things go
+-- over capacity on purpose, and that check would make both fail:
+--   - Walk-ups: admin_upsert_walkup_rsvp(p_force => true) — the roster's
+--     "This event is at capacity. Add them anyway?" — confirms the person
+--     and raises spots_taken past capacity.
+--   - Lowering capacity below the people already confirmed: the edit form
+--     warns and saves anyway ("Nobody is removed") — capacity ends up below
+--     spots_taken.
+-- Overselling through normal RSVPs is prevented by try_claim_event_spot, the
+-- one capacity gate every RSVP / offer-claim / switch path goes through.
+--
+-- So this only renames it, to events_spots_taken_not_negative. Guarded: it
+-- renames only if the old constraint exists with exactly that definition,
+-- and does nothing if it's already been renamed. Safe to re-run; one
+-- transaction.
+
+begin;
+
+do $rename$
+declare
+  v_def text;
+begin
+  select pg_get_constraintdef(oid) into v_def
+    from pg_constraint
+   where conrelid = 'public.events'::regclass and conname = 'spots_within_capacity';
+
+  if v_def is null then
+    if not exists (
+      select 1 from pg_constraint
+       where conrelid = 'public.events'::regclass and conname = 'events_spots_taken_not_negative'
+    ) then
+      raise exception 'Neither spots_within_capacity nor events_spots_taken_not_negative exists on events — nothing was changed';
+    end if;
+    raise notice 'Already renamed — nothing to do';
+  elsif v_def <> 'CHECK ((spots_taken >= 0))' then
+    raise exception 'spots_within_capacity is now "%", not the lower-bound-only check this expects — nothing was changed', v_def;
+  else
+    alter table public.events
+      rename constraint spots_within_capacity to events_spots_taken_not_negative;
+  end if;
+end $rename$;
+
+commit;

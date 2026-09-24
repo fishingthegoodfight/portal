@@ -9,6 +9,7 @@ import {
 import type { EventChangeDiffEntry } from "@/lib/email/templates";
 import { formatEventDateRange } from "@/lib/format-date";
 import { toZonedDateTimeInputs, zonedDateTimeToUtc } from "@/lib/timezone";
+import { friendlyEventDbError } from "@/lib/event-db-errors";
 
 /**
  * Volunteer roles (volunteer_opportunities) on an existing event: loading
@@ -400,14 +401,14 @@ export async function executeRoleOps(
   for (const op of ops) {
     if (op.kind === "insert") {
       const { error } = await supabase.from("volunteer_opportunities").insert(op.row);
-      if (error) return { error: `Adding a volunteer role failed: ${error.message}`, cancelledSignups };
+      if (error) return { error: `Adding a volunteer role failed: ${friendlyEventDbError(error, "add volunteer role").message}`, cancelledSignups };
     } else if (op.kind === "update") {
       let query = supabase.from("volunteer_opportunities").update(op.patch).eq("id", op.id);
       // Atomic floor: a signup that lands between planning and this write
       // makes the update match nothing instead of overbooking the role.
       if (op.patch.slots != null) query = query.lte("slots_taken", op.patch.slots as number);
       const { data, error } = await query.select("id");
-      if (error) return { error: `Updating a volunteer role failed: ${error.message}`, cancelledSignups };
+      if (error) return { error: `Updating a volunteer role failed: ${friendlyEventDbError(error, "update volunteer role").message}`, cancelledSignups };
       if (!data || data.length === 0) {
         return {
           error: "Someone signed up for a volunteer role while you were editing it — reload and try again",
@@ -418,7 +419,7 @@ export async function executeRoleOps(
       const { data, error } = await supabase.rpc("admin_delete_volunteer_opportunity", {
         p_opportunity_id: op.id,
       });
-      if (error) return { error: `Deleting "${op.title}" failed: ${error.message}`, cancelledSignups };
+      if (error) return { error: `Deleting "${op.title}" failed: ${friendlyEventDbError(error, "delete volunteer role").message}`, cancelledSignups };
       if (data === "has_signups") {
         return {
           error: `Someone signed up for "${op.title}" while you were editing — cancel the role instead`,
@@ -434,7 +435,7 @@ export async function executeRoleOps(
       const { data: cancelled, error } = await supabase.rpc("admin_cancel_volunteer_opportunity", {
         p_opportunity_id: op.id,
       });
-      if (error) return { error: `Cancelling "${op.title}" failed: ${error.message}`, cancelledSignups };
+      if (error) return { error: `Cancelling "${op.title}" failed: ${friendlyEventDbError(error, "cancel volunteer role").message}`, cancelledSignups };
       const userIds = ((cancelled ?? []) as { user_id: string }[]).map((r) => r.user_id);
       cancelledSignups += userIds.length;
       const event = eventsById.get(op.eventId);

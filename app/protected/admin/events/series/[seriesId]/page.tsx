@@ -4,7 +4,8 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/supabase/server";
 import { loadManagedEventIds } from "@/lib/admin/require-admin";
 import { formatEventDateRange } from "@/lib/format-date";
-import { EMPTY_PEOPLE, isEmptyOccurrence, peopleByEvent } from "@/lib/admin/series";
+import { EMPTY_PEOPLE, peopleByEvent } from "@/lib/admin/series";
+import { eventsWithRegistrations } from "@/lib/admin/event-delete";
 import { SeriesOccurrences, type SeriesOccurrence } from "@/components/admin/series-occurrences";
 
 const FREQUENCY_LABELS: Record<string, string> = {
@@ -38,10 +39,11 @@ async function SeriesLoader({ params }: { params: Promise<{ seriesId: string }> 
   const events = allEvents.filter((e) => managed.has(e.id));
   if (events.length === 0) notFound();
 
-  const people = await peopleByEvent(
-    supabase,
-    events.map((e) => e.id),
-  );
+  const eventIds = events.map((e) => e.id);
+  const [people, registered] = await Promise.all([
+    peopleByEvent(supabase, eventIds),
+    eventsWithRegistrations(supabase, eventIds),
+  ]);
   // eslint-disable-next-line react-hooks/purity -- Server Component: renders once per request on the server (after awaiting request data), so there's no re-render or hydration to disagree with this timestamp.
   const now = Date.now();
   const occurrences: SeriesOccurrence[] = events.map((e) => {
@@ -54,7 +56,7 @@ async function SeriesLoader({ params }: { params: Promise<{ seriesId: string }> 
       isPast: new Date(e.starts_at).getTime() <= now,
       capacity: e.capacity,
       people: p,
-      isEmpty: isEmptyOccurrence(p),
+      isEmpty: !registered.has(e.id),
     };
   });
 

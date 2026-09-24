@@ -48,6 +48,7 @@ import type {
   VolunteerRosterPerson,
   WaitlistPerson,
 } from "@/lib/admin/roster";
+import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
 
 const DIRECTORY_FIELD = REGISTRATION_SECTIONS.find((s) => s.id === "directory")!.fields[0];
 
@@ -157,9 +158,7 @@ export function EventRoster({
   // eventCard.spots_taken already includes spots held by open offers, so
   // this is what's genuinely free to offer right now.
   const freeSpots =
-    eventCard.capacity != null
-      ? eventCard.capacity - (eventCard.spots_taken ?? 0)
-      : Number.POSITIVE_INFINITY; // unlimited
+    computeSpotsLeft(eventCard.capacity, eventCard.spots_taken) ?? Number.POSITIVE_INFINITY; // null = unlimited
 
   const runWaitlistAction = async (
     rsvpId: number,

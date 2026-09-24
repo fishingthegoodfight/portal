@@ -14,6 +14,12 @@ import { zonedDateTimeToUtc } from "@/lib/timezone";
 import { capacityError, parseCapacity } from "@/lib/event-capacity";
 import { composeLocation, locationErrors } from "@/lib/event-location";
 import { waiverStateForChapter } from "@/lib/waivers";
+import {
+  friendlyEventDbError,
+  type EventFormField,
+  type EventFormProblem,
+  type EventFormStep,
+} from "@/lib/event-db-errors";
 
 export type VolunteerRoleInput = {
   title: string;
@@ -80,7 +86,18 @@ export type CreateEventInput = {
 };
 
 export type CreateEventResult =
-  { ok: true; eventIds: number[]; seriesId: string | null } | { ok: false; error: string };
+  | { ok: true; eventIds: number[]; seriesId: string | null }
+  /** `step` / `field`: where in the wizard the problem is, when it's one
+   * field's (see lib/event-db-errors.ts) — the wizard goes back there. */
+  | { ok: false; error: string; step?: EventFormStep; field?: EventFormField };
+
+function fail(error: string, step?: EventFormStep, field?: EventFormField): CreateEventResult {
+  return { ok: false, error, step, field };
+}
+
+function failWith(problem: EventFormProblem, prefix = ""): CreateEventResult {
+  return { ok: false, error: prefix + problem.message, step: problem.step, field: problem.field };
+}
 
 /**
  * Creates one event, or (for a repeating choice) up to
@@ -97,16 +114,16 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
   const supabase = await createClient();
   // --- Step 1: Basics ---
   const title = input.title.trim();
-  if (!title) return { ok: false, error: "Title is required" };
+  if (!title) return fail("Event title is required", 1, "title");
   if (!CHAPTERS.some((c) => c.name === input.chapter) && !isVirtualChapter(input.chapter)) {
-    return { ok: false, error: "Choose a chapter" };
+    return fail("Choose a chapter", 1, "chapter");
   }
   // Admins, and chapter leads for their own chapters (can_manage_chapter).
   // A chapter lead's event goes live immediately, same as an admin's.
   const adminCheck = await requireChapterManager(supabase, input.chapter);
-  if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
+  if ("error" in adminCheck) return fail(adminCheck.error, 1, "chapter");
   if (input.leadUserId && !/^[0-9a-f-]{36}$/i.test(input.leadUserId)) {
-    return { ok: false, error: "Choose the lead again" };
+    return fail("Choose the lead again", 2, "lead");
   }
   // A new event can only take an active, currently-offered type — unlike
   // editing, where an event may already carry one that's since been
@@ -118,7 +135,7 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
     .eq("active", true)
     .maybeSingle();
   if (!eventTypeRow) {
-    return { ok: false, error: "Choose an event type" };
+    return fail("Choose an event type", 1, "event_type");
   }
   // Provenance only — a template deleted since the wizard loaded just leaves
   // this null rather than failing the create on the FK.
@@ -132,7 +149,7 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
     templateId = templateRow?.id ?? null;
   }
   if (!input.date || !input.time) {
-    return { ok: false, error: "Date and start time are required" };
+    return fail("Date and start time are required", 1, "date");
   }
   const timezone = input.timezone || timezoneForChapter(input.chapter);
 
@@ -140,11 +157,11 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
   if (input.endTime) {
     const firstEnds = zonedDateTimeToUtc(input.date, input.endTime, timezone);
     if (firstEnds.getTime() <= firstStarts.getTime()) {
-      return { ok: false, error: "End time must be after the start time" };
+      return fail("End time must be after the start time", 1, "time");
     }
   }
   if (firstStarts.getTime() < Date.now()) {
-    return { ok: false, error: "Date and time can't be in the past" };
+    return fail("Date and time can't be in the past", 1, "date");
   }
 
   // --- Step 2: Details ---
@@ -157,13 +174,13 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
   const virtualLink = isVirtual ? input.virtualLink.trim() : "";
   const virtualAccessNotes = isVirtual ? input.virtualAccessNotes.trim() : "";
   if (isVirtual) {
-    if (!virtualLink) return { ok: false, error: "A meeting link is required for a virtual event" };
+    if (!virtualLink) return fail("A meeting link is required for a virtual event", 2, "virtual_link");
   } else {
     const locationProblems = locationErrors(input);
-    if (locationProblems.length > 0) return { ok: false, error: locationProblems.join("; ") };
+    if (locationProblems.length > 0) return fail(locationProblems.join("; "), 2, "venue");
   }
   const capacityProblem = capacityError(input.capacity);
-  if (capacityProblem) return { ok: false, error: capacityProblem };
+  if (capacityProblem) return fail(capacityProblem, 2, "capacity");
   const capacity = parseCapacity(input.capacity);
   const validSectionIds = new Set(
     REGISTRATION_SECTIONS.filter((s) => !s.alwaysRequired && !s.profileOnly).map((s) => s.id),
@@ -179,16 +196,16 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
   const roles = input.volunteersNeeded ? input.volunteerRoles : [];
   for (const role of roles) {
     const roleTitle = role.title.trim();
-    if (!roleTitle) return { ok: false, error: "Every volunteer role needs a title" };
+    if (!roleTitle) return fail("Every volunteer role needs a title", 3, "roles");
     const needed = Number(role.numberNeeded.trim());
     if (!Number.isFinite(needed) || needed < 1) {
-      return { ok: false, error: `"${roleTitle}" needs a number needed of at least 1` };
+      return fail(`"${roleTitle}" needs a number needed of at least 1`, 3, "roles");
     }
     if (!role.shiftStart || !role.shiftEnd) {
-      return { ok: false, error: `"${roleTitle}" needs a shift start and end time` };
+      return fail(`"${roleTitle}" needs a shift start and end time`, 3, "roles");
     }
     if (role.shiftEnd <= role.shiftStart) {
-      return { ok: false, error: `"${roleTitle}"'s shift end must be after its start` };
+      return fail(`"${roleTitle}"'s shift end must be after its start`, 3, "roles");
     }
   }
 
@@ -199,10 +216,10 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
     occurrenceDates = [input.date];
   } else {
     if (!input.recurrenceEndDate) {
-      return { ok: false, error: "An end date is required for a repeating event" };
+      return fail("An end date is required for a repeating event", 4, "recurrence");
     }
     if (input.recurrenceEndDate < input.date) {
-      return { ok: false, error: "The repeat end date must be after the start date" };
+      return fail("The repeat end date must be after the start date", 4, "recurrence");
     }
     recurrenceFrequency = input.recurrence;
     occurrenceDates = generateRecurrenceDates(
@@ -262,14 +279,13 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
       .single();
 
     if (insertError || !created) {
-      const message = insertError?.message ?? "Failed to create event";
-      return {
-        ok: false,
-        error:
-          eventIds.length > 0
-            ? `Created ${eventIds.length} of ${occurrenceDates.length} occurrences before this one failed: ${message}`
-            : message,
-      };
+      const problem = friendlyEventDbError(insertError ?? {}, `create "${title}" (${occurrenceDate})`);
+      return failWith(
+        problem,
+        eventIds.length > 0
+          ? `Created ${eventIds.length} of ${occurrenceDates.length} occurrences, then the one on ${occurrenceDate} failed — check the series before trying again. `
+          : "",
+      );
     }
     eventIds.push(created.id);
 
@@ -288,10 +304,11 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
         .from("volunteer_opportunities")
         .insert(volunteerRows);
       if (volunteerError) {
-        return {
-          ok: false,
-          error: `Created ${eventIds.length} of ${occurrenceDates.length} event(s), but volunteer roles failed to save for one of them: ${volunteerError.message}`,
-        };
+        const problem = friendlyEventDbError(volunteerError, `create roles for event ${created.id}`);
+        return failWith(
+          { ...problem, step: 3, field: "roles" },
+          `Created ${eventIds.length} of ${occurrenceDates.length} event(s), but the volunteer roles for ${occurrenceDate} didn't save — check the event before trying again. `,
+        );
       }
     }
   }

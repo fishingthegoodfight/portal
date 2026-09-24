@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/card";
 import { ChapterTag } from "@/components/chapter-tag";
 import { cn } from "@/lib/utils";
+import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
 
 export type EventCardEvent = {
   id: number;
@@ -64,10 +65,7 @@ export function EventCard({
   const hasActiveRsvp = rsvpStatus != null && rsvpStatus !== "cancelled";
   const waitlisted = rsvpStatus === "waitlisted";
   const offered = rsvpStatus === "offered";
-  const spotsLeft =
-    event.capacity != null && event.spots_taken != null
-      ? event.capacity - event.spots_taken
-      : null;
+  const spotsLeft = computeSpotsLeft(event.capacity, event.spots_taken);
   const isFull = spotsLeft != null && spotsLeft <= 0 && !hasActiveRsvp;
 
   const statusPill = event.cancelled

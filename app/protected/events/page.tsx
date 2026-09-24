@@ -18,6 +18,7 @@ import {
 import { ChapterFilterPills, FilterPill, filterHref } from "@/components/filter-pills";
 import { isApprovedVolunteer, loadOpenShiftsForVolunteer } from "@/lib/volunteer-signups";
 import { loadManagedEventIds } from "@/lib/admin/require-admin";
+import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
 
 async function ConfirmationBannerLoader({
   searchParams,
@@ -204,12 +205,8 @@ async function EventsListLoader({
           const rsvpStatus = rsvpStatusByEvent.get(event.id) ?? null;
           const hasActiveRsvp =
             rsvpStatus != null && rsvpStatus !== "cancelled";
-          const spotsTaken =
-            event.spots_taken != null
-              ? event.spots_taken + (offeredByEvent.get(event.id) ?? 0)
-              : null;
-          const spotsLeft =
-            event.capacity != null && spotsTaken != null ? event.capacity - spotsTaken : null;
+          const spotsTaken = (event.spots_taken ?? 0) + (offeredByEvent.get(event.id) ?? 0);
+          const spotsLeft = computeSpotsLeft(event.capacity, spotsTaken);
           const isFull = spotsLeft != null && spotsLeft <= 0 && !hasActiveRsvp;
 
           return (

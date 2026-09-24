@@ -40,6 +40,7 @@ import {
   sectionsForEvent,
   type RegistrationSection,
 } from "@/lib/registration-sections";
+import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
 
 type EventSummary = {
   id: number;
@@ -162,10 +163,7 @@ export function RsvpForm({
   const hasActiveRsvp = Boolean(status) && status !== "cancelled";
   const isOffered = status === "offered";
   const isWaitlisted = status === "waitlisted";
-  const spotsLeft =
-    event.capacity != null && event.spots_taken != null
-      ? event.capacity - event.spots_taken
-      : null;
+  const spotsLeft = computeSpotsLeft(event.capacity, event.spots_taken);
   // Spots-left is as of page load — the capacity-check function is the real
   // gate at submit time; this just avoids inviting a doomed submission.
   const isFull = spotsLeft != null && spotsLeft <= 0 && !hasActiveRsvp;

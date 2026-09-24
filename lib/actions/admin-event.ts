@@ -37,6 +37,7 @@ import { expireExcessOffers, offerFreeSpots } from "@/lib/waitlist";
 import { capacityError, parseCapacity } from "@/lib/event-capacity";
 import { composeLocation, isLocationEmpty, locationErrors } from "@/lib/event-location";
 import { CHAPTERS, isVirtualChapter } from "@/lib/chapters";
+import { friendlyEventDbError, type EventFormField } from "@/lib/event-db-errors";
 import {
   isWaiverState,
   resolveEventWaiver,
@@ -403,7 +404,9 @@ export type UpdateEventResult =
   | { ok: true; needsConfirm: true; warnings: EditWarning[] }
   | { ok: true; needsNotifyDecision: true; confirmedCount: number; eventCount: number }
   | { ok: true; needsNotifyDecision: false }
-  | { ok: false; error: string };
+  /** `field`: the form field the problem belongs to, when it's one field's
+   * (lib/event-db-errors.ts) — the edit form moves focus to it. */
+  | { ok: false; error: string; field?: EventFormField };
 
 const sectionTitleById = (id: string) =>
   REGISTRATION_SECTIONS.find((s) => s.id === id)?.title ?? id;
@@ -621,14 +624,14 @@ export async function updateEventAction(
   if (!before) return { ok: false, error: "Event not found" };
 
   const name = input.name.trim();
-  if (!name) return { ok: false, error: "Title is required" };
-  if (!input.date || !input.time) return { ok: false, error: "Date and time are required" };
+  if (!name) return { ok: false, error: "Event title is required", field: "title" };
+  if (!input.date || !input.time) return { ok: false, error: "Date and time are required", field: "date" };
 
   // Blank means "keep it" — a slug is never removed (printed links).
   const slug = normalizeSlug(input.slug) || before.slug;
   if (slug !== before.slug) {
     const slugProblem = slugError(slug);
-    if (slugProblem) return { ok: false, error: slugProblem };
+    if (slugProblem) return { ok: false, error: slugProblem, field: "slug" };
     const [{ data: takenByEvent }, { data: takenByAlias }] = await Promise.all([
       supabase.from("events").select("id").eq("slug", slug).neq("id", eventId).maybeSingle(),
       supabase
@@ -639,14 +642,14 @@ export async function updateEventAction(
         .maybeSingle(),
     ]);
     if (takenByEvent || takenByAlias) {
-      return { ok: false, error: `The link /events/${slug} is already used by another event` };
+      return { ok: false, error: `The link /events/${slug} is already used by another event`, field: "slug" };
     }
   }
-  if (!input.timezone) return { ok: false, error: "Time zone is required" };
+  if (!input.timezone) return { ok: false, error: "Time zone is required", field: "timezone" };
 
   // One rule with the create wizard: blank = unlimited, otherwise at least 1.
   const capacityProblem = capacityError(input.capacity);
-  if (capacityProblem) return { ok: false, error: capacityProblem };
+  if (capacityProblem) return { ok: false, error: capacityProblem, field: "capacity" };
   const capacity = parseCapacity(input.capacity);
 
   // Event type: any event_types row (active or not — the edit form offers
@@ -657,7 +660,7 @@ export async function updateEventAction(
   // caller leads (can_manage_chapter — events_chapter_guard enforces it too).
   if (input.chapter !== before.chapter) {
     const { data: canMove } = await supabase.rpc("can_manage_chapter", { p_chapter: input.chapter });
-    if (!canMove) return { ok: false, error: "You can only move an event to a chapter you lead" };
+    if (!canMove) return { ok: false, error: "You can only move an event to a chapter you lead", field: "chapter" };
   }
   if (input.leadUserId && !UUID_PATTERN.test(input.leadUserId)) {
     return { ok: false, error: "Choose the lead again" };
@@ -669,7 +672,7 @@ export async function updateEventAction(
       .select("id")
       .eq("name", input.eventType)
       .maybeSingle();
-    if (!eventTypeRow) return { ok: false, error: "Choose an event type" };
+    if (!eventTypeRow) return { ok: false, error: "Choose an event type", field: "event_type" };
   }
 
   const validSectionIds = new Set(
@@ -692,10 +695,10 @@ export async function updateEventAction(
   const virtualLink = input.virtualLink.trim();
   const virtualAccessNotes = input.virtualAccessNotes.trim();
   if (isVirtual) {
-    if (!virtualLink) return { ok: false, error: "A meeting link is required for a virtual event" };
+    if (!virtualLink) return { ok: false, error: "A meeting link is required for a virtual event", field: "virtual_link" };
   } else {
     const locationProblems = locationErrors(input, { allowLegacyEmpty: true });
-    if (locationProblems.length > 0) return { ok: false, error: locationProblems.join("; ") };
+    if (locationProblems.length > 0) return { ok: false, error: locationProblems.join("; "), field: "venue" };
   }
   const keepLegacyLocation = !isVirtual && isLocationEmpty(input);
 
@@ -705,7 +708,7 @@ export async function updateEventAction(
   if (input.endTime.trim()) {
     newEnds = zonedDateTimeToUtc(input.date, input.endTime, input.timezone);
     if (newEnds.getTime() <= newStarts.getTime()) {
-      return { ok: false, error: "End time must be after the start time" };
+      return { ok: false, error: "End time must be after the start time", field: "time" };
     }
   }
 
@@ -804,7 +807,7 @@ export async function updateEventAction(
     ),
   ];
   const roleErrors = rolePlans.flatMap((p) => p.errors);
-  if (roleErrors.length > 0) return { ok: false, error: roleErrors.join(". ") };
+  if (roleErrors.length > 0) return { ok: false, error: roleErrors.join(". "), field: "roles" };
   const roleOps: RoleOp[] = rolePlans.flatMap((p) => p.ops);
 
   // Anything the admin should confirm first — nothing is written until they do.
@@ -932,9 +935,10 @@ export async function updateEventAction(
   if (updateError) {
     // 23505: the slug was taken between the check above and this write.
     if (updateError.code === "23505") {
-      return { ok: false, error: `The link /events/${slug} is already used by another event` };
+      return { ok: false, error: `The link /events/${slug} is already used by another event`, field: "slug" };
     }
-    return { ok: false, error: updateError.message };
+    const problem = friendlyEventDbError(updateError, `update event ${eventId}`);
+    return { ok: false, error: problem.message, field: problem.field };
   }
   await settleCapacity(before, after);
 
@@ -951,7 +955,7 @@ export async function updateEventAction(
     if (error) {
       return {
         ok: false,
-        error: `Saved this event, but updating ${shortDate(pair.before)} failed (${error.message}) — later occurrences weren't changed`,
+        error: `Saved this event, but updating ${shortDate(pair.before)} failed (${friendlyEventDbError(error, `update series occurrence ${pair.before.id}`).message}) — later occurrences weren't changed`,
       };
     }
     await settleCapacity(pair.before, pair.after);
@@ -963,7 +967,11 @@ export async function updateEventAction(
     new Map([after, ...laterPairs.map((p) => p.after)].map((e) => [e.id, e])),
   );
   if (roleResult.error) {
-    return { ok: false, error: `Saved the event details, but volunteer roles didn't all save: ${roleResult.error}` };
+    return {
+      ok: false,
+      error: `Saved the event details, but volunteer roles didn't all save: ${roleResult.error}`,
+      field: "roles",
+    };
   }
 
   if (notifyAttendees === true) {

@@ -42,6 +42,65 @@ import { Label } from "@/components/ui/label";
 import { normalizeSlug, slugError } from "@/lib/event-slug";
 import { saveVenueFromEventAction } from "@/lib/actions/venues";
 import { findVenueByName, venuesForChapter, type Venue } from "@/lib/venues";
+import { capacityError } from "@/lib/event-capacity";
+import { locationErrors } from "@/lib/event-location";
+import type { EventFormField } from "@/lib/event-db-errors";
+
+/** Error field -> the suffix of its input's id (`edit_<suffix>`). */
+const FIELD_INPUT_IDS: Partial<Record<EventFormField, string>> = {
+  chapter: "chapter",
+  event_type: "event_type",
+  title: "title",
+  slug: "slug",
+  date: "date",
+  time: "time",
+  timezone: "timezone",
+  venue: "venue",
+  street: "street",
+  city: "city",
+  state: "state",
+  postal_code: "postal_code",
+  virtual_link: "virtual_link",
+  description: "description",
+  occurrence_note: "occurrence_note",
+  capacity: "capacity",
+  lead: "lead_name",
+  custom_note: "custom_note",
+};
+
+/** Fields with a problemFor(...) slot in the form below. */
+const FIELDS_WITH_SLOTS = new Set<EventFormField>([
+  "chapter", "event_type", "template", "title", "slug", "date", "time", "timezone",
+  "venue", "street", "city", "state", "postal_code", "virtual_link", "description",
+  "occurrence_note", "capacity", "lead", "custom_note", "sections", "roles",
+]);
+
+/** Every rule the database also enforces that can be checked here, so a
+ * problem shows next to its field before a round trip — updateEventAction
+ * re-checks all of it. First problem wins (one field at a time). */
+function fieldProblem(form: EventEditInput): { field: EventFormField; message: string } | null {
+  if (!form.name.trim()) return { field: "title", message: "Event title is required" };
+  if (form.slug && slugError(normalizeSlug(form.slug))) {
+    return { field: "slug", message: slugError(normalizeSlug(form.slug)) as string };
+  }
+  if (!form.date || !form.time) return { field: "date", message: "Date and start time are required" };
+  // Same-day string comparison — updateEventAction re-checks the real instants.
+  if (form.endTime && form.endTime <= form.time) {
+    return { field: "time", message: "End time must be after the start time" };
+  }
+  if (!form.timezone) return { field: "timezone", message: "Time zone is required" };
+  if (isVirtualChapter(form.chapter)) {
+    if (!form.virtualLink.trim()) {
+      return { field: "virtual_link", message: "A meeting link is required for a virtual event" };
+    }
+  } else {
+    const problems = locationErrors(form, { allowLegacyEmpty: true });
+    if (problems.length > 0) return { field: "venue", message: problems.join("; ") };
+  }
+  const capacity = capacityError(form.capacity);
+  if (capacity) return { field: "capacity", message: capacity };
+  return null;
+}
 
 type StringField = Exclude<keyof EventEditInput, "registrationSections" | "volunteerRoles">;
 
@@ -102,6 +161,9 @@ export function EventEditForm({
   const [form, setForm] = useState<EventEditInput>(initial);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A problem that belongs to one field — shown under that field instead of
+  // down by the Save button.
+  const [fieldError, setFieldError] = useState<{ field: EventFormField; message: string } | null>(null);
   const [success, setSuccess] = useState(false);
   const [notifyPrompt, setNotifyPrompt] = useState<{
     confirmedCount: number;
@@ -127,6 +189,7 @@ export function EventEditForm({
 
   const edit = (updater: (prev: EventEditInput) => EventEditInput) => {
     setForm(updater);
+    setFieldError(null);
     setWarnings(null);
     setConfirmed(false);
     setNotifyPrompt(null);
@@ -174,20 +237,18 @@ export function EventEditForm({
     chosenScope: EditScope | null = scope,
   ) => {
     setError(null);
+    setFieldError(null);
 
-    // Same-day string comparison — a quick client-side check to catch the
-    // common typo before a round trip; updateEventAction re-validates this
-    // for real (comparing actual UTC instants) since it's the source of
-    // truth, not this shortcut.
-    if (form.endTime && form.endTime <= form.time) {
-      setError("End time must be after the start time");
+    const problem = fieldProblem(form);
+    if (problem) {
+      showFieldError(problem.field, problem.message);
       return;
     }
     const roleErrors = form.volunteerRoles.flatMap((role, i) =>
       role.removal ? [] : volunteerRoleErrors(role, role.title.trim() || `Role ${i + 1}`, signedUp(role)),
     );
     if (roleErrors.length > 0) {
-      setError(roleErrors.join(". "));
+      showFieldError("roles", roleErrors.join(". "));
       return;
     }
 
@@ -209,7 +270,8 @@ export function EventEditForm({
       });
 
       if (!result.ok) {
-        setError(result.error);
+        if (result.field) showFieldError(result.field, result.error);
+        else setError(result.error);
         setNotifyPrompt(null);
         setWarnings(null);
         return;
@@ -250,11 +312,35 @@ export function EventEditForm({
       setTimeout(() => router.push(`/protected/admin/events/${eventId}`), 900);
     } catch (err) {
       console.error("Save event failed:", err);
-      setError(err instanceof Error ? err.message : "Something went wrong — try again.");
+      setError(
+        "Couldn't reach the server to save the event. Check your connection and try again — nothing here was lost.",
+      );
     } finally {
       setIsSaving(false);
     }
   };
+
+  const showFieldError = (field: EventFormField, message: string) => {
+    // A field this form has no slot for (e.g. the series' repeat settings)
+    // goes by the Save button instead of vanishing.
+    if (!FIELDS_WITH_SLOTS.has(field)) {
+      setError(message);
+      return;
+    }
+    setFieldError({ field, message });
+    const id = FIELD_INPUT_IDS[field];
+    // After the message renders under the field (its RevealPanel scrolls it
+    // into view); focus the input itself when it has one.
+    if (id) requestAnimationFrame(() => document.getElementById(`edit_${id}`)?.focus({ preventScroll: true }));
+  };
+
+  /** The field problem, if it's one of these fields' — rendered under them. */
+  const problemFor = (...fields: EventFormField[]) =>
+    fieldError && fields.includes(fieldError.field) ? (
+      <RevealPanel role="alert" revealKey={fieldError.message} className="-mt-2 text-sm text-red-500">
+        {fieldError.message}
+      </RevealPanel>
+    ) : null;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -304,13 +390,16 @@ export function EventEditForm({
                 eventTypes={eventTypes}
               />
             </div>
+            {problemFor("chapter", "event_type", "template")}
             <TitleField idPrefix="edit" value={form.name} onChange={setField("name")} />
+            {problemFor("title")}
             <PublicLinkField
               base={publicUrlBase}
               value={form.slug}
               original={initial.slug}
               onChange={setField("slug")}
             />
+            {problemFor("slug")}
 
             <DateTimeFields
               idPrefix="edit"
@@ -323,6 +412,7 @@ export function EventEditForm({
               onChangeEndTime={setField("endTime")}
               onChangeTimezone={setField("timezone")}
             />
+            {problemFor("date", "time", "timezone")}
 
             {isVirtualChapter(form.chapter) ? (
               <VirtualEventFields
@@ -345,24 +435,28 @@ export function EventEditForm({
                 onSaveVenueChange={canSaveVenue ? setSaveVenue : undefined}
               />
             )}
+            {problemFor("venue", "street", "city", "state", "postal_code", "virtual_link")}
 
             <DescriptionField
               idPrefix="edit"
               value={form.description}
               onChange={setField("description")}
             />
+            {problemFor("description")}
 
             <OccurrenceNoteField
               idPrefix="edit"
               value={form.occurrenceNote}
               onChange={setField("occurrenceNote")}
             />
+            {problemFor("occurrence_note")}
 
             <CapacityField
               idPrefix="edit"
               value={form.capacity}
               onChange={setField("capacity")}
             />
+            {problemFor("capacity")}
 
             <LeadContactFields
               idPrefix="edit"
@@ -375,18 +469,21 @@ export function EventEditForm({
               leadUserId={form.leadUserId}
               onChangeLeadUserId={setField("leadUserId")}
             />
+            {problemFor("lead")}
 
             <CustomEmailNoteField
               idPrefix="edit"
               value={form.customEmailNote}
               onChange={setField("customEmailNote")}
             />
+            {problemFor("custom_note")}
 
             <RegistrationSectionsFields
               idPrefix="edit"
               selected={form.registrationSections}
               onToggle={toggleSection}
             />
+            {problemFor("sections")}
 
             <p className="text-sm text-muted-foreground">
               Waiver: {waiverLabel ?? "not set (this chapter has no waiver state)"}
@@ -522,6 +619,7 @@ export function EventEditForm({
             >
               Add a role
             </Button>
+            {problemFor("roles")}
           </CardContent>
         </Card>
 

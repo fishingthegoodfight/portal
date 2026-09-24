@@ -31,6 +31,7 @@ export function CancelEventDialog({
   initialScope = null,
   label = "Cancel event",
   triggerSize = "default",
+  triggerVariant = "destructive",
   onCancelled,
 }: {
   eventId: number;
@@ -44,6 +45,8 @@ export function CancelEventDialog({
   label?: string;
   /** Size of the trigger button, to match the row it sits in. */
   triggerSize?: "default" | "sm";
+  /** "link" for an inline "cancel it instead" in running text. */
+  triggerVariant?: "destructive" | "link";
   onCancelled: () => void;
 }) {
   const [isOpen, setIsOpen] = useState(false);
@@ -115,6 +118,17 @@ export function CancelEventDialog({
   };
 
   if (!isOpen) {
+    if (triggerVariant === "link") {
+      return (
+        <button
+          type="button"
+          onClick={open}
+          className="underline underline-offset-4 hover:text-foreground"
+        >
+          {label}
+        </button>
+      );
+    }
     return (
       <Button variant="destructive" size={triggerSize} onClick={open}>
         {label}

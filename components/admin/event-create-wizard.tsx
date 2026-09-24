@@ -36,6 +36,7 @@ import {
   type ShiftAnchor,
 } from "@/lib/event-templates";
 import { saveVenueFromEventAction } from "@/lib/actions/venues";
+import type { EventFormField, EventFormStep } from "@/lib/event-db-errors";
 import { findVenueByName, venuesForChapter, type Venue } from "@/lib/venues";
 import { formatEventDateRange } from "@/lib/format-date";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
@@ -107,6 +108,29 @@ function sectionTitle(id: string): string {
   return REGISTRATION_SECTIONS.find((s) => s.id === id)?.title ?? id;
 }
 
+/** Error field -> the suffix of its input's id (`create_<suffix>`). */
+const FIELD_INPUT_IDS: Partial<Record<EventFormField, string>> = {
+  chapter: "chapter",
+  event_type: "event_type",
+  title: "title",
+  date: "date",
+  time: "time",
+  timezone: "timezone",
+  venue: "venue",
+  street: "street",
+  city: "city",
+  state: "state",
+  postal_code: "postal_code",
+  virtual_link: "virtual_link",
+  description: "description",
+  occurrence_note: "occurrence_note",
+  capacity: "capacity",
+  lead: "lead_name",
+  custom_note: "custom_note",
+  recurrence: "recurrence",
+  template: "template",
+};
+
 const CHOOSE_CHAPTER_FIRST = "Choose a chapter to set the date and time";
 
 function step1Errors(form: CreateEventInput): string[] {
@@ -125,6 +149,16 @@ function step1Errors(form: CreateEventInput): string[] {
   }
   if (form.date && form.date < new Date().toISOString().slice(0, 10)) {
     errors.push("Date can't be in the past");
+  } else if (form.date && form.time && form.timezone) {
+    // Today, but a start time that's already gone by in the event's own zone
+    // — the server refuses it, so say so here rather than at Create.
+    try {
+      if (zonedDateTimeToUtc(form.date, form.time, form.timezone).getTime() < Date.now()) {
+        errors.push("That start time has already passed");
+      }
+    } catch {
+      // An unparseable date/time is reported by the fields themselves.
+    }
   }
   return errors;
 }
@@ -611,15 +645,46 @@ export function EventCreateWizard({
     scrollToTop();
   };
 
+  /** Back to the step that owns a problem, with the message shown there and
+   * — when it's one field's — that field focused. */
+  const showOnStep = (n: EventFormStep, errors: string[], field?: EventFormField) => {
+    goToStep(n);
+    setStepErrors(errors);
+    const id = field && FIELD_INPUT_IDS[field];
+    if (id) {
+      // After the step renders.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => document.getElementById(`create_${id}`)?.focus({ preventScroll: true })),
+      );
+    }
+  };
+
   const handleCreate = async () => {
-    const allErrors = [1, 2, 3, 4].flatMap((n) => errorsForStep(n, form));
-    if (allErrors.length > 0) {
-      setStepErrors(allErrors);
-      return;
+    // Every step is re-checked here (a restored draft, or an edit made by
+    // jumping back), and the first one with a problem is reopened.
+    for (const n of [1, 2, 3, 4] as const) {
+      const errors = errorsForStep(n, form);
+      if (errors.length > 0) {
+        showOnStep(n, errors);
+        return;
+      }
     }
     setIsSubmitting(true);
     setSubmitError(null);
+    try {
+      await submit();
+    } catch (err) {
+      // A dropped connection or a server crash — never leave the button
+      // stuck on "Creating...".
+      console.error("Create event failed:", err);
+      setIsSubmitting(false);
+      setSubmitError(
+        "Couldn't reach the server to create the event. Check your connection and try again — nothing was created unless the Manage events list says otherwise.",
+      );
+    }
+  };
 
+  const submit = async () => {
     // Saved before the event, so a problem here can't leave a created event
     // behind to be duplicated on retry.
     if (
@@ -631,8 +696,12 @@ export function EventCreateWizard({
       const venueResult = await saveVenueFromEventAction({ ...formLocation(form), chapter: form.chapter });
       if (!venueResult.ok) {
         setIsSubmitting(false);
-        setSubmitError(
-          `Couldn't save the venue for next time: ${venueResult.error}. Untick "Save this venue for next time" on the Details step to create the event without it.`,
+        showOnStep(
+          2,
+          [
+            `Couldn't save the venue for next time: ${venueResult.error}. Untick "Save this venue for next time" to create the event without saving it.`,
+          ],
+          "venue",
         );
         return;
       }
@@ -641,7 +710,8 @@ export function EventCreateWizard({
     const result = await createEventAction(form);
     if (!result.ok) {
       setIsSubmitting(false);
-      setSubmitError(result.error);
+      if (result.step) showOnStep(result.step, [result.error], result.field);
+      else setSubmitError(result.error);
       return;
     }
     // Clear the draft now, before navigating, and stop anything re-saving it.

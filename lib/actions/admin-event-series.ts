@@ -8,8 +8,8 @@ import {
   requireEventManager,
 } from "@/lib/admin/require-admin";
 import { sendAdminChangeNotificationEmail } from "@/lib/email/send";
+import { eventsWithRegistrations } from "@/lib/admin/event-delete";
 import {
-  isEmptyOccurrence,
   laterOccurrenceIds,
   peopleByEvent,
   sumPeople,
@@ -83,10 +83,11 @@ export type DeleteOccurrencesResult =
   | { ok: false; error: string };
 
 /**
- * Deletes occurrences of a series nobody is on — no active RSVP and no
- * confirmed volunteer signup (admin_delete_empty_events re-checks that
- * under a row lock and skips any that aren't empty, reported back as
- * skippedCount). Anything with people goes through Cancel instead.
+ * Deletes occurrences of a series nobody has ever registered or volunteered
+ * for — no RSVP or volunteer signup in any status, cancelled included (the
+ * one "empty" rule — eventsWithRegistrations; admin_delete_empty_events
+ * re-checks it under a row lock and skips any that aren't empty, reported
+ * back as skippedCount). Anything else goes through Cancel instead.
  *
  * `which` is either specific occurrence ids, or "future_empty": every
  * occurrence in the series that hasn't started yet and is empty — for
@@ -117,11 +118,11 @@ export async function deleteSeriesOccurrencesAction(
   if (which === "future_empty") {
     const now = Date.now();
     const upcoming = occurrences.filter((o) => new Date(o.starts_at).getTime() > now);
-    const people = await peopleByEvent(
+    const registered = await eventsWithRegistrations(
       supabase,
       upcoming.map((o) => o.id),
     );
-    candidates = upcoming.filter((o) => isEmptyOccurrence(people.get(o.id) as OccurrencePeople));
+    candidates = upcoming.filter((o) => !registered.has(o.id));
   } else {
     const wanted = new Set(which);
     candidates = occurrences.filter((o) => wanted.has(o.id));

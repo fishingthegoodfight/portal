@@ -39,8 +39,10 @@ export type OccurrencePeople = {
 
 export const EMPTY_PEOPLE: OccurrencePeople = { confirmed: 0, waiting: 0, volunteers: 0 };
 
-/** Who is on each of these events. An event nobody is on (all zeros) is the
- * only kind admin_delete_empty_events will delete. */
+/** Who is currently on each of these events — for display (the series
+ * page's counts, the scope question). NOT the rule for whether an event can
+ * be deleted: that's eventsWithRegistrations (lib/admin/event-delete.ts),
+ * which also counts cancelled registrations. */
 export async function peopleByEvent(
   supabase: SupabaseServerClient,
   eventIds: number[],
@@ -87,6 +89,3 @@ export function sumPeople(people: Iterable<OccurrencePeople>): OccurrencePeople 
   }
   return total;
 }
-
-export const isEmptyOccurrence = (p: OccurrencePeople) =>
-  p.confirmed === 0 && p.waiting === 0 && p.volunteers === 0;

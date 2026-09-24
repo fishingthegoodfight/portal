@@ -3,6 +3,7 @@ import { cache } from "react";
 import { createAnonClient } from "@/lib/supabase/anon";
 import { isVirtualChapter } from "@/lib/chapters";
 import { cityStateZip } from "@/lib/event-location";
+import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
 
 /**
  * Exactly the columns granted to anon on events (see the 2026-09-23 "Public
@@ -84,14 +85,17 @@ export const loadPublicEvent = cache(async (param: string): Promise<PublicEventL
   }
 
   // Open waitlist offers hold a spot, same as on the signed-in pages.
-  let spotsLeft: number | null = null;
+  let spotsLeft: number | null = null; // null = unlimited
   if (event.capacity != null) {
     const { data: offered } = await supabase.rpc("event_offered_counts", {
       p_event_ids: [event.id],
     });
     const offeredCount =
       ((offered ?? []) as { event_id: number; offered_count: number }[])[0]?.offered_count ?? 0;
-    spotsLeft = Math.max((event.capacity as number) - ((event.spots_taken as number | null) ?? 0) - offeredCount, 0);
+    spotsLeft = Math.max(
+      computeSpotsLeft(event.capacity as number, ((event.spots_taken as number | null) ?? 0) + offeredCount) ?? 0,
+      0,
+    );
   }
 
   return { kind: "found", event: event as PublicEvent, spotsLeft };

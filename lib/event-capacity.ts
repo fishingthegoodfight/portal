@@ -16,3 +16,14 @@ export function capacityError(raw: string): string | null {
   }
   return null;
 }
+
+/**
+ * Spots left on an event — THE rule for every screen, matching the
+ * database's try_claim_event_spot: null capacity = unlimited (returns null),
+ * a missing spots_taken counts as 0. `taken` should already include open
+ * waitlist offers wherever the caller has them. Can go negative when an
+ * admin confirmed walk-ups over capacity; callers treat <= 0 as full.
+ */
+export function spotsLeft(capacity: number | null, taken: number | null): number | null {
+  return capacity == null ? null : capacity - (taken ?? 0);
+}
