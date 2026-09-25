@@ -8,17 +8,23 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { certIsCurrent, VOLUNTEER_STATUS_LABELS, type VolunteerStatus } from "@/lib/volunteers";
-import { formatEventDateRange } from "@/lib/format-date";
+import { formatDateInZone, formatEventDateRange } from "@/lib/format-date";
 import { VolunteerShiftsList, type VolunteerShift } from "@/components/volunteer-shifts-list";
 import { loadOpenShiftsForVolunteer } from "@/lib/volunteer-signups";
 import { eventsNeedingHealthForm } from "@/lib/health-requirements";
+import {
+  APPLICATION_STATUS_FOR_APPLICANT,
+  CLOSED_STATUSES,
+  type ApplicationStatus,
+} from "@/lib/volunteer-applications";
+import { WithdrawApplicationButton } from "@/components/withdraw-application-button";
 
 async function VolunteerHomeLoader({
   searchParams,
 }: {
-  searchParams: Promise<{ saved?: string }>;
+  searchParams: Promise<{ saved?: string; applied?: string }>;
 }) {
-  const { saved } = await searchParams;
+  const { saved, applied } = await searchParams;
   const supabase = await createClient();
   const { data, error } = await supabase.auth.getClaims();
   if (error || !data?.claims) {
@@ -31,20 +37,51 @@ async function VolunteerHomeLoader({
     supabase.from("profiles").select("program_interests, chapter").eq("id", userId).maybeSingle(),
   ]);
 
-  // Reachable only by someone with a volunteers row — same rule as the
-  // registration form itself.
+  // Not on the team yet: their application's status, or a way to apply.
+  // (Admin invites still create a volunteers row directly, as before.)
   if (!volunteer) {
+    const { data: applications } = await supabase.rpc("my_volunteer_applications");
+    const latest = ((applications ?? []) as {
+      id: number;
+      status: ApplicationStatus;
+      submitted_at: string;
+      reapplication_allowed: boolean;
+    }[])[0];
+    const open = latest && !CLOSED_STATUSES.includes(latest.status) ? latest : null;
+    // After a decline: no Apply button and nothing about applying again,
+    // until an admin chooses "Allow re-application".
+    const declinedHold = latest?.status === "declined" && !latest.reapplication_allowed;
     return (
-      <div className="max-w-md">
-        <h1 className="mb-2 text-2xl font-bold">Volunteer</h1>
-        <p className="text-sm text-muted-foreground">
-          Volunteer registration is by invitation only. If you&apos;d like to volunteer with
-          Fishing the Good Fight, contact{" "}
-          <a href="mailto:tcramer@fishingthegoodfight.org" className="underline underline-offset-4">
-            tcramer@fishingthegoodfight.org
-          </a>
-          .
-        </p>
+      <div className="flex max-w-md flex-col gap-3">
+        <h1 className="text-2xl font-bold">Volunteer</h1>
+        {applied && open && (
+          <p className="rounded-md bg-accent p-3 text-sm">Thanks — your application is in.</p>
+        )}
+        {declinedHold ? (
+          <p className="text-sm text-muted-foreground">{APPLICATION_STATUS_FOR_APPLICANT.declined}</p>
+        ) : open ? (
+          <>
+            <p className="text-sm">
+              <span className="font-medium">Your application</span> (sent{" "}
+              {formatDateInZone(open.submitted_at, "America/Denver")}):{" "}
+              {APPLICATION_STATUS_FOR_APPLICANT[open.status]}
+            </p>
+            <WithdrawApplicationButton applicationId={open.id} />
+          </>
+        ) : (
+          <>
+            <p className="text-sm text-muted-foreground">
+              Volunteers help run our events on and off the water. If you&apos;d like to be one,
+              we&apos;d love to hear from you.
+              {latest?.status === "withdrawn" && " You withdrew your last application — you're welcome to apply again."}
+            </p>
+            <div>
+              <Button asChild>
+                <Link href="/protected/volunteer/apply">Apply to volunteer</Link>
+              </Button>
+            </div>
+          </>
+        )}
       </div>
     );
   }
@@ -297,7 +334,7 @@ async function VolunteerHomeLoader({
 export default function VolunteerHomePage({
   searchParams,
 }: {
-  searchParams: Promise<{ saved?: string }>;
+  searchParams: Promise<{ saved?: string; applied?: string }>;
 }) {
   return (
     <div className="flex-1 w-full flex flex-col gap-8 max-w-2xl">

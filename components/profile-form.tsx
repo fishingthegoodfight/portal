@@ -405,6 +405,21 @@ export function ProfileForm({
         </CardContent>
       </Card>
 
+      <Card id="volunteer">
+        <CardHeader>
+          <CardTitle>Volunteering</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2">
+          <p className="text-sm text-muted-foreground">
+            Want to help run events? Apply to join the volunteer team, or check on an
+            application you&apos;ve sent.
+          </p>
+          <Link href="/protected/volunteer" className="text-sm underline underline-offset-4">
+            Apply to volunteer
+          </Link>
+        </CardContent>
+      </Card>
+
       <div className="flex flex-col gap-3">
         {error && <p className="text-sm text-red-500">{error}</p>}
         {success && (

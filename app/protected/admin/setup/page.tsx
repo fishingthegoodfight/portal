@@ -25,6 +25,11 @@ const SETUP_LINKS = [
     description: "Saved places the event forms can pick from to fill in the address. Retire old ones without touching past events.",
   },
   {
+    href: "/protected/admin/setup/applications",
+    title: "Volunteer applications",
+    description: "How many events someone attends before a screening call, and the link applicants use to book one.",
+  },
+  {
     href: "/protected/admin/volunteers/roles",
     title: "Volunteer role types",
     description: "The catalog of roles volunteers can be approved for and events can ask for.",

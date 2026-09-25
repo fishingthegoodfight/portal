@@ -1238,3 +1238,138 @@ export function leadVolunteerSignupChangeEmail({
 
   return { subject, html, text };
 }
+
+/**
+ * To a volunteer applicant: "book a call with us" — the screening call, via
+ * the scheduling link from Setup (a Google Calendar appointment schedule).
+ */
+export function applicationInviteToScheduleEmail({
+  recipientName,
+  schedulingUrl,
+}: {
+  recipientName: string | null;
+  schedulingUrl: string;
+}): RenderedEmail {
+  const subject = "Let's talk about volunteering with Fishing the Good Fight";
+  const greeting = recipientName ? `Hi ${escapeHtml(recipientName)},` : "Hi,";
+  const greetingText = recipientName ? `Hi ${recipientName},` : "Hi,";
+  const intro =
+    "Thanks for applying to volunteer with Fishing the Good Fight. The next step is a short call so we can get to know you, answer your questions, and talk about where you'd fit best.";
+  const ask = "Pick a time that works for you:";
+  const buttonLabel = "Book a call";
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">Let's set up a call</p>`,
+      `<p style="margin:0 0 16px;">${greeting}</p>`,
+      `<p style="margin:0 0 16px;">${intro}</p>`,
+      `<p style="margin:0 0 8px;">${ask}</p>`,
+      `<p style="margin:16px 0 8px;"><a href="${escapeHtml(schedulingUrl)}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">If none of the times work, just reply to this email and we'll sort something out.</p>`,
+    ].join("\n"),
+  );
+  const text = [
+    "Let's set up a call",
+    "",
+    greetingText,
+    "",
+    intro,
+    "",
+    `${ask} ${schedulingUrl}`,
+    "",
+    "If none of the times work, just reply to this email and we'll sort something out.",
+  ].join("\n");
+  return { subject, html, text };
+}
+
+/**
+ * To a volunteer applicant: we'd like to see you at a few more events before
+ * we talk. Warm, and explicitly not a no — the application stays open and
+ * picks itself back up once they've been to a few more.
+ */
+export function applicationAttendMoreEventsEmail({
+  recipientName,
+  eventsUrl,
+}: {
+  recipientName: string | null;
+  eventsUrl: string;
+}): RenderedEmail {
+  const subject = "Thanks for applying to volunteer — a quick next step";
+  const greeting = recipientName ? `Hi ${escapeHtml(recipientName)},` : "Hi,";
+  const greetingText = recipientName ? `Hi ${recipientName},` : "Hi,";
+  const paragraphs = [
+    "Thanks for applying to volunteer with Fishing the Good Fight — we've got your application, and we're really glad you want to be part of this.",
+    "Before we sit down and talk, we'd love to see you at a few more of our events. It's how we get to know each other, and it's the best way for you to see what volunteering here actually looks like.",
+    "This isn't a no. Your application stays open — you don't need to reapply. Once you've been to a few more events, it comes back to us and we'll reach out about a call.",
+  ];
+  const buttonLabel = "See upcoming events";
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">We've got your application</p>`,
+      `<p style="margin:0 0 16px;">${greeting}</p>`,
+      ...paragraphs.map((p) => `<p style="margin:0 0 16px;">${escapeHtml(p)}</p>`),
+      `<p style="margin:16px 0 8px;"><a href="${escapeHtml(eventsUrl)}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Questions? Just reply to this email.</p>`,
+    ].join("\n"),
+  );
+  const text = [
+    "We've got your application",
+    "",
+    greetingText,
+    "",
+    ...paragraphs.flatMap((p) => [p, ""]),
+    `${buttonLabel}: ${eventsUrl}`,
+    "",
+    "Questions? Just reply to this email.",
+  ].join("\n");
+  return { subject, html, text };
+}
+
+/** One section of the daily admin digest — e.g. "Applications now ready to
+ * screen"; phase 3 adds pending reference checks as another. */
+export type AdminDigestSection = {
+  title: string;
+  /** One line under the title, optional. */
+  intro?: string;
+  items: { label: string; detail?: string; url: string }[];
+};
+
+/**
+ * The daily admin digest: everything needing an admin's attention, as
+ * sections in priority order. Only sent when at least one section has items.
+ */
+export function adminDigestEmail({ sections }: { sections: AdminDigestSection[] }): RenderedEmail {
+  const total = sections.reduce((n, s) => n + s.items.length, 0);
+  const subject = `FTGF portal: ${total} ${total === 1 ? "thing needs" : "things need"} your attention`;
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">Needs your attention</p>`,
+      ...sections.map((section) =>
+        [
+          `<p style="margin:20px 0 4px;font-weight:600;">${escapeHtml(section.title)} (${section.items.length})</p>`,
+          section.intro ? `<p style="margin:0 0 8px;font-size:13px;color:#57534e;">${escapeHtml(section.intro)}</p>` : "",
+          `<ul style="margin:0;padding-left:20px;">`,
+          ...section.items.map(
+            (item) =>
+              `<li style="margin:0 0 6px;"><a href="${escapeHtml(item.url)}">${escapeHtml(item.label)}</a>${
+                item.detail ? ` <span style="color:#57534e;">— ${escapeHtml(item.detail)}</span>` : ""
+              }</li>`,
+          ),
+          `</ul>`,
+        ].join("\n"),
+      ),
+    ].join("\n"),
+  );
+  const text = [
+    "Needs your attention",
+    ...sections.flatMap((section) => [
+      "",
+      `${section.title} (${section.items.length})`,
+      ...(section.intro ? [section.intro] : []),
+      ...section.items.map((item) => `- ${item.label}${item.detail ? ` — ${item.detail}` : ""}: ${item.url}`),
+    ]),
+  ].join("\n");
+  return { subject, html, text };
+}

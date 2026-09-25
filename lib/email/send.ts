@@ -21,6 +21,10 @@ import {
   volunteerShiftEventCancelledEmail,
   volunteerEventRestoredEmail,
   personInviteEmail,
+  adminDigestEmail,
+  applicationAttendMoreEventsEmail,
+  applicationInviteToScheduleEmail,
+  type AdminDigestSection,
   volunteerInviteEmail,
   volunteerReminderEmail,
   volunteerSignupConfirmationEmail,
@@ -831,4 +835,47 @@ export async function sendLeadVolunteerSignupChangeEmail({
     eventAdminUrl: `${getSiteUrl()}/protected/admin/events/${ctx.eventId}`,
   });
   await deliverEmail({ to: ctx.leadEmail, subject, html, text });
+}
+
+/** Volunteer applicant: book a screening call (scheduling link from Setup). */
+export async function sendApplicationInviteToScheduleEmail(params: {
+  toEmail: string;
+  recipientName: string | null;
+  schedulingUrl: string;
+}): Promise<void> {
+  const { subject, html, text } = applicationInviteToScheduleEmail(params);
+  await deliverEmail({ to: params.toEmail, subject, html, text });
+}
+
+/** Volunteer applicant: come to a few more events first (not a no). */
+export async function sendApplicationAttendMoreEventsEmail(params: {
+  toEmail: string;
+  recipientName: string | null;
+}): Promise<void> {
+  const { subject, html, text } = applicationAttendMoreEventsEmail({
+    recipientName: params.recipientName,
+    eventsUrl: `${getSiteUrl()}/protected/events`,
+  });
+  await deliverEmail({ to: params.toEmail, subject, html, text });
+}
+
+/**
+ * The daily admin digest, to ADMIN_NOTIFICATION_EMAILS (the same list as
+ * event-change notifications). Returns false — sends nothing — when there's
+ * nothing in any section or nobody to send it to.
+ */
+export async function sendAdminDigestEmail(sections: AdminDigestSection[]): Promise<boolean> {
+  const nonEmpty = sections.filter((s) => s.items.length > 0);
+  const recipients = (process.env.ADMIN_NOTIFICATION_EMAILS ?? "")
+    .split(",")
+    .map((address) => address.trim())
+    .filter(Boolean);
+  console.log(
+    `[admin-digest] ${nonEmpty.reduce((n, s) => n + s.items.length, 0)} item(s); ADMIN_NOTIFICATION_EMAILS parsed to`,
+    recipients.length > 0 ? recipients : "(empty — not set, skipping send)",
+  );
+  if (nonEmpty.length === 0 || recipients.length === 0) return false;
+  const { subject, html, text } = adminDigestEmail({ sections: nonEmpty });
+  await deliverEmail({ to: recipients, subject, html, text });
+  return true;
 }

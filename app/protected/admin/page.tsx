@@ -350,6 +350,11 @@ async function AdminIndexActions() {
   ]);
   return (
     <div className="flex flex-wrap gap-2">
+      {(access?.isAdmin || access?.role === "chapter_lead") && (
+        <Button asChild variant="outline">
+          <Link href="/protected/admin/applications">Applications</Link>
+        </Button>
+      )}
       {access?.isAdmin && (
         <>
           <Button asChild variant="outline">

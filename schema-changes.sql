@@ -6806,3 +6806,790 @@ begin
 end $function$;
 
 commit;
+
+-- =============================================================================
+-- 2026-09-25 — Volunteer applications, phase 1: apply, attendance, review
+-- =============================================================================
+-- The main path onto the volunteer team becomes: a participant applies, we
+-- review, screen them on a call (phase 2), check references (phase 3),
+-- approve them for roles (phase 4), and they complete the existing volunteer
+-- registration form. Admin invites (inviteVolunteerAction) are unchanged.
+--
+-- 1. app_settings — one row of admin-editable settings (Setup → Volunteer
+--    applications): the minimum events attended before a screening call
+--    (default 2) and the call-scheduling link (a Google Calendar
+--    appointment-schedule URL, pasted in; no calendar integration).
+--    Readable by any signed-in user (neither is secret: the link is emailed
+--    to applicants), writable by admins.
+--
+-- 2. attendance_credits — "events attended before the portal": an admin's
+--    judgment, per person, with a required one-line note and who/when. The
+--    portal has no attendance history before check-in started being used.
+--
+-- 3. Attendance = distinct events someone was checked in at (rsvps
+--    .checked_in_at), plus their credit. attendance_total(user) is the one
+--    definition.
+--
+-- 4. volunteer_applications — one row per application. The applicant
+--    inserts their own (a trigger stamps who/when, works out attendance and
+--    the starting status, and checks reference 1 against approved
+--    volunteers); every change after that goes through the functions below,
+--    which record who did what in volunteer_application_events.
+--    The applicant can't select their own row directly — only through
+--    my_volunteer_applications(), which leaves out reviewer-only fields
+--    (reference 1's match, which would reveal who's on the roster).
+--
+--    Statuses: waiting_on_attendance, ready_to_screen, invited_to_schedule,
+--    screening_scheduled, screened, references_out, references_in,
+--    approved, declined, withdrawn. An application that meets its
+--    attendance target is ready_to_screen — that's the review queue; there's
+--    no separate "submitted". Phase 1 uses the first three plus declined and
+--    withdrawn; phases 2–4 fill in the rest.
+--
+--    A declined applicant can't apply again until an admin chooses "Allow
+--    re-application" on the declined application (reapplication_allowed) —
+--    inviting someone back is deliberate, never the default.
+--
+--    attendance_target: null = the Setup minimum. "Ask them to attend a few
+--    events first" sets it to greatest(minimum, current attendance + 2), so
+--    someone already over the minimum doesn't bounce straight back.
+--
+-- 5. Waiting on attendance → Ready to screen happens by itself: a trigger on
+--    check-ins, on attendance credits, and on the Setup minimum re-checks
+--    waiting applications (promote_ready_applications). ready_since records
+--    when; digest_notified_at is set once the daily admin digest has listed
+--    it.
+--
+-- 6. Who sees what: admins, all applications; a chapter lead, applications
+--    that picked any chapter they lead. Admins and those chapter leads can
+--    invite to a call and ask them to attend more events; only admins
+--    decline and allow re-application. The applicant or an admin can
+--    withdraw.
+--    Nothing here is behind can_view_volunteer_screening (that's phase 2).
+--
+-- Safe to re-run. One transaction: if any statement fails, nothing is
+-- applied.
+
+begin;
+
+-- ---- 1. Settings -----------------------------------------------------------------
+create table if not exists public.app_settings (
+  id boolean primary key default true check (id),
+  min_events_before_screening integer not null default 2 check (min_events_before_screening >= 0),
+  screening_scheduling_url text check (screening_scheduling_url is null or screening_scheduling_url ~* '^https?://'),
+  updated_by uuid references auth.users(id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+
+insert into public.app_settings (id) values (true) on conflict (id) do nothing;
+
+alter table public.app_settings enable row level security;
+
+drop policy if exists app_settings_select on public.app_settings;
+create policy app_settings_select on public.app_settings
+  for select to authenticated
+  using (true);
+
+drop policy if exists app_settings_update_admin on public.app_settings;
+create policy app_settings_update_admin on public.app_settings
+  for update to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+revoke all on public.app_settings from anon;
+revoke all on public.app_settings from authenticated;
+grant select, update on public.app_settings to authenticated;
+grant all on public.app_settings to service_role;
+
+create or replace function public.app_settings_stamp()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  new.updated_by := coalesce(auth.uid(), new.updated_by);
+  new.updated_at := now();
+  return new;
+end $function$;
+
+drop trigger if exists app_settings_stamp on public.app_settings;
+create trigger app_settings_stamp
+  before update on public.app_settings
+  for each row execute function public.app_settings_stamp();
+
+revoke all on function public.app_settings_stamp() from public, anon, authenticated;
+
+-- ---- 2. Attendance credits -------------------------------------------------------
+create table if not exists public.attendance_credits (
+  user_id uuid primary key references public.profiles(id) on delete cascade,
+  events integer not null check (events >= 0),
+  note text not null check (btrim(note) <> ''),
+  set_by uuid references auth.users(id) on delete set null,
+  set_at timestamptz not null default now()
+);
+
+alter table public.attendance_credits enable row level security;
+
+-- ---- 4 (table first, so the credit policies can refer to it). Applications ---------
+create table if not exists public.volunteer_applications (
+  id bigserial primary key,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  status text not null check (status in (
+    'waiting_on_attendance', 'ready_to_screen', 'invited_to_schedule',
+    'screening_scheduled', 'screened', 'references_out', 'references_in',
+    'approved', 'declined', 'withdrawn'
+  )),
+  -- Declined only: an admin has chosen to let them apply again.
+  reapplication_allowed boolean not null default false,
+  submitted_at timestamptz not null default now(),
+  status_changed_at timestamptz not null default now(),
+  attendance_at_submission integer not null default 0,
+  attendance_target integer check (attendance_target is null or attendance_target >= 0),
+  ready_since timestamptz,
+  digest_notified_at timestamptz,
+
+  -- Contact, as given on the form (the profile isn't changed)
+  full_name text not null check (btrim(full_name) <> ''),
+  email text not null check (btrim(email) <> ''),
+  phone text not null check (btrim(phone) <> ''),
+
+  -- About you
+  chapters text[] not null check (cardinality(chapters) > 0),
+  how_connected text not null check (btrim(how_connected) <> ''),
+  how_long_attending text not null check (btrim(how_long_attending) <> ''),
+
+  -- Why
+  why_volunteer text not null check (btrim(why_volunteer) <> ''),
+  hope_to_get text not null check (btrim(hope_to_get) <> ''),
+  mission_connection text,
+
+  -- Roles
+  role_type_ids bigint[] not null default '{}'::bigint[],
+  interested_in_retreats boolean not null,
+
+  -- Fly fishing
+  years_fly_fishing text not null check (btrim(years_fly_fishing) <> ''),
+  water_fished text not null check (btrim(water_fished) <> ''),
+  has_taught_or_guided boolean not null,
+  taught_details text,
+  beginner_comfort smallint not null check (beginner_comfort between 1 and 5),
+
+  -- Certifications (self-reported)
+  cert_first_aid_cpr boolean not null,
+  cert_first_aid_cpr_expires date,
+  cert_wfa_wfr boolean not null,
+  cert_ffi_casting boolean not null,
+  cert_guide_license boolean not null,
+  cert_other text,
+
+  -- Availability
+  availability text[] not null check (
+    cardinality(availability) > 0
+    and availability <@ array['weeknights', 'weekend_mornings', 'weekend_days', 'multi_day_retreats']
+  ),
+  frequency text not null check (btrim(frequency) <> ''),
+
+  -- References
+  ref1_name text not null check (btrim(ref1_name) <> ''),
+  ref1_email text not null check (btrim(ref1_email) <> ''),
+  ref1_phone text not null check (btrim(ref1_phone) <> ''),
+  ref1_how_know text not null check (btrim(ref1_how_know) <> ''),
+  ref1_chapter text not null check (btrim(ref1_chapter) <> ''),
+  ref1_matched_volunteer boolean not null default false,
+  ref2_name text not null check (btrim(ref2_name) <> ''),
+  ref2_email text not null check (btrim(ref2_email) <> ''),
+  ref2_phone text not null check (btrim(ref2_phone) <> ''),
+  ref2_relationship text not null check (btrim(ref2_relationship) <> ''),
+  ref2_known_for text not null check (btrim(ref2_known_for) <> ''),
+  references_acknowledged boolean not null check (references_acknowledged),
+
+  anything_else text
+);
+
+-- One open application per person; after declined/withdrawn they can apply again.
+create unique index if not exists volunteer_applications_one_open
+  on public.volunteer_applications (user_id)
+  where status not in ('approved', 'declined', 'withdrawn');
+create index if not exists volunteer_applications_status_idx
+  on public.volunteer_applications (status, submitted_at desc);
+
+create table if not exists public.volunteer_application_events (
+  id bigserial primary key,
+  application_id bigint not null references public.volunteer_applications(id) on delete cascade,
+  action text not null check (action in (
+    'submitted', 'attendance_reached', 'invited_to_schedule',
+    'asked_to_attend_more', 'declined', 'reapplication_allowed', 'withdrawn'
+  )),
+  from_status text,
+  to_status text,
+  -- The internal decline reason, or an email's recipient — never shown to
+  -- the applicant.
+  note text,
+  actor uuid references auth.users(id) on delete set null,
+  emailed boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists volunteer_application_events_app_idx
+  on public.volunteer_application_events (application_id, created_at);
+
+-- ---- Who may see / act on an application ------------------------------------------
+-- An admin, or a chapter lead who leads any of the application's chapters.
+create or replace function public.can_review_application_chapters(p_chapters text[])
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce(
+    (select p.role = 'admin'
+            or (p.role = 'chapter_lead' and p.led_chapters && coalesce(p_chapters, '{}'::text[]))
+       from public.profiles p where p.id = auth.uid()),
+    false
+  );
+$function$;
+
+create or replace function public.can_review_application(p_application_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce(
+    (select public.can_review_application_chapters(a.chapters)
+       from public.volunteer_applications a where a.id = p_application_id),
+    false
+  );
+$function$;
+
+-- Reviewers see the application; the applicant only through
+-- my_volunteer_applications() (no direct select).
+alter table public.volunteer_applications enable row level security;
+
+drop policy if exists volunteer_applications_select_reviewer on public.volunteer_applications;
+create policy volunteer_applications_select_reviewer on public.volunteer_applications
+  for select to authenticated
+  using (public.can_review_application_chapters(chapters));
+
+drop policy if exists volunteer_applications_insert_own on public.volunteer_applications;
+create policy volunteer_applications_insert_own on public.volunteer_applications
+  for insert to authenticated
+  with check (user_id = auth.uid());
+-- No update or delete policy: changes go through the functions below.
+
+revoke all on public.volunteer_applications from anon;
+revoke all on public.volunteer_applications from authenticated;
+grant select, insert on public.volunteer_applications to authenticated;
+grant all on public.volunteer_applications to service_role;
+revoke all on sequence public.volunteer_applications_id_seq from anon;
+grant usage, select on sequence public.volunteer_applications_id_seq to authenticated, service_role;
+
+alter table public.volunteer_application_events enable row level security;
+
+drop policy if exists volunteer_application_events_select_reviewer on public.volunteer_application_events;
+create policy volunteer_application_events_select_reviewer on public.volunteer_application_events
+  for select to authenticated
+  using (public.can_review_application(application_id));
+-- Written only by the functions below.
+
+revoke all on public.volunteer_application_events from anon;
+revoke all on public.volunteer_application_events from authenticated;
+grant select on public.volunteer_application_events to authenticated;
+grant all on public.volunteer_application_events to service_role;
+revoke all on sequence public.volunteer_application_events_id_seq from anon, authenticated;
+grant usage, select on sequence public.volunteer_application_events_id_seq to service_role;
+
+-- Credits: admins set them; reviewers of that person's application (and
+-- admins) can read them. The person themselves sees only their total.
+drop policy if exists attendance_credits_select_reviewer on public.attendance_credits;
+create policy attendance_credits_select_reviewer on public.attendance_credits
+  for select to authenticated
+  using (
+    public.is_admin()
+    or exists (
+      select 1 from public.volunteer_applications a
+       where a.user_id = attendance_credits.user_id
+         and public.can_review_application_chapters(a.chapters)
+    )
+  );
+
+drop policy if exists attendance_credits_insert_admin on public.attendance_credits;
+create policy attendance_credits_insert_admin on public.attendance_credits
+  for insert to authenticated
+  with check (public.is_admin());
+
+drop policy if exists attendance_credits_update_admin on public.attendance_credits;
+create policy attendance_credits_update_admin on public.attendance_credits
+  for update to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+drop policy if exists attendance_credits_delete_admin on public.attendance_credits;
+create policy attendance_credits_delete_admin on public.attendance_credits
+  for delete to authenticated
+  using (public.is_admin());
+
+revoke all on public.attendance_credits from anon;
+revoke all on public.attendance_credits from authenticated;
+grant select, insert, update, delete on public.attendance_credits to authenticated;
+grant all on public.attendance_credits to service_role;
+
+create or replace function public.attendance_credits_stamp()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  new.set_by := coalesce(auth.uid(), new.set_by);
+  new.set_at := now();
+  return new;
+end $function$;
+
+drop trigger if exists attendance_credits_stamp on public.attendance_credits;
+create trigger attendance_credits_stamp
+  before insert or update on public.attendance_credits
+  for each row execute function public.attendance_credits_stamp();
+
+revoke all on function public.attendance_credits_stamp() from public, anon, authenticated;
+
+-- ---- 3. Attendance ---------------------------------------------------------------
+-- THE definition: distinct events checked in at, plus the admin's credit.
+create or replace function public.attendance_total(p_user_id uuid)
+returns integer
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select (
+    select count(distinct r.event_id)::int from public.rsvps r
+     where r.user_id = p_user_id and r.checked_in_at is not null
+  ) + coalesce(
+    (select c.events from public.attendance_credits c where c.user_id = p_user_id),
+    0
+  );
+$function$;
+
+create or replace function public.min_events_before_screening()
+returns integer
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce((select s.min_events_before_screening from public.app_settings s where s.id), 2);
+$function$;
+
+-- The caller's own attendance total (the apply page shows it).
+create or replace function public.my_attendance_total()
+returns integer
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select case when auth.uid() is null then 0 else public.attendance_total(auth.uid()) end;
+$function$;
+
+-- Waiting applications whose attendance has reached their target move to
+-- Ready to screen. p_user_id null = everyone (a Setup change). Never moves anything
+-- back.
+create or replace function public.promote_ready_applications(p_user_id uuid default null)
+returns integer
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_count integer := 0;
+  v_app record;
+begin
+  for v_app in
+    select a.id from public.volunteer_applications a
+     where a.status = 'waiting_on_attendance'
+       and (p_user_id is null or a.user_id = p_user_id)
+       and public.attendance_total(a.user_id)
+           >= coalesce(a.attendance_target, public.min_events_before_screening())
+     for update
+  loop
+    update public.volunteer_applications
+       set status = 'ready_to_screen', status_changed_at = now(), ready_since = now(), digest_notified_at = null
+     where id = v_app.id;
+    insert into public.volunteer_application_events (application_id, action, from_status, to_status)
+    values (v_app.id, 'attendance_reached', 'waiting_on_attendance', 'ready_to_screen');
+    v_count := v_count + 1;
+  end loop;
+  return v_count;
+end $function$;
+
+create or replace function public.rsvps_promote_applications()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if new.checked_in_at is not null and (tg_op = 'INSERT' or old.checked_in_at is null) then
+    perform public.promote_ready_applications(new.user_id);
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists rsvps_promote_applications on public.rsvps;
+create trigger rsvps_promote_applications
+  after insert or update of checked_in_at on public.rsvps
+  for each row execute function public.rsvps_promote_applications();
+
+create or replace function public.attendance_credits_promote_applications()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  perform public.promote_ready_applications(new.user_id);
+  return new;
+end $function$;
+
+drop trigger if exists attendance_credits_promote_applications on public.attendance_credits;
+create trigger attendance_credits_promote_applications
+  after insert or update on public.attendance_credits
+  for each row execute function public.attendance_credits_promote_applications();
+
+create or replace function public.app_settings_promote_applications()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if new.min_events_before_screening is distinct from old.min_events_before_screening then
+    perform public.promote_ready_applications(null);
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists app_settings_promote_applications on public.app_settings;
+create trigger app_settings_promote_applications
+  after update on public.app_settings
+  for each row execute function public.app_settings_promote_applications();
+
+revoke all on function public.rsvps_promote_applications() from public, anon, authenticated;
+revoke all on function public.attendance_credits_promote_applications() from public, anon, authenticated;
+revoke all on function public.app_settings_promote_applications() from public, anon, authenticated;
+
+-- ---- Submitting ------------------------------------------------------------------
+-- Who, when, attendance, starting status and reference 1's match come from
+-- the database, never the insert.
+create or replace function public.volunteer_applications_before_insert()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_attended integer;
+begin
+  if auth.uid() is not null then
+    new.user_id := auth.uid();
+  end if;
+
+  if exists (
+    select 1 from public.volunteers v
+     where v.user_id = new.user_id and v.status in ('invited', 'registered', 'approved')
+  ) then
+    raise exception 'You''re already on the volunteer team' using errcode = 'P0001';
+  end if;
+  if exists (
+    select 1 from public.volunteer_applications a
+     where a.user_id = new.user_id and a.status not in ('approved', 'declined', 'withdrawn')
+  ) then
+    raise exception 'You already have an application in progress' using errcode = 'P0001';
+  end if;
+  -- A decline stands until an admin allows re-application.
+  if exists (
+    select 1 from public.volunteer_applications a
+     where a.user_id = new.user_id and a.status = 'declined' and not a.reapplication_allowed
+  ) then
+    raise exception 'You can''t apply right now' using errcode = 'P0001';
+  end if;
+
+  new.ref1_email := lower(btrim(new.ref1_email));
+  new.ref2_email := lower(btrim(new.ref2_email));
+  if new.ref1_email = lower(btrim(new.email)) or new.ref2_email = lower(btrim(new.email))
+     or new.ref1_email = lower((select p.email from public.profiles p where p.id = new.user_id))
+     or new.ref2_email = lower((select p.email from public.profiles p where p.id = new.user_id)) then
+    raise exception 'A reference can''t be you — give someone else''s email' using errcode = 'P0001';
+  end if;
+
+  new.ref1_matched_volunteer := exists (
+    select 1 from public.volunteers v
+      join public.profiles p on p.id = v.user_id
+     where v.status = 'approved' and lower(p.email) = new.ref1_email
+  );
+
+  v_attended := public.attendance_total(new.user_id);
+  new.attendance_at_submission := v_attended;
+  new.attendance_target := null;
+  new.submitted_at := now();
+  new.status_changed_at := now();
+  new.digest_notified_at := null;
+  new.reapplication_allowed := false;
+  if v_attended >= public.min_events_before_screening() then
+    new.status := 'ready_to_screen';
+    new.ready_since := now();
+  else
+    new.status := 'waiting_on_attendance';
+    new.ready_since := null;
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists volunteer_applications_before_insert on public.volunteer_applications;
+create trigger volunteer_applications_before_insert
+  before insert on public.volunteer_applications
+  for each row execute function public.volunteer_applications_before_insert();
+
+create or replace function public.volunteer_applications_after_insert()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  insert into public.volunteer_application_events (application_id, action, to_status, actor)
+  values (new.id, 'submitted', new.status, auth.uid());
+  return new;
+end $function$;
+
+drop trigger if exists volunteer_applications_after_insert on public.volunteer_applications;
+create trigger volunteer_applications_after_insert
+  after insert on public.volunteer_applications
+  for each row execute function public.volunteer_applications_after_insert();
+
+revoke all on function public.volunteer_applications_before_insert() from public, anon, authenticated;
+revoke all on function public.volunteer_applications_after_insert() from public, anon, authenticated;
+
+-- ---- Reading -------------------------------------------------------------------------
+-- The applicant's own applications — status, dates, and whether a decline
+-- has been lifted; no reviewer fields (reference 1's match would reveal
+-- who's an approved volunteer).
+create or replace function public.my_volunteer_applications()
+returns table (
+  id bigint,
+  status text,
+  submitted_at timestamptz,
+  status_changed_at timestamptz,
+  reapplication_allowed boolean
+)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select a.id, a.status, a.submitted_at, a.status_changed_at, a.reapplication_allowed
+    from public.volunteer_applications a
+   where a.user_id = auth.uid()
+   order by a.submitted_at desc;
+$function$;
+
+-- Active role types for the application form (participants can't read the
+-- volunteer_role_types table itself).
+create or replace function public.volunteer_application_role_options()
+returns table (id bigint, name text, description text, for_retreats boolean, for_chapter_events boolean)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select rt.id, rt.name, rt.description, rt.for_retreats, rt.for_chapter_events
+    from public.volunteer_role_types rt
+   where rt.active and auth.uid() is not null
+   order by rt.sort_order, rt.name;
+$function$;
+
+-- Attendance for applications the caller can review: total, and the credit
+-- part of it.
+create or replace function public.volunteer_application_attendance(p_application_ids bigint[])
+returns table (application_id bigint, attended integer, credit integer)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select a.id,
+         public.attendance_total(a.user_id),
+         coalesce((select c.events from public.attendance_credits c where c.user_id = a.user_id), 0)
+    from public.volunteer_applications a
+   where a.id = any(p_application_ids)
+     and public.can_review_application_chapters(a.chapters);
+$function$;
+
+-- The events an applicant was checked in at, for a reviewer of their
+-- application (a chapter lead can't otherwise read RSVPs outside their
+-- chapters).
+create or replace function public.volunteer_application_attended_events(p_application_id bigint)
+returns table (event_id bigint, name text, chapter text, starts_at timestamptz, timezone text)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select distinct on (e.id) e.id, e.name, e.chapter, e.starts_at, e.timezone
+    from public.volunteer_applications a
+    join public.rsvps r on r.user_id = a.user_id and r.checked_in_at is not null
+    join public.events e on e.id = r.event_id
+   where a.id = p_application_id
+     and public.can_review_application_chapters(a.chapters)
+   order by e.id, e.starts_at;
+$function$;
+
+-- ---- Acting ----------------------------------------------------------------------------
+-- One function per action: checks who may, changes the status, records it.
+-- Emails are sent by the app (lib/actions/volunteer-applications.ts) BEFORE
+-- the action is recorded, so "emailed" is only ever true for an email that
+-- actually went out.
+create or replace function public.volunteer_application_act(
+  p_application_id bigint,
+  p_action text,
+  p_note text default null,
+  p_emailed boolean default false
+)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_app public.volunteer_applications%rowtype;
+  v_to text;
+  v_target integer;
+  v_is_admin boolean := public.is_admin();
+begin
+  select * into v_app from public.volunteer_applications where id = p_application_id for update;
+  if not found then
+    raise exception 'Application not found';
+  end if;
+
+  if p_action = 'withdrawn' then
+    if not (v_app.user_id = auth.uid() or v_is_admin) then
+      raise exception 'Only the applicant or an admin can withdraw this application' using errcode = '42501';
+    end if;
+  elsif p_action in ('declined', 'reapplication_allowed') then
+    if not v_is_admin then
+      raise exception 'Only an admin can do that' using errcode = '42501';
+    end if;
+  elsif p_action in ('invited_to_schedule', 'asked_to_attend_more') then
+    if not public.can_review_application_chapters(v_app.chapters) then
+      raise exception 'You can''t act on this application' using errcode = '42501';
+    end if;
+  else
+    raise exception 'Unknown action %', p_action;
+  end if;
+
+  -- Allowing re-application is the one thing done to a closed application:
+  -- it stays declined, and the applicant may apply again.
+  if p_action = 'reapplication_allowed' then
+    if v_app.status <> 'declined' then
+      raise exception 'Only a declined application can be reopened for re-application' using errcode = 'P0001';
+    end if;
+    if v_app.reapplication_allowed then
+      return v_app.status;
+    end if;
+    update public.volunteer_applications set reapplication_allowed = true where id = p_application_id;
+    insert into public.volunteer_application_events
+      (application_id, action, from_status, to_status, note, actor)
+    values (p_application_id, 'reapplication_allowed', v_app.status, v_app.status,
+            nullif(btrim(coalesce(p_note, '')), ''), auth.uid());
+    return v_app.status;
+  end if;
+
+  if v_app.status in ('approved', 'declined', 'withdrawn') then
+    raise exception 'This application is already closed (%)', v_app.status using errcode = 'P0001';
+  end if;
+  -- Phase 1's actions only apply before screening; later stages are phases 2–4.
+  if p_action in ('invited_to_schedule', 'asked_to_attend_more')
+     and v_app.status not in ('waiting_on_attendance', 'ready_to_screen', 'invited_to_schedule') then
+    raise exception 'This application is past that stage' using errcode = 'P0001';
+  end if;
+
+  v_to := case p_action
+    when 'withdrawn' then 'withdrawn'
+    when 'declined' then 'declined'
+    when 'invited_to_schedule' then 'invited_to_schedule'
+    when 'asked_to_attend_more' then 'waiting_on_attendance'
+  end;
+
+  if p_action = 'asked_to_attend_more' then
+    v_target := greatest(public.min_events_before_screening(), public.attendance_total(v_app.user_id) + 2);
+  else
+    v_target := v_app.attendance_target;
+  end if;
+
+  update public.volunteer_applications
+     set status = v_to,
+         status_changed_at = now(),
+         attendance_target = v_target,
+         ready_since = case when p_action = 'asked_to_attend_more' then null else ready_since end,
+         digest_notified_at = case when p_action = 'asked_to_attend_more' then null else digest_notified_at end
+   where id = p_application_id;
+
+  insert into public.volunteer_application_events
+    (application_id, action, from_status, to_status, note, actor, emailed)
+  values (p_application_id, p_action, v_app.status, v_to, nullif(btrim(coalesce(p_note, '')), ''), auth.uid(), coalesce(p_emailed, false));
+
+  return v_to;
+end $function$;
+
+-- ---- Daily admin digest -----------------------------------------------------------
+-- Applications that became ready (attendance reached) and haven't been in a
+-- digest yet. Service role only (the cron route); marking them is separate,
+-- after the email has gone out.
+create or replace function public.digest_ready_applications()
+returns table (id bigint, full_name text, chapters text[], ready_since timestamptz, attended integer)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select a.id, a.full_name, a.chapters, a.ready_since, public.attendance_total(a.user_id)
+    from public.volunteer_applications a
+   where a.status = 'ready_to_screen'
+     and a.ready_since is not null
+     and a.digest_notified_at is null
+     and exists (select 1 from public.volunteer_application_events ev
+                  where ev.application_id = a.id and ev.action = 'attendance_reached')
+   order by a.ready_since;
+$function$;
+
+-- ---- Function grants -------------------------------------------------------------
+revoke all on function public.can_review_application_chapters(text[]) from public, anon;
+grant execute on function public.can_review_application_chapters(text[]) to authenticated, service_role;
+revoke all on function public.can_review_application(bigint) from public, anon;
+grant execute on function public.can_review_application(bigint) to authenticated, service_role;
+revoke all on function public.attendance_total(uuid) from public, anon, authenticated;
+grant execute on function public.attendance_total(uuid) to service_role;
+revoke all on function public.min_events_before_screening() from public, anon;
+grant execute on function public.min_events_before_screening() to authenticated, service_role;
+revoke all on function public.my_attendance_total() from public, anon;
+grant execute on function public.my_attendance_total() to authenticated;
+revoke all on function public.promote_ready_applications(uuid) from public, anon, authenticated;
+grant execute on function public.promote_ready_applications(uuid) to service_role;
+revoke all on function public.my_volunteer_applications() from public, anon;
+grant execute on function public.my_volunteer_applications() to authenticated;
+revoke all on function public.volunteer_application_role_options() from public, anon;
+grant execute on function public.volunteer_application_role_options() to authenticated;
+revoke all on function public.volunteer_application_attendance(bigint[]) from public, anon;
+grant execute on function public.volunteer_application_attendance(bigint[]) to authenticated;
+revoke all on function public.volunteer_application_attended_events(bigint) from public, anon;
+grant execute on function public.volunteer_application_attended_events(bigint) to authenticated;
+revoke all on function public.volunteer_application_act(bigint, text, text, boolean) from public, anon;
+grant execute on function public.volunteer_application_act(bigint, text, text, boolean) to authenticated;
+revoke all on function public.digest_ready_applications() from public, anon, authenticated;
+grant execute on function public.digest_ready_applications() to service_role;
+
+commit;
