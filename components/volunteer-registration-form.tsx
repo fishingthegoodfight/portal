@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/client";
@@ -405,9 +406,15 @@ export function VolunteerRegistrationForm({
           <CardTitle>Health history</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-amber-600">
-            A full health history is required for all volunteers and is coming soon. You&apos;ll be
-            contacted separately to complete it — nothing to do here yet.
+          <p className="text-sm text-muted-foreground">
+            Retreats and events on the water need a health form, once a year — from volunteers and
+            participants alike. It&apos;s kept separately from this registration and only trained
+            staff see it. When you sign up for a shift that needs one, you&apos;ll be asked; you can
+            also fill it in any time from{" "}
+            <Link href="/protected/profile/medical" className="underline underline-offset-4">
+              Medical information
+            </Link>{" "}
+            on your profile.
           </p>
         </CardContent>
       </Card>

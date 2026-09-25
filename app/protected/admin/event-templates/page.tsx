@@ -18,7 +18,7 @@ async function EventTemplatesLoader() {
       .order("sort_order", { ascending: true }),
     supabase
       .from("event_types")
-      .select("id, key, name, default_registration_sections, sort_order, active")
+      .select("id, key, name, default_registration_sections, requires_health_history, sort_order, active")
       .order("sort_order", { ascending: true }),
     supabase.from("venues").select(VENUE_COLUMNS).eq("active", true).order("name", { ascending: true }),
   ]);

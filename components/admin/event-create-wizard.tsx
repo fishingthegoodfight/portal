@@ -45,6 +45,7 @@ import { cn } from "@/lib/utils";
 import { DateTimeFields } from "@/components/admin/fields/datetime-fields";
 import { LeadContactFields } from "@/components/admin/fields/lead-contact-fields";
 import { MarketingBoostField } from "@/components/admin/fields/marketing-boost-field";
+import { RequiresHealthHistoryField } from "@/components/admin/fields/requires-health-history-field";
 import { RegistrationSectionsFields } from "@/components/admin/fields/registration-sections-fields";
 import { VolunteerRoleFields, volunteerRoleErrors } from "@/components/admin/fields/volunteer-role-fields";
 import { Button } from "@/components/ui/button";
@@ -86,6 +87,7 @@ function emptyForm(prefill: AdminPrefill): CreateEventInput {
     leadUserId: "",
     customEmailNote: "",
     registrationSections: [],
+    requiresHealthHistory: false,
     volunteersNeeded: false,
     volunteerRoles: [],
     recurrence: "none",
@@ -356,16 +358,22 @@ export function EventCreateWizard({
   const defaultSectionsFor = (eventType: string): string[] =>
     eventTypes.find((t) => t.name === eventType)?.default_registration_sections ?? [];
 
+  const requiresHealthFor = (eventType: string): boolean =>
+    eventTypes.find((t) => t.name === eventType)?.requires_health_history ?? false;
+
   const updateEventType = (value: string) =>
     setForm((prev) => {
       const oldDefault = defaultSectionsFor(prev.eventType);
       const stillDefault =
         prev.registrationSections.length === oldDefault.length &&
         prev.registrationSections.every((id) => oldDefault.includes(id));
+      // Same rule for the health form: follows the type unless changed by hand.
+      const healthStillDefault = prev.requiresHealthHistory === requiresHealthFor(prev.eventType);
       return {
         ...prev,
         eventType: value,
         registrationSections: stillDefault ? defaultSectionsFor(value) : prev.registrationSections,
+        requiresHealthHistory: healthStillDefault ? requiresHealthFor(value) : prev.requiresHealthHistory,
       };
     });
 
@@ -482,6 +490,7 @@ export function EventCreateWizard({
           }
         : {}),
       eventType: template.event_type,
+      requiresHealthHistory: requiresHealthFor(template.event_type),
       description: template.description ?? "",
       capacity: template.default_capacity != null ? String(template.default_capacity) : "",
       registrationSections: template.default_registration_sections,
@@ -897,6 +906,12 @@ export function EventCreateWizard({
               onToggle={toggleSection}
             />
 
+            <RequiresHealthHistoryField
+              idPrefix="create"
+              checked={form.requiresHealthHistory}
+              onChange={setField("requiresHealthHistory")}
+            />
+
           </div>
         )}
 
@@ -1050,6 +1065,10 @@ export function EventCreateWizard({
                 value={[form.leadName, form.leadPhone, form.leadEmail].filter(Boolean).join(" · ") || "—"}
               />
               <ReviewRow label="Email-only note" value={form.customEmailNote.trim() || "—"} />
+              <ReviewRow
+                label="Requires health history"
+                value={form.requiresHealthHistory ? "Yes" : "No"}
+              />
               <ReviewRow
                 label="Registration sections"
                 value={

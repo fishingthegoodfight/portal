@@ -20,6 +20,8 @@ import {
   profileValueFromColumn,
   REGISTRATION_SECTIONS,
 } from "@/lib/registration-sections";
+import { eventsNeedingHealthForm } from "@/lib/health-requirements";
+import { HealthFormPrompt } from "@/components/health-form-prompt";
 
 async function RsvpLoader({
   params,
@@ -209,8 +211,19 @@ async function RsvpLoader({
     );
   }
 
+  // Registered or volunteering here, at an event that requires a health
+  // form, without one for its year. Shown beside whichever section they
+  // used — above the RSVP form for an attendee, right under the Volunteer
+  // section for someone on a shift (after signing up they're down there,
+  // and a prompt at the top of the page would be scrolled past).
+  const healthNeeded = await eventsNeedingHealthForm(supabase, userId, event.id);
+  const healthPrompt = (
+    <HealthFormPrompt events={healthNeeded} next={`/protected/events/${event.id}/rsvp`} />
+  );
+
   return (
     <div className="flex flex-col gap-8">
+    {activeRsvp && healthPrompt}
     <RsvpForm
       userId={userId}
       event={{
@@ -261,6 +274,7 @@ async function RsvpLoader({
       volunteerShifts={volunteerShifts}
     />
     {volunteerSection}
+    {!activeRsvp && healthPrompt}
     </div>
   );
 }

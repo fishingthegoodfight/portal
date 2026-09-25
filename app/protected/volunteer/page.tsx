@@ -11,6 +11,7 @@ import { certIsCurrent, VOLUNTEER_STATUS_LABELS, type VolunteerStatus } from "@/
 import { formatEventDateRange } from "@/lib/format-date";
 import { VolunteerShiftsList, type VolunteerShift } from "@/components/volunteer-shifts-list";
 import { loadOpenShiftsForVolunteer } from "@/lib/volunteer-signups";
+import { eventsNeedingHealthForm } from "@/lib/health-requirements";
 
 async function VolunteerHomeLoader({
   searchParams,
@@ -27,7 +28,7 @@ async function VolunteerHomeLoader({
 
   const [{ data: volunteer }, { data: profile }] = await Promise.all([
     supabase.from("volunteers").select("*").eq("user_id", userId).maybeSingle(),
-    supabase.from("profiles").select("program_interests").eq("id", userId).maybeSingle(),
+    supabase.from("profiles").select("program_interests, chapter").eq("id", userId).maybeSingle(),
   ]);
 
   // Reachable only by someone with a volunteers row — same rule as the
@@ -70,7 +71,14 @@ async function VolunteerHomeLoader({
   const hasCurrentCert = certList.some((c) => certIsCurrent(c));
 
   const outstanding: string[] = [];
-  if (volunteer.health_history_outstanding) outstanding.push("Health history");
+  // Only for shifts at events that require one (the same rule as for
+  // participants) — not for volunteering as such.
+  const healthNeeded = (await eventsNeedingHealthForm(supabase, userId)).filter((e) => !e.opensLater);
+  if (healthNeeded.length > 0) {
+    outstanding.push(
+      `${healthNeeded[0].year} health form — needed for ${healthNeeded.map((e) => e.name).join(", ")}`,
+    );
+  }
   if (wantsRetreats && !hasCurrentCert) {
     outstanding.push(
       certList.length > 0
@@ -255,6 +263,13 @@ async function VolunteerHomeLoader({
                 <li key={item}>{item}</li>
               ))}
             </ul>
+          )}
+          {healthNeeded.length > 0 && (
+            <Button asChild size="sm" className="mt-3">
+              <Link href="/protected/profile/medical/new?next=/protected/volunteer">
+                Complete your health form
+              </Link>
+            </Button>
           )}
           {certList.length > 0 && (
             <div className="mt-3 flex flex-col gap-1 text-sm text-muted-foreground">

@@ -101,7 +101,10 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
                   {person.firstName} {person.lastName}
                 </td>
                 <td className="py-2 pr-3">{person.phone || "—"}</td>
-                <td className="py-2 pr-3">{emergency || "—"}</td>
+                <td className="py-2 pr-3">
+                  {emergency || "—"}
+                  {person.emergencySecondary && <div>{person.emergencySecondary}</div>}
+                </td>
                 <td className="py-2 pr-3">
                   <DietaryCell note={person.dietaryNotes} collected={dietary.collected} />
                 </td>
@@ -158,6 +161,7 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
                     <td className="py-2 pr-3">
                       {[person.emergencyContact, person.emergencyPhone].filter(Boolean).join(" · ") ||
                         "—"}
+                      {person.emergencySecondary && <div>{person.emergencySecondary}</div>}
                     </td>
                     {answerSections.map((section) => (
                       <td key={section.id} className="py-2 pr-3">

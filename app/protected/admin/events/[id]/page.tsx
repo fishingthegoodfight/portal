@@ -12,6 +12,7 @@ import { eventsWithRegistrations } from "@/lib/admin/event-delete";
 import { ShareEventCard } from "@/components/admin/share-event-card";
 import { publicEventPath } from "@/lib/event-slug";
 import { getSiteUrl } from "@/lib/site-url";
+import { loadHealthMarkers, loadHealthStatus } from "@/lib/health-access";
 
 async function AdminEventLoader({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -21,10 +22,15 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
   }
 
   const supabase = await createClient();
-  const [data, access, registered] = await Promise.all([
+  // Health: status (outstanding / answered at check-in) for every manager;
+  // markers only for someone who passes the health check, and loading them
+  // writes one roster_view entry to the health access log.
+  const [data, access, registered, healthStatus, healthMarkers] = await Promise.all([
     loadEventRoster(supabase, eventId),
     loadEventAdminAccess(supabase),
     eventsWithRegistrations(supabase, [eventId]),
+    loadHealthStatus(supabase, eventId),
+    loadHealthMarkers(supabase, eventId),
   ]);
   if (!data) {
     notFound();
@@ -67,6 +73,10 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
         seriesId={event.series_id}
         volunteersCancelledWithEvent={volunteersCancelledWithEvent}
         canSaveAsTemplate={access?.isAdmin ?? false}
+        health={{
+          status: Object.fromEntries(healthStatus),
+          markers: healthMarkers ? Object.fromEntries(healthMarkers) : null,
+        }}
         shareCard={
           <ShareEventCard
             url={`${getSiteUrl()}${publicEventPath(event.slug)}`}

@@ -43,7 +43,7 @@ async function NewEventLoader() {
         .order("sort_order", { ascending: true }),
       supabase
         .from("event_types")
-        .select("id, key, name, default_registration_sections, sort_order, active")
+        .select("id, key, name, default_registration_sections, requires_health_history, sort_order, active")
         .eq("active", true)
         .order("sort_order", { ascending: true }),
       supabase.from("event_templates").select(TEMPLATE_WITH_ROLES_COLUMNS).eq("active", true).order("name", { ascending: true }),

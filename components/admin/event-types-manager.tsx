@@ -22,11 +22,16 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RequiresHealthHistoryField } from "@/components/admin/fields/requires-health-history-field";
 
-const EMPTY_INPUT: EventTypeInput = { name: "", defaultRegistrationSections: [] };
+const EMPTY_INPUT: EventTypeInput = { name: "", defaultRegistrationSections: [], requiresHealthHistory: false };
 
 function toInput(type: EventTypeOption): EventTypeInput {
-  return { name: type.name, defaultRegistrationSections: type.default_registration_sections };
+  return {
+    name: type.name,
+    defaultRegistrationSections: type.default_registration_sections,
+    requiresHealthHistory: type.requires_health_history,
+  };
 }
 
 function sectionsLabel(ids: string[]): string {
@@ -67,6 +72,14 @@ function EventTypeFields({
           })
         }
       />
+      <RequiresHealthHistoryField
+        idPrefix={idPrefix}
+        checked={value.requiresHealthHistory}
+        onChange={(checked) => onChange({ ...value, requiresHealthHistory: checked })}
+      />
+      <p className="-mt-1 text-xs text-muted-foreground">
+        The default for new events of this type — each event can still change it.
+      </p>
     </div>
   );
 }
@@ -207,6 +220,9 @@ export function EventTypesManager({ eventTypes }: { eventTypes: EventTypeOption[
                     <p className="text-sm text-muted-foreground">
                       Default sections: {sectionsLabel(type.default_registration_sections)}
                     </p>
+                    {type.requires_health_history && (
+                      <p className="text-sm text-muted-foreground">Requires health history</p>
+                    )}
                   </div>
                   <div className="flex flex-col items-end gap-2">
                     <div className="flex gap-1">

@@ -49,6 +49,7 @@ import type {
   WaitlistPerson,
 } from "@/lib/admin/roster";
 import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
+import { RosterHealthLine, type RosterHealth } from "@/components/admin/roster-health";
 
 const DIRECTORY_FIELD = REGISTRATION_SECTIONS.find((s) => s.id === "directory")!.fields[0];
 
@@ -92,6 +93,7 @@ export function EventRoster({
   volunteersCancelledWithEvent,
   shareCard,
   canSaveAsTemplate = false,
+  health,
 }: {
   eventId: number;
   eventCard: EventCardEvent;
@@ -123,6 +125,9 @@ export function EventRoster({
   /** Templates are admin-only setup, so a chapter lead doesn't get "Save as
    * template". */
   canSaveAsTemplate?: boolean;
+  /** Health form status for everyone, markers only for a health-access
+   * viewer (see RosterHealthLine). */
+  health: RosterHealth;
 }) {
   const router = useRouter();
   const isCancelled = status === "cancelled";
@@ -626,6 +631,13 @@ export function EventRoster({
               Print roster
             </Link>
           </Button>
+          {health.markers && (
+            <Button asChild variant="outline" size="sm">
+              <Link href={`/protected/admin/events/${eventId}/health/print`} target="_blank">
+                Print health forms
+              </Link>
+            </Button>
+          )}
           {seriesId && (
             <Button asChild variant="outline" size="sm">
               <Link href={`/protected/admin/events/series/${seriesId}`}>View series</Link>
@@ -742,6 +754,14 @@ export function EventRoster({
                     }
                     removing={busyRsvpId === person.rsvpId}
                     confirming={pendingRemoval?.rsvpId === person.rsvpId}
+                    health={
+                      <RosterHealthLine
+                        eventId={eventId}
+                        userId={person.userId}
+                        health={health}
+                        checkedIn={Boolean(person.checkedInAt)}
+                      />
+                    }
                   />
                   {pendingRemoval?.rsvpId === person.rsvpId && removalConfirm}
                 </Fragment>
@@ -822,6 +842,14 @@ export function EventRoster({
                     person={person}
                     answerSections={answerSections}
                     onToggleCheckIn={toggleVolunteerCheckIn}
+                    health={
+                      <RosterHealthLine
+                        eventId={eventId}
+                        userId={person.userId}
+                        health={health}
+                        checkedIn={Boolean(person.checkedInAt)}
+                      />
+                    }
                   />
                 ))}
               </ul>
@@ -1242,6 +1270,7 @@ function RosterRow({
   onRemove,
   removing,
   confirming,
+  health,
 }: {
   person: RosterPerson;
   collectsDietary: boolean;
@@ -1252,6 +1281,7 @@ function RosterRow({
   removing: boolean;
   /** Their "Remove?" confirmation is open, right below this row. */
   confirming: boolean;
+  health: React.ReactNode;
 }) {
   const contact = [person.phone, person.email].filter(Boolean).join(" · ");
   const emergency = [person.emergencyContact, person.emergencyPhone].filter(Boolean).join(" · ");
@@ -1264,6 +1294,9 @@ function RosterRow({
         </span>
         <span className="text-sm text-muted-foreground">{contact || "—"}</span>
         <span className="text-sm text-muted-foreground">Emergency: {emergency || "—"}</span>
+        {person.emergencySecondary && (
+          <span className="text-sm text-muted-foreground">Second contact: {person.emergencySecondary}</span>
+        )}
         {person.waiverSignedOn ? (
           <span className="text-sm text-muted-foreground">
             Waiver signed {person.waiverSignedOn}
@@ -1273,6 +1306,7 @@ function RosterRow({
             WAIVER NOT SIGNED
           </span>
         )}
+        {health}
         <SectionAnswers
           sections={answerSections}
           profileFields={person.profileFields}
@@ -1311,11 +1345,13 @@ function VolunteerRosterRow({
   person,
   answerSections,
   onToggleCheckIn,
+  health,
 }: {
   person: VolunteerRosterPerson;
   /** The event's sections to show answers for (see rosterAnswerSections). */
   answerSections: RegistrationSection[];
   onToggleCheckIn: (person: VolunteerRosterPerson) => void;
+  health: React.ReactNode;
 }) {
   const contact = [person.phone, person.email].filter(Boolean).join(" · ");
   const emergency = [person.emergencyContact, person.emergencyPhone].filter(Boolean).join(" · ");
@@ -1329,6 +1365,9 @@ function VolunteerRosterRow({
         <span className="text-sm text-muted-foreground">{person.shiftLabel}</span>
         <span className="text-sm text-muted-foreground">{contact || "—"}</span>
         <span className="text-sm text-muted-foreground">Emergency: {emergency || "—"}</span>
+        {person.emergencySecondary && (
+          <span className="text-sm text-muted-foreground">Second contact: {person.emergencySecondary}</span>
+        )}
         <SectionAnswers
           sections={answerSections}
           profileFields={person.profileFields}
@@ -1339,6 +1378,7 @@ function VolunteerRosterRow({
           }
           collectsDietary={answerSections.some((section) => section.id === "dietary")}
         />
+        {health}
       </div>
       <button
         type="button"

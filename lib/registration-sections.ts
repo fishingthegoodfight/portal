@@ -124,9 +124,27 @@ export const REGISTRATION_SECTIONS: RegistrationSection[] = [
         required: true,
         format: formatPhoneNumber,
       },
+      // Optional here (so every RSVP's completeness check is unchanged);
+      // the health form requires all of them and saves them back here.
+      { key: "emergency_contact_relationship", label: "Relationship", type: "text", placeholder: "e.g. Spouse" },
+      { key: "emergency_contact_2", label: "Second contact name", type: "text" },
+      {
+        key: "emergency_phone_2",
+        label: "Second contact phone",
+        type: "tel",
+        placeholder: "(303) 555-0100",
+        format: formatPhoneNumber,
+      },
+      { key: "emergency_contact_2_relationship", label: "Second contact relationship", type: "text" },
     ],
     summary: (profileFields) =>
-      [profileFields.emergency_contact, profileFields.emergency_phone]
+      [
+        profileFields.emergency_contact_relationship
+          ? `${profileFields.emergency_contact} (${profileFields.emergency_contact_relationship})`
+          : profileFields.emergency_contact,
+        profileFields.emergency_phone,
+        profileFields.emergency_contact_2 && `2nd: ${profileFields.emergency_contact_2}`,
+      ]
         .filter(Boolean)
         .join(" · "),
   },

@@ -10,6 +10,7 @@ export type ActionResult = { ok: true } | { ok: false; error: string };
 export type EventTypeInput = {
   name: string;
   defaultRegistrationSections: string[];
+  requiresHealthHistory: boolean;
 };
 
 /** kebab_case-ish key from the name, e.g. "Fish A-Long" -> "fish_a_long". */
@@ -58,6 +59,7 @@ export async function createEventTypeAction(input: EventTypeInput): Promise<Acti
       key,
       name: input.name.trim(),
       default_registration_sections: input.defaultRegistrationSections,
+      requires_health_history: input.requiresHealthHistory,
       sort_order: nextSortOrder,
     });
     if (!error) return { ok: true };
@@ -83,6 +85,7 @@ export async function updateEventTypeAction(id: number, input: EventTypeInput): 
     .update({
       name: input.name.trim(),
       default_registration_sections: input.defaultRegistrationSections,
+      requires_health_history: input.requiresHealthHistory,
     })
     .eq("id", id);
   if (error) {

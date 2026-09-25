@@ -11,7 +11,6 @@ import { VOLUNTEER_STATUS_LABELS, type VolunteerStatus } from "@/lib/volunteers"
 type VolunteerRow = {
   user_id: string;
   status: VolunteerStatus;
-  health_history_outstanding: boolean;
 };
 
 type RoleApprovalRow = {
@@ -30,7 +29,7 @@ async function VolunteersListLoader({
 
   let volunteersQuery = supabase
     .from("volunteers")
-    .select("user_id, status, health_history_outstanding");
+    .select("user_id, status");
   if (status) volunteersQuery = volunteersQuery.eq("status", status);
   const [{ data: volunteers, error }, { data: roleTypes }] = await Promise.all([
     volunteersQuery,
@@ -91,7 +90,6 @@ async function VolunteersListLoader({
     return {
       userId: r.user_id,
       status: r.status,
-      healthHistoryOutstanding: r.health_history_outstanding,
       firstName: (profile?.first_name as string | null) ?? "",
       lastName: (profile?.last_name as string | null) ?? "",
       email: (profile?.email as string | null) ?? "",
@@ -146,9 +144,6 @@ async function VolunteersListLoader({
                     {name}
                   </Badge>
                 ))}
-                {v.healthHistoryOutstanding && (
-                  <Badge variant="destructive">Health history outstanding</Badge>
-                )}
                 {v.certMissingOrExpired && <Badge variant="destructive">Cert missing/expired</Badge>}
               </div>
             </Link>

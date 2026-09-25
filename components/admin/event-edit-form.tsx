@@ -24,6 +24,7 @@ import {
 } from "@/components/admin/fields/event-text-fields";
 import { LeadContactFields } from "@/components/admin/fields/lead-contact-fields";
 import { MarketingBoostField } from "@/components/admin/fields/marketing-boost-field";
+import { RequiresHealthHistoryField } from "@/components/admin/fields/requires-health-history-field";
 import { LocationFields } from "@/components/admin/fields/location-fields";
 import { VirtualEventFields } from "@/components/admin/fields/virtual-event-fields";
 import { isVirtualChapter } from "@/lib/chapters";
@@ -104,7 +105,10 @@ function fieldProblem(form: EventEditInput): { field: EventFormField; message: s
   return null;
 }
 
-type StringField = Exclude<keyof EventEditInput, "registrationSections" | "volunteerRoles" | "boostTier1">;
+type StringField = Exclude<
+  keyof EventEditInput,
+  "registrationSections" | "volunteerRoles" | "boostTier1" | "requiresHealthHistory"
+>;
 
 function emptyRole(): EditableVolunteerRole {
   return {
@@ -486,6 +490,12 @@ export function EventEditForm({
               onToggle={toggleSection}
             />
             {problemFor("sections")}
+
+            <RequiresHealthHistoryField
+              idPrefix="edit"
+              checked={form.requiresHealthHistory}
+              onChange={(checked) => edit((prev) => ({ ...prev, requiresHealthHistory: checked }))}
+            />
 
             <p className="text-sm text-muted-foreground">
               Waiver: {waiverLabel ?? "not set (this chapter has no waiver state)"}

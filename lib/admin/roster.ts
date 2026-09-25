@@ -29,6 +29,9 @@ export type AdminEventSummary = {
   cancellation_reason: string | null;
   cancelled_at: string | null;
   series_id: string | null;
+  /** Everyone at the event, participant or volunteer, needs a current
+   * health form. */
+  requires_health_history: boolean;
 };
 
 export type RosterPerson = {
@@ -43,8 +46,11 @@ export type RosterPerson = {
   lastName: string;
   email: string;
   phone: string;
+  /** Name, with the relationship in brackets when there is one. */
   emergencyContact: string;
   emergencyPhone: string;
+  /** "Name (relationship) · phone" for the second contact, or "". */
+  emergencySecondary: string;
   /** Pre-formatted date they signed this event's waiver, or null if they haven't. */
   waiverSignedOn: string | null;
   /** Every registration field's value from their profile, keyed by column —
@@ -88,6 +94,7 @@ export type RosterDietary = {
 
 export type VolunteerRosterPerson = {
   signupId: number;
+  userId: string;
   opportunityId: number;
   role: string;
   /** Pre-formatted in the event's own timezone. */
@@ -98,6 +105,7 @@ export type VolunteerRosterPerson = {
   phone: string;
   emergencyContact: string;
   emergencyPhone: string;
+  emergencySecondary: string;
   /** Every registration field's value from their profile, keyed by column —
    * volunteers answer the event's sections (dietary, sizing, …) at signup,
    * saved to the profile, so the roster reads them from there rather than a
@@ -131,6 +139,23 @@ export type EventRoster = {
   volunteerRoster: VolunteerRosterPerson[];
 };
 
+/** Emergency contacts from a profile row, as the roster shows them. */
+function emergencyOf(profile: Record<string, unknown> | null | undefined) {
+  const text = (key: string) => ((profile?.[key] as string | null | undefined) ?? "").trim();
+  const withRelationship = (name: string, relationship: string) =>
+    name && relationship ? `${name} (${relationship})` : name;
+  return {
+    emergencyContact: withRelationship(text("emergency_contact"), text("emergency_contact_relationship")),
+    emergencyPhone: text("emergency_phone"),
+    emergencySecondary: [
+      withRelationship(text("emergency_contact_2"), text("emergency_contact_2_relationship")),
+      text("emergency_phone_2"),
+    ]
+      .filter(Boolean)
+      .join(" · "),
+  };
+}
+
 /** Every registration field's value from a profile row, keyed by column, in
  * the form the section catalog reads (see profileValueFromColumn). */
 function profileFieldsOf(profile: Record<string, unknown> | null | undefined): Record<string, string> {
@@ -159,7 +184,7 @@ export async function loadEventRoster(
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, slug, is_published, name, chapter, event_type, starts_at, ends_at, timezone, location, description, occurrence_note, virtual_link, virtual_access_notes, capacity, spots_taken, lead_name, lead_phone, custom_email_note, registration_sections, waiver_state, status, cancellation_reason, cancelled_at, series_id",
+      "id, slug, is_published, name, chapter, event_type, starts_at, ends_at, timezone, location, description, occurrence_note, virtual_link, virtual_access_notes, capacity, spots_taken, lead_name, lead_phone, custom_email_note, registration_sections, waiver_state, status, cancellation_reason, cancelled_at, series_id, requires_health_history",
     )
     .eq("id", eventId)
     .maybeSingle();
@@ -232,8 +257,7 @@ export async function loadEventRoster(
         lastName: (profile?.last_name as string | null) ?? "",
         email: (profile?.email as string | null) ?? "",
         phone: (profile?.phone as string | null) ?? "",
-        emergencyContact: (profile?.emergency_contact as string | null) ?? "",
-        emergencyPhone: (profile?.emergency_phone as string | null) ?? "",
+        ...emergencyOf(profile),
         waiverSignedOn: signedAtByUser.has(r.user_id as string)
           ? formatDateInZone(signedAtByUser.get(r.user_id as string)!, event.timezone as string)
           : null,
@@ -334,6 +358,7 @@ export async function loadEventRoster(
       const profileFields = profileFieldsOf(s.profile);
       return {
         signupId: s.id,
+        userId: (s.profile?.id as string | undefined) ?? "",
         opportunityId: s.opportunity_id,
         role: roleByOpportunity.get(s.opportunity_id) ?? "",
         shiftLabel: shiftLabelByOpportunity.get(s.opportunity_id) ?? "",
@@ -341,8 +366,7 @@ export async function loadEventRoster(
         lastName: text("last_name"),
         email: text("email"),
         phone: text("phone"),
-        emergencyContact: text("emergency_contact"),
-        emergencyPhone: text("emergency_phone"),
+        ...emergencyOf(s.profile),
         profileFields,
         checkedInAt: s.checked_in_at,
       };

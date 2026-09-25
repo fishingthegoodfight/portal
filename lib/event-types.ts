@@ -13,6 +13,9 @@ export type EventTypeOption = {
   /** Registration section ids (lib/registration-sections.ts) the create
    * wizard prefills when this type is chosen — still fully editable. */
   default_registration_sections: string[];
+  /** Pre-ticks "Requires health history" on a new event of this
+   * type (events.requires_health_history) — e.g. a Retreat type. */
+  requires_health_history: boolean;
   sort_order: number;
   active: boolean;
 };

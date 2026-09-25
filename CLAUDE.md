@@ -13,7 +13,9 @@ From **2026-10-30**, Supabase stops giving new tables in the `public` schema Dat
 
 `venues` (the 2026-09-24 "Saved venues" entry in `schema-changes.sql`) follows this shape: RLS enabled, one policy per operation, then `revoke all … from anon`, grants to authenticated that match those policies, sequence grants, and `grant all` to service_role.
 
-**Deliberate exception: `health_access_log`** (the 2026-09-25 "Sensitive-data flags, health access log…" entry in `schema-changes.sql`). service_role gets `select, insert` only, not `grant all`, and a trigger blocks UPDATE, DELETE and TRUNCATE for everyone, the table owner included. An audit log that nobody can alter is the whole point of that table. Don't "correct" it back to the standard grants, and don't add an update or delete policy. Writes go only through `log_health_access()`.
+**Deliberate exception: `health_access_log`** (the 2026-09-25 "Sensitive-data flags, health access log…" entry in `schema-changes.sql`). service_role gets `select, insert` only, not `grant all`, and a trigger blocks UPDATE, DELETE and TRUNCATE for everyone, the table owner included. An audit log that nobody can alter is the whole point of that table. Don't "correct" it back to the standard grants, and don't add an update or delete policy. Writes go only through `log_health_access()` and the health read functions, which log as they read.
+
+**Same exception: `health_histories` and `health_checkin_answers`** (the 2026-09-25 "Health history form" entry). service_role gets **no** grants at all, and authenticated gets `insert` only. Nobody can select from them directly: every read goes through a SECURITY DEFINER function that checks access and writes `health_access_log` in the same call (see `lib/health-access.ts`). A direct select grant, for service_role or anyone else, would be a way to read health data with no access check and no log entry. Don't add one.
 
 This applies only to tables created from 2026-10-30 onward. Don't go back and add grants to existing tables. They keep the grants they already have, and changing them isn't part of this rule.
 

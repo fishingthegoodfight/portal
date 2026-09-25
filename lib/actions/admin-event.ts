@@ -87,10 +87,12 @@ type EventRow = {
   /** 1 (most marketing) – 3 (least), or null. Only ever this occurrence's
    * own — never carried across a series. */
   marketing_tier: number | null;
+  /** Everyone at the event needs a current health form. */
+  requires_health_history: boolean;
 };
 
 const EVENT_COLUMNS =
-  "id, slug, name, event_type, description, occurrence_note, location, venue_name, street_address, city, state, postal_code, virtual_link, virtual_access_notes, capacity, lead_name, lead_user_id, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason, cancelled_at, series_id, marketing_tier";
+  "id, slug, name, event_type, description, occurrence_note, location, venue_name, street_address, city, state, postal_code, virtual_link, virtual_access_notes, capacity, lead_name, lead_user_id, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason, cancelled_at, series_id, marketing_tier, requires_health_history";
 
 async function loadEvent(
   supabase: SupabaseServerClient,
@@ -285,6 +287,11 @@ function buildDiff(before: EventRow, after: EventRow): EventChangeDiffEntry[] {
     sectionsLabel(before.registration_sections),
     sectionsLabel(after.registration_sections),
   );
+  push(
+    "Requires health history",
+    before.requires_health_history ? "Yes" : "No",
+    after.requires_health_history ? "Yes" : "No",
+  );
   const stateLabel = (code: string | null) =>
     isWaiverState(code) ? WAIVER_STATES[code] : "";
   push("Waiver state", stateLabel(before.waiver_state), stateLabel(after.waiver_state));
@@ -333,6 +340,9 @@ export type EventEditInput = {
    * alwaysRequired section applies to every event regardless and isn't part
    * of this list. */
   registrationSections: string[];
+  /** Everyone at the event needs a current health form
+   * (events.requires_health_history). */
+  requiresHealthHistory: boolean;
   /** The public page's /events/<slug>. Normalized and validated on save; a
    * changed slug keeps the old one redirecting. Never carried to other
    * events in a series. */
@@ -487,6 +497,7 @@ function applyToLaterOccurrence(
   copy("lead_phone");
   copy("lead_email");
   copy("registration_sections");
+  copy("requires_health_history");
   if (applyOccurrenceNote) copy("occurrence_note");
   // Chapter only ever carries over within one state between physical
   // chapters (see isSeriesSafeChapterChange) — and only onto an occurrence
@@ -575,6 +586,7 @@ function eventUpdateColumns(row: EventRow, icsSequence: number) {
     lead_email: row.lead_email,
     custom_email_note: row.custom_email_note,
     registration_sections: row.registration_sections,
+    requires_health_history: row.requires_health_history,
     waiver_state: row.waiver_state,
     starts_at: row.starts_at,
     ends_at: row.ends_at,
@@ -753,6 +765,7 @@ export async function updateEventAction(
     lead_email: input.leadEmail.trim() || null,
     custom_email_note: input.customEmailNote.trim() || null,
     registration_sections: registrationSections,
+    requires_health_history: input.requiresHealthHistory === true,
     waiver_state: waiverState,
     starts_at: newStarts.toISOString(),
     ends_at: newEnds ? newEnds.toISOString() : null,

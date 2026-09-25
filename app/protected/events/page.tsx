@@ -19,6 +19,18 @@ import { ChapterFilterPills, FilterPill, filterHref } from "@/components/filter-
 import { isApprovedVolunteer, loadOpenShiftsForVolunteer } from "@/lib/volunteer-signups";
 import { loadManagedEventIds } from "@/lib/admin/require-admin";
 import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
+import { eventsNeedingHealthForm } from "@/lib/health-requirements";
+import { HealthFormPrompt } from "@/components/health-form-prompt";
+
+/** Upcoming events of theirs that need a health form they don't have yet —
+ * where an RSVP lands them, so the prompt follows straight on from it. */
+async function HealthFormPromptLoader() {
+  const supabase = await createClient();
+  const { data } = await supabase.auth.getClaims();
+  if (!data?.claims) return null;
+  const events = await eventsNeedingHealthForm(supabase, data.claims.sub as string);
+  return <HealthFormPrompt events={events} next="/protected/events" />;
+}
 
 async function ConfirmationBannerLoader({
   searchParams,
@@ -276,6 +288,9 @@ export default function EventsPage({
     <div className="flex-1 w-full flex flex-col gap-8 max-w-2xl">
       <Suspense fallback={null}>
         <ConfirmationBannerLoader searchParams={searchParams} />
+      </Suspense>
+      <Suspense fallback={null}>
+        <HealthFormPromptLoader />
       </Suspense>
       <div>
         <h1 className="font-bold text-2xl mb-1">Upcoming events</h1>

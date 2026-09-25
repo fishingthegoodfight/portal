@@ -6212,3 +6212,597 @@ revoke all on function public.tier1_boost_conflict_message(bigint, text, timesta
 grant execute on function public.tier1_boost_conflict_message(bigint, text, timestamptz, text) to authenticated, service_role;
 
 commit;
+
+-- =============================================================================
+-- 2026-09-25 — Health history form
+-- =============================================================================
+-- The annual health history form, on the access machinery added in the
+-- "Sensitive-data flags, health access log" entry (can_view_health_history /
+-- can_view_event_health_history / log_health_access). No new staff access
+-- path: every staff read and print goes through can_view_health_history and
+-- is logged in the same statement that returns the data.
+--
+-- 1. Who needs it: events.requires_health_history (pre-ticked from
+--    event_types.requires_health_history — add a "Retreat" type with it on),
+--    for anyone with an active RSVP there; and every confirmed volunteer, at
+--    any event. A submission covers the calendar year it was signed in and
+--    must match the event's year (like waivers) — a December form doesn't
+--    cover a January retreat.
+--
+-- 2. health_histories: one row per submission, never edited — a correction
+--    or a new year is a new row (the latest in a year is the current one),
+--    so what was on file at any event stays visible. The subject inserts
+--    their own; nobody updates. There is NO select grant to any API role:
+--    reads only go through the functions below, which check access and log
+--    in the same call. Deleting a person removes their submissions (FK
+--    cascade) — nothing else can.
+--    needs_review (generated): any "no" / "with some help" mobility answer,
+--    or "cannot swim".
+--    Emergency contacts are copied in at signing; the live ones stay on
+--    profiles (which gains relationship + a second contact), because check-in
+--    staff need them without the health flag.
+--
+-- 3. health_checkin_answers: "Anything changed since you filled out your
+--    health form?" recorded at check-in by whoever checks the person in (any
+--    event manager). Insert-only for them; only people who pass the health
+--    check see the answer (as a follow-up marker). Check-in staff can see
+--    that it was answered, not what.
+--
+-- 4. health_access_log gains two action types and a record_id:
+--      view / print  — staff, per person (event + subject), unchanged.
+--      self_view     — someone opening their own submission. Kept apart from
+--                      staff access: the log's job is who ELSE looked.
+--      roster_view   — one entry per roster load that shows health-derived
+--                      markers (event + viewer, no subject), not one per
+--                      person, so routine roster loads don't bury the rest.
+--    subject_user_id and event_id become nullable; a check constraint pins
+--    down which are set for each action.
+--
+-- 5. Reads (all SECURITY DEFINER, all logging where they return health data):
+--      event_health_history_status(event)   — any event manager: per person
+--        on the roster, required? current? check-in answered? No health
+--        content, not logged.
+--      event_health_markers(event)          — health check: needs review /
+--        changed at check-in. Logs one roster_view.
+--      health_history_for_staff(subject, event) — health check: the
+--        submission covering the event's year. Logs view.
+--      health_histories_for_print(event)    — health check: every roster
+--        person's covering submission. Logs print, per person.
+--      my_health_history_list()             — own submissions' year/date
+--        only, not logged.
+--      my_health_history(id)                — own submission. Logs self_view.
+--      health_history_latest_years(users)   — admins (or self): latest year
+--        on file, for the volunteer registry. Not logged.
+--
+-- 6. Grants: CLAUDE.md exception, like health_access_log — service_role gets
+--    NO access to health_histories or health_checkin_answers (it would
+--    bypass the checks and the log); authenticated gets INSERT only.
+--
+-- Safe to re-run. One transaction: if any statement fails, nothing is
+-- applied.
+
+begin;
+
+-- ---- 1. Which events need it --------------------------------------------------
+alter table public.event_types
+  add column if not exists requires_health_history boolean not null default false;
+alter table public.events
+  add column if not exists requires_health_history boolean not null default false;
+
+-- ---- Emergency contacts on the profile ----------------------------------------
+alter table public.profiles
+  add column if not exists emergency_contact_relationship text,
+  add column if not exists emergency_contact_2 text,
+  add column if not exists emergency_phone_2 text,
+  add column if not exists emergency_contact_2_relationship text;
+
+-- ---- 2. Submissions ------------------------------------------------------------
+create table if not exists public.health_histories (
+  id bigserial primary key,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  year integer not null,
+  signed_at timestamptz not null default now(),
+
+  -- 1. Identity and emergency contacts (contacts as on file when signed)
+  date_of_birth date not null,
+  emergency_contact_name text not null check (btrim(emergency_contact_name) <> ''),
+  emergency_contact_phone text not null check (btrim(emergency_contact_phone) <> ''),
+  emergency_contact_relationship text not null check (btrim(emergency_contact_relationship) <> ''),
+  emergency_contact_2_name text not null check (btrim(emergency_contact_2_name) <> ''),
+  emergency_contact_2_phone text not null check (btrim(emergency_contact_2_phone) <> ''),
+  emergency_contact_2_relationship text not null check (btrim(emergency_contact_2_relationship) <> ''),
+
+  -- 2. Insurance
+  insurance_carrier text not null check (btrim(insurance_carrier) <> ''),
+  insurance_policy_number text not null check (btrim(insurance_policy_number) <> ''),
+
+  -- 3. Conditions (keys from lib/health-history.ts)
+  conditions text[] not null default '{}'::text[],
+  no_conditions boolean not null default false,
+  conditions_other text,
+
+  -- 4. Follow-ups (only when the matching box is checked)
+  cardiac_physician_cleared boolean,
+  cardiac_details text,
+  seizure_most_recent text,
+  diabetes_uses_insulin boolean,
+  diabetes_low_plan text,
+  surgery_details text,
+  surgery_physician_cleared boolean,
+  sleep_apnea_travels_with_cpap boolean,
+  conditions_explanation text,
+
+  -- 5. Medications and critical items
+  medications text not null check (btrim(medications) <> ''),
+  on_blood_thinners boolean not null,
+  carries_epipen_or_inhaler boolean not null,
+  will_bring_epipen_or_inhaler boolean,
+  medication_storage_needed boolean not null,
+  medication_storage_details text,
+
+  -- 6. Medical allergies only (food preferences stay in dietary_notes)
+  medical_allergies text not null check (btrim(medical_allergies) <> ''),
+
+  -- 7. Getting around on the water
+  walk_uneven_ground text not null check (walk_uneven_ground in ('yes', 'with_help', 'no')),
+  stand_in_moving_water text not null check (stand_in_moving_water in ('yes', 'with_help', 'no')),
+  recover_footing text not null check (recover_footing in ('yes', 'with_help', 'no')),
+  mobility_aid_or_fall boolean not null,
+  mobility_aid_details text,
+  swimming text not null check (swimming in ('confident', 'not_confident', 'cannot_swim')),
+
+  -- 8. Anything else
+  anything_else text,
+
+  -- 9. Consent and signature
+  consent_emergency_treatment boolean not null check (consent_emergency_treatment),
+  consent_share_with_ems boolean not null check (consent_share_with_ems),
+  signed_name text not null check (btrim(signed_name) <> ''),
+
+  needs_review boolean generated always as (
+    walk_uneven_ground <> 'yes'
+    or stand_in_moving_water <> 'yes'
+    or recover_footing <> 'yes'
+    or swimming = 'cannot_swim'
+  ) stored,
+
+  -- Either "None of the above" alone, or at least one condition / an "Other".
+  constraint health_histories_conditions_answered check (
+    (no_conditions and cardinality(conditions) = 0 and coalesce(btrim(conditions_other), '') = '')
+    or (not no_conditions and (cardinality(conditions) > 0 or coalesce(btrim(conditions_other), '') <> ''))
+  ),
+  constraint health_histories_epipen_answered check (
+    not carries_epipen_or_inhaler or will_bring_epipen_or_inhaler is not null
+  )
+);
+
+create index if not exists health_histories_user_year_idx
+  on public.health_histories (user_id, year, signed_at desc);
+
+alter table public.health_histories enable row level security;
+
+drop policy if exists health_histories_insert_own on public.health_histories;
+create policy health_histories_insert_own on public.health_histories
+  for insert to authenticated
+  with check (user_id = auth.uid());
+-- No select, update or delete policy for anyone.
+
+revoke all on public.health_histories from anon;
+revoke all on public.health_histories from authenticated;
+revoke all on public.health_histories from service_role;
+grant insert on public.health_histories to authenticated;
+revoke all on sequence public.health_histories_id_seq from anon, authenticated, service_role;
+grant usage, select on sequence public.health_histories_id_seq to authenticated;
+
+-- Who and when come from the session, never the insert; the year must be
+-- the current calendar year somewhere on Earth (the app sends the year in
+-- the person's own chapter timezone).
+create or replace function public.health_histories_stamp()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if auth.uid() is not null then
+    new.user_id := auth.uid();
+  end if;
+  new.signed_at := now();
+  if new.year not in (
+    extract(year from now() at time zone 'Etc/GMT+12')::int,
+    extract(year from now() at time zone 'Etc/GMT-14')::int
+  ) then
+    raise exception 'A health form can only be signed for the current year' using errcode = '22023';
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists health_histories_stamp on public.health_histories;
+create trigger health_histories_stamp
+  before insert on public.health_histories
+  for each row execute function public.health_histories_stamp();
+
+create or replace function public.health_histories_immutable()
+returns trigger
+language plpgsql
+as $function$
+begin
+  raise exception 'Health forms can''t be edited — submit a new one instead' using errcode = '42501';
+end $function$;
+
+drop trigger if exists health_histories_no_update on public.health_histories;
+create trigger health_histories_no_update
+  before update on public.health_histories
+  for each row execute function public.health_histories_immutable();
+
+revoke all on function public.health_histories_stamp() from public, anon, authenticated;
+revoke all on function public.health_histories_immutable() from public, anon, authenticated;
+
+-- ---- 3. Check-in answers -------------------------------------------------------
+create table if not exists public.health_checkin_answers (
+  id bigserial primary key,
+  event_id bigint not null references public.events(id) on delete cascade,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  something_changed boolean not null,
+  recorded_by uuid references auth.users(id) on delete set null,
+  recorded_at timestamptz not null default now()
+);
+
+create index if not exists health_checkin_answers_event_idx
+  on public.health_checkin_answers (event_id, user_id, recorded_at desc);
+
+alter table public.health_checkin_answers enable row level security;
+
+-- The same people who can check someone in: whoever manages the event, for
+-- someone on its roster. Answers false for an event the caller doesn't
+-- manage, so it can't be used to find out who's going to a retreat.
+create or replace function public.is_on_event_roster(p_user_id uuid, p_event_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select public.can_manage_event(p_event_id) and (exists (
+    select 1 from public.rsvps r
+     where r.event_id = p_event_id
+       and r.user_id = p_user_id
+       and r.status in ('confirmed', 'waitlisted', 'offered')
+  ) or exists (
+    select 1 from public.volunteer_signups s
+      join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+     where vo.event_id = p_event_id
+       and s.user_id = p_user_id
+       and s.status = 'confirmed'
+  ));
+$function$;
+
+drop policy if exists health_checkin_answers_insert_manager on public.health_checkin_answers;
+create policy health_checkin_answers_insert_manager on public.health_checkin_answers
+  for insert to authenticated
+  with check (public.can_manage_event(event_id) and public.is_on_event_roster(user_id, event_id));
+-- No select, update or delete policy for anyone.
+
+revoke all on public.health_checkin_answers from anon;
+revoke all on public.health_checkin_answers from authenticated;
+revoke all on public.health_checkin_answers from service_role;
+grant insert on public.health_checkin_answers to authenticated;
+revoke all on sequence public.health_checkin_answers_id_seq from anon, authenticated, service_role;
+grant usage, select on sequence public.health_checkin_answers_id_seq to authenticated;
+
+create or replace function public.health_checkin_answers_stamp()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if auth.uid() is not null then
+    new.recorded_by := auth.uid();
+  end if;
+  new.recorded_at := now();
+  return new;
+end $function$;
+
+drop trigger if exists health_checkin_answers_stamp on public.health_checkin_answers;
+create trigger health_checkin_answers_stamp
+  before insert on public.health_checkin_answers
+  for each row execute function public.health_checkin_answers_stamp();
+
+revoke all on function public.health_checkin_answers_stamp() from public, anon, authenticated;
+
+-- ---- 4. Log: self_view, roster_view, record_id ---------------------------------
+-- ALTER TABLE doesn't touch existing rows' values, so the append-only
+-- triggers don't come into it.
+alter table public.health_access_log
+  alter column subject_user_id drop not null,
+  alter column event_id drop not null,
+  add column if not exists record_id bigint;
+
+alter table public.health_access_log drop constraint if exists health_access_log_action_check;
+alter table public.health_access_log drop constraint if exists health_access_log_action_shape;
+alter table public.health_access_log
+  add constraint health_access_log_action_shape check (
+    (action in ('view', 'print') and subject_user_id is not null and event_id is not null)
+    or (action = 'self_view' and subject_user_id = accessed_by and event_id is null)
+    or (action = 'roster_view' and subject_user_id is null and event_id is not null)
+  );
+
+-- ---- 5. Reads ------------------------------------------------------------------
+-- The event's calendar year in its own timezone.
+create or replace function public.event_year(p_event_id bigint)
+returns integer
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select extract(year from e.starts_at at time zone e.timezone)::int
+    from public.events e where e.id = p_event_id;
+$function$;
+
+-- The submission covering an event for a person: their latest in the
+-- event's year, or null.
+create or replace function public.health_history_covering(p_user_id uuid, p_event_id bigint)
+returns bigint
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select h.id from public.health_histories h
+   where h.user_id = p_user_id and h.year = public.event_year(p_event_id)
+   order by h.signed_at desc
+   limit 1;
+$function$;
+
+-- Per person on the roster: whether they need a form for this event (active
+-- RSVP to an event that requires one, or a confirmed volunteer shift),
+-- whether one covers it, and whether the check-in question was answered.
+-- Any event manager; no health content.
+create or replace function public.event_health_history_status(p_event_id bigint)
+returns table (user_id uuid, required boolean, has_current boolean, checkin_answered boolean)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+#variable_conflict use_column
+begin
+  if not public.can_manage_event(p_event_id) then
+    raise exception 'You don''t manage this event' using errcode = '42501';
+  end if;
+  return query
+  with people as (
+    select r.user_id, (select e.requires_health_history from public.events e where e.id = p_event_id) as needed
+      from public.rsvps r
+     where r.event_id = p_event_id and r.status in ('confirmed', 'waitlisted', 'offered')
+    union all
+    select s.user_id, true
+      from public.volunteer_signups s
+      join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+     where vo.event_id = p_event_id and s.status = 'confirmed'
+  ), merged as (
+    select p.user_id, bool_or(p.needed) as needed from people p group by p.user_id
+  )
+  select m.user_id,
+         m.needed,
+         public.health_history_covering(m.user_id, p_event_id) is not null,
+         exists (select 1 from public.health_checkin_answers a
+                  where a.event_id = p_event_id and a.user_id = m.user_id)
+    from merged m;
+end $function$;
+
+-- Health-derived roster markers. Logs ONE roster_view per call.
+create or replace function public.event_health_markers(p_event_id bigint)
+returns table (user_id uuid, needs_review boolean, changed_at_checkin boolean)
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+#variable_conflict use_column
+begin
+  if not public.can_view_event_health_history(p_event_id) then
+    raise exception 'You can''t see health information for this event' using errcode = '42501';
+  end if;
+  insert into public.health_access_log (accessed_by, subject_user_id, event_id, action)
+  values (auth.uid(), null, p_event_id, 'roster_view');
+  return query
+  with people as (
+    select r.user_id from public.rsvps r
+     where r.event_id = p_event_id and r.status in ('confirmed', 'waitlisted', 'offered')
+    union
+    select s.user_id from public.volunteer_signups s
+      join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+     where vo.event_id = p_event_id and s.status = 'confirmed'
+  )
+  select p.user_id,
+         coalesce((select h.needs_review from public.health_histories h
+                    where h.id = public.health_history_covering(p.user_id, p_event_id)), false),
+         coalesce((select a.something_changed from public.health_checkin_answers a
+                    where a.event_id = p_event_id and a.user_id = p.user_id
+                    order by a.recorded_at desc limit 1), false)
+    from people p;
+end $function$;
+
+-- One person's submission for an event, for staff. Logs view.
+create or replace function public.health_history_for_staff(p_subject_user_id uuid, p_event_id bigint)
+returns setof public.health_histories
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_id bigint;
+begin
+  if not public.can_view_health_history(p_subject_user_id, p_event_id) then
+    raise exception 'You can''t see this person''s health history for this event' using errcode = '42501';
+  end if;
+  v_id := public.health_history_covering(p_subject_user_id, p_event_id);
+  if v_id is null then
+    return;
+  end if;
+  insert into public.health_access_log (accessed_by, subject_user_id, event_id, action, record_id)
+  values (auth.uid(), p_subject_user_id, p_event_id, 'view', v_id);
+  return query select * from public.health_histories where id = v_id;
+end $function$;
+
+-- Every covering submission for the people the printed roster lists —
+-- confirmed participants and confirmed volunteers. Logs print, once per
+-- person whose form is returned (a data-modifying CTE always
+-- runs, so the log and the returned rows can't disagree).
+create or replace function public.health_histories_for_print(p_event_id bigint)
+returns setof public.health_histories
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if not public.can_view_event_health_history(p_event_id) then
+    raise exception 'You can''t see health information for this event' using errcode = '42501';
+  end if;
+  return query
+  with people as (
+    select r.user_id from public.rsvps r
+     where r.event_id = p_event_id and r.status = 'confirmed'
+    union
+    select s.user_id from public.volunteer_signups s
+      join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+     where vo.event_id = p_event_id and s.status = 'confirmed'
+  ), covering as (
+    select p.user_id, public.health_history_covering(p.user_id, p_event_id) as history_id
+      from people p
+  ), logged as (
+    insert into public.health_access_log (accessed_by, subject_user_id, event_id, action, record_id)
+    select auth.uid(), c.user_id, p_event_id, 'print', c.history_id
+      from covering c where c.history_id is not null
+    returning 1
+  )
+  select h.* from public.health_histories h
+   where h.id in (select c.history_id from covering c where c.history_id is not null);
+end $function$;
+
+-- The caller's own submissions: year and when signed only. Not logged.
+create or replace function public.my_health_history_list()
+returns table (id bigint, year integer, signed_at timestamptz)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select h.id, h.year, h.signed_at from public.health_histories h
+   where h.user_id = auth.uid()
+   order by h.signed_at desc;
+$function$;
+
+-- One of the caller's own submissions. Logs self_view.
+create or replace function public.my_health_history(p_id bigint)
+returns setof public.health_histories
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if auth.uid() is null or not exists (
+    select 1 from public.health_histories where id = p_id and user_id = auth.uid()
+  ) then
+    return;
+  end if;
+  insert into public.health_access_log (accessed_by, subject_user_id, event_id, action, record_id)
+  values (auth.uid(), auth.uid(), null, 'self_view', p_id);
+  return query select * from public.health_histories where id = p_id;
+end $function$;
+
+-- Latest year on file per person — admins (the volunteer registry), or
+-- yourself. Not health content; not logged.
+create or replace function public.health_history_latest_years(p_user_ids uuid[])
+returns table (user_id uuid, latest_year integer)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select h.user_id, max(h.year)
+    from public.health_histories h
+   where h.user_id = any(p_user_ids)
+     and (public.is_admin() or h.user_id = auth.uid())
+   group by h.user_id;
+$function$;
+
+-- ---- Function grants -------------------------------------------------------------
+revoke all on function public.is_on_event_roster(uuid, bigint) from public, anon;
+grant execute on function public.is_on_event_roster(uuid, bigint) to authenticated;
+revoke all on function public.event_year(bigint) from public, anon, authenticated;
+revoke all on function public.health_history_covering(uuid, bigint) from public, anon, authenticated;
+revoke all on function public.event_health_history_status(bigint) from public, anon;
+grant execute on function public.event_health_history_status(bigint) to authenticated;
+revoke all on function public.event_health_markers(bigint) from public, anon;
+grant execute on function public.event_health_markers(bigint) to authenticated;
+revoke all on function public.health_history_for_staff(uuid, bigint) from public, anon;
+grant execute on function public.health_history_for_staff(uuid, bigint) to authenticated;
+revoke all on function public.health_histories_for_print(bigint) from public, anon;
+grant execute on function public.health_histories_for_print(bigint) to authenticated;
+revoke all on function public.my_health_history_list() from public, anon;
+grant execute on function public.my_health_history_list() to authenticated;
+revoke all on function public.my_health_history(bigint) from public, anon;
+grant execute on function public.my_health_history(bigint) to authenticated;
+revoke all on function public.health_history_latest_years(uuid[]) from public, anon;
+grant execute on function public.health_history_latest_years(uuid[]) to authenticated;
+
+commit;
+
+-- =============================================================================
+-- 2026-09-25 — Health form: one rule for participants and volunteers
+-- =============================================================================
+-- Who needs a health form is now decided by the event alone: everyone on an
+-- event with requires_health_history on — participants (active RSVP) and
+-- volunteers (confirmed shift) alike — and nobody at an event without it.
+-- The risk is the activity, not the role: a volunteer wading a river needs
+-- one as much as a participant, and one tying flies in a brewery doesn't.
+-- Replaces the "Health history form" entry's rule, where volunteers needed
+-- one at every event.
+--
+-- Only event_health_history_status encoded the old rule (it marked every
+-- volunteer required); it's replaced here with the same signature. Access
+-- (can_view_health_history), logging, and the print/marker functions are
+-- unchanged — they never depended on who's required.
+--
+-- Safe to re-run. One transaction.
+
+begin;
+
+create or replace function public.event_health_history_status(p_event_id bigint)
+returns table (user_id uuid, required boolean, has_current boolean, checkin_answered boolean)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+#variable_conflict use_column
+declare
+  v_required boolean;
+begin
+  if not public.can_manage_event(p_event_id) then
+    raise exception 'You don''t manage this event' using errcode = '42501';
+  end if;
+  select e.requires_health_history into v_required from public.events e where e.id = p_event_id;
+  return query
+  with people as (
+    select r.user_id
+      from public.rsvps r
+     where r.event_id = p_event_id and r.status in ('confirmed', 'waitlisted', 'offered')
+    union
+    select s.user_id
+      from public.volunteer_signups s
+      join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+     where vo.event_id = p_event_id and s.status = 'confirmed'
+  )
+  select p.user_id,
+         coalesce(v_required, false),
+         public.health_history_covering(p.user_id, p_event_id) is not null,
+         exists (select 1 from public.health_checkin_answers a
+                  where a.event_id = p_event_id and a.user_id = p.user_id)
+    from people p;
+end $function$;
+
+commit;

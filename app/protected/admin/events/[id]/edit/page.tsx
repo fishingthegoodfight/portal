@@ -31,7 +31,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
     supabase
       .from("events")
       .select(
-        "id, slug, name, event_type, series_id, description, occurrence_note, location, venue_name, street_address, city, state, postal_code, virtual_link, virtual_access_notes, capacity, lead_name, lead_user_id, lead_phone, lead_email, custom_email_note, registration_sections, starts_at, ends_at, timezone, chapter, status, waiver_state, marketing_tier",
+        "id, slug, name, event_type, series_id, description, occurrence_note, location, venue_name, street_address, city, state, postal_code, virtual_link, virtual_access_notes, capacity, lead_name, lead_user_id, lead_phone, lead_email, custom_email_note, registration_sections, starts_at, ends_at, timezone, chapter, status, waiver_state, marketing_tier, requires_health_history",
       )
       .eq("id", eventId)
       .maybeSingle(),
@@ -39,7 +39,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
     // an event that already has it (see EventTypeField).
     supabase
       .from("event_types")
-      .select("id, key, name, default_registration_sections, sort_order, active")
+      .select("id, key, name, default_registration_sections, requires_health_history, sort_order, active")
       .order("sort_order", { ascending: true }),
     supabase
       .from("volunteer_role_types")
@@ -112,6 +112,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
         leadUserId: event.lead_user_id ?? "",
         customEmailNote: event.custom_email_note ?? "",
         registrationSections: event.registration_sections ?? [],
+        requiresHealthHistory: event.requires_health_history === true,
         date,
         time,
         endTime,

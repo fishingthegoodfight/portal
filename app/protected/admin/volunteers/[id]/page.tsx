@@ -32,6 +32,13 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
 
   const canViewScreening = Boolean(viewerProfile?.can_view_volunteer_screening);
 
+  // Latest year they have a health form on file for — not health content.
+  const { data: healthYears } = await supabase.rpc("health_history_latest_years", {
+    p_user_ids: [volunteerId],
+  });
+  const latestHealthYear =
+    ((healthYears ?? []) as { latest_year: number }[])[0]?.latest_year ?? null;
+
   const [{ data: allRoleTypes }, { data: activeApprovals }, { data: certs }, { data: signatures }, screeningResult] =
     await Promise.all([
       supabase.from("volunteer_role_types").select("id, name, requires_cert").order("sort_order", { ascending: true }),
@@ -133,9 +140,11 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
             value={[...(profile?.skill_interests ?? []), profile?.skill_interests_other].filter(Boolean).join(", ")}
           />
           <DetailRow label="Program interests" value={(profile?.program_interests ?? []).join(", ")} />
+          {/* Just what's on file: whether one is needed depends on the events
+            * they volunteer at (Requires health history), shown on each roster. */}
           <DetailRow
-            label="Health history"
-            value={volunteer.health_history_outstanding ? "Outstanding" : "On file"}
+            label="Health form"
+            value={latestHealthYear != null ? `Latest on file: ${latestHealthYear}` : "None on file"}
           />
         </CardContent>
       </Card>

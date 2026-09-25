@@ -43,9 +43,8 @@ type ProfileData = {
   postal_code: string;
 };
 
-// Where the "Medical information" card links to. Deliberately not built yet —
-// medical data is handled on its own page, separate from the rest of the
-// profile. The card is just a signpost for now.
+// Where the "Medical information" card links to: the health form, on its own
+// page, separate from the rest of the profile (app/protected/profile/medical).
 const MEDICAL_INFO_HREF = "/protected/profile/medical";
 
 export function ProfileForm({
@@ -394,8 +393,8 @@ export function ProfileForm({
         </CardHeader>
         <CardContent className="flex flex-col gap-2">
           <p className="text-sm text-muted-foreground">
-            Allergies, conditions, and medications are kept on a separate,
-            more private page.
+            Your annual health form — needed for retreats and other events on the water. It&apos;s kept on a
+            separate, more private page, and only trained staff see it.
           </p>
           <Link
             href={MEDICAL_INFO_HREF}

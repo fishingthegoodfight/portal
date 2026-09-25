@@ -76,6 +76,9 @@ export type CreateEventInput = {
   /** Shown in the RSVP confirmation email, if set. */
   customEmailNote: string;
   registrationSections: string[];
+  /** Everyone at the event needs a current health form
+   * (events.requires_health_history). */
+  requiresHealthHistory: boolean;
   // Step 3 — Volunteers
   volunteersNeeded: boolean;
   volunteerRoles: VolunteerRoleInput[];
@@ -292,6 +295,7 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
         lead_user_id: input.leadUserId || null,
         custom_email_note: input.customEmailNote.trim() || null,
         registration_sections: registrationSections,
+        requires_health_history: input.requiresHealthHistory === true,
         waiver_state: waiverState,
         starts_at: startsAt.toISOString(),
         ends_at: endsAt ? endsAt.toISOString() : null,
