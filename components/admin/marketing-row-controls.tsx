@@ -67,8 +67,15 @@ export function PostedToggle({
   );
 }
 
-/** Copies the event as plain text, ready to paste into the website. */
-export function CopyEventButton({ text }: { text: string }) {
+/** Copies text to the clipboard — the event as plain text for the website,
+ * or just its public link. */
+export function CopyEventButton({
+  text,
+  label = "Copy text",
+}: {
+  text: string;
+  label?: string;
+}) {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
 
   const copy = async () => {
@@ -88,7 +95,7 @@ export function CopyEventButton({ text }: { text: string }) {
       ) : (
         <Copy className="size-4" aria-hidden />
       )}
-      {state === "copied" ? "Copied" : state === "failed" ? "Couldn't copy" : "Copy text"}
+      {state === "copied" ? "Copied" : state === "failed" ? "Couldn't copy" : label}
     </Button>
   );
 }

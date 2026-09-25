@@ -18,9 +18,12 @@ import {
 import { cityStateZip } from "@/lib/event-location";
 import { formatDateInZone, formatEventDateRangeLong } from "@/lib/format-date";
 import { combinedDescription } from "@/lib/marketing";
+import { publicEventPath } from "@/lib/event-slug";
+import { getSiteUrl } from "@/lib/site-url";
 
 type MarketingEventRow = {
   id: number;
+  slug: string;
   name: string;
   chapter: string | null;
   starts_at: string;
@@ -61,6 +64,11 @@ function locationLines(e: MarketingEventRow): string[] {
   return e.location?.trim() ? [e.location.trim()] : [];
 }
 
+/** The event's public page — the link people RSVP from. */
+function publicUrl(e: MarketingEventRow): string {
+  return `${getSiteUrl()}${publicEventPath(e.slug)}`;
+}
+
 /** What the copy button puts on the clipboard. */
 function plainText(e: MarketingEventRow): string {
   return [
@@ -69,6 +77,8 @@ function plainText(e: MarketingEventRow): string {
     locationLines(e).join(", "),
     "",
     combinedDescription(e.description, e.occurrence_note),
+    "",
+    `RSVP: ${publicUrl(e)}`,
   ]
     .join("\n")
     .trim();
@@ -84,7 +94,7 @@ async function MarketingLoader({ searchParams }: { searchParams: Promise<Marketi
     supabase
       .from("events")
       .select(
-        "id, name, chapter, starts_at, ends_at, timezone, venue_name, street_address, city, state, postal_code, location, description, occurrence_note, status, is_published, marketing_tier",
+        "id, slug, name, chapter, starts_at, ends_at, timezone, venue_name, street_address, city, state, postal_code, location, description, occurrence_note, status, is_published, marketing_tier",
       )
       .order("starts_at", { ascending: true }),
     supabase
@@ -282,6 +292,26 @@ function MarketingRow({
           {description || <span className="text-muted-foreground">No description</span>}
         </dd>
 
+        <dt className="text-muted-foreground">Public link</dt>
+        <dd className="flex flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <a
+              href={publicUrl(event)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="break-all underline underline-offset-4"
+            >
+              {publicUrl(event)}
+            </a>
+            <CopyEventButton text={publicUrl(event)} label="Copy link" />
+          </div>
+          {!event.is_published && (
+            <span className="text-xs text-amber-700 dark:text-amber-400">
+              Unpublished — this link won&apos;t work for the public until the event is published.
+            </span>
+          )}
+        </dd>
+
         <dt className="text-muted-foreground">Volunteers</dt>
         <dd>
           {!slots || slots.total === 0
@@ -324,7 +354,8 @@ export default function AdminMarketingPage({
         <h1 className="font-bold text-2xl mb-1">Marketing</h1>
         <p className="text-sm text-muted-foreground">
           Every event across all chapters. &ldquo;Copy text&rdquo; puts the title, date, time,
-          location and description on your clipboard for pasting into the website; tick
+          location, description and RSVP link on your clipboard for pasting into the website;
+          &ldquo;Copy link&rdquo; copies just the link. Tick
           &ldquo;Posted to website&rdquo; once it&apos;s up.
         </p>
       </div>
