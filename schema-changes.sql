@@ -8050,6 +8050,12 @@ commit;
 -- 2026-09-25 — Screening call form v2, retreat commitments on the
 --              application, practical instruction checks
 -- =============================================================================
+-- NOT RUN YET (as of 2026-09-25): this entry has not been applied to the
+-- database. It ships on the volunteer-phase-2 branch, untested.
+-- LIVE APPLY FORM IS BROKEN: the phase 2 SQL (the entry above) was run, but
+-- its code was never deployed, so the live application form still writes the
+-- renamed role_type_ids column and fails. Merging volunteer-phase-2 fixes it.
+--
 -- Runs on top of "interest areas, the applicant's own view, and phase 2".
 -- Access rules, statuses, digest sections and permissions for screening
 -- calls are unchanged; only the form's content and rating mechanism are
