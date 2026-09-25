@@ -7593,3 +7593,979 @@ revoke all on function public.digest_ready_applications() from public, anon, aut
 grant execute on function public.digest_ready_applications() to service_role;
 
 commit;
+
+-- =============================================================================
+-- 2026-09-25 — Volunteer applications: interest areas, the applicant's own
+--              view, and phase 2 (screening calls)
+-- =============================================================================
+-- Runs on top of "Volunteer applications, phase 1".
+--
+-- 1. Interest areas replace role types on the application. Applicants pick
+--    plain-language "What are you interested in helping with?" areas from
+--    volunteer_interest_areas — its own admin-editable list (Setup → Interest
+--    areas), deliberately separate from volunteer_role_types, so rewording an
+--    area never touches a role and adding a role type never changes the form.
+--    Roles are picked at approval (phase 4); interest areas are what carry
+--    over to prefill the volunteer registration form then.
+--
+--    Existing applications: role_type_ids is renamed legacy_role_type_ids
+--    and kept as-is (the review screen shows it as "Roles picked on the
+--    earlier form"), and each application's interest_area_ids is filled in
+--    from those roles:
+--      fishing_instructor, lead_fly_fishing_instructor -> teaching_on_water
+--      logistics_coordinator                           -> behind_the_scenes
+--      any role with for_chapter_events                 -> chapter_events
+--      retreat_lead (and anything else)                 -> nothing (the
+--        separate retreats question already covers it)
+--    At the time of writing that's one test application: Fishing Instructor
+--    + Chapter Program Support -> teaching_on_water + chapter_events.
+--
+-- 2. my_volunteer_application(id): the applicant's read-only view of their
+--    own application — everything they submitted, both references as typed,
+--    status and date. Leaves out reference 1's match, reapplication
+--    details, the history and anything from screening. Not logged (not
+--    health data).
+--
+-- 3. volunteer_screenings (phase 2): the screening call record. Several per
+--    application; editable working notes (the recorder or any admin can
+--    edit; who last edited and when is stamped). Ratings are 1–5 guides —
+--    nothing totals them.
+--
+--    Access: can_record_screening(application) = the raw
+--    can_view_volunteer_screening flag AND can see the application (admin,
+--    or chapter lead for one of its chapters). The flag alone grants
+--    nothing. Note this is NOT the existing can_view_volunteer_screening()
+--    function, which stays admin-only and still gates the volunteer
+--    registry's screening notes, unchanged. The applicant never sees any
+--    screening.
+--
+--    Status: saving a screening while the application is at
+--    invited_to_schedule, screening_scheduled or screened sets it:
+--      advance / hold             -> screened
+--      decline, saved by an admin -> declined (the existing decline rules;
+--                                    no email)
+--      decline, by a chapter lead -> screened, as a recommendation for an
+--                                    admin to action
+--    At a later stage (references out onward) a screening is recorded but
+--    the status doesn't move backwards.
+--
+-- 4. The daily digest gains two sections (lib/admin-digest.ts), listed every
+--    day for as long as they apply:
+--      "Screening calls needing an admin decision" — latest screening
+--        recommends declining, application not declined yet. Names the
+--        applicant, never the outcome (digest recipients may not have the
+--        screening flag).
+--      "Screened, references not sent yet" — everything else sitting in
+--        screened. Phase 3 extends this pattern.
+--
+-- Safe to re-run. One transaction: if any statement fails, nothing is
+-- applied.
+
+begin;
+
+-- ---- 1. Interest areas ---------------------------------------------------------------
+create table if not exists public.volunteer_interest_areas (
+  id bigserial primary key,
+  key text not null unique,
+  label text not null check (btrim(label) <> ''),
+  description text,
+  sort_order integer not null default 0,
+  active boolean not null default true,
+  created_at timestamptz not null default now()
+);
+
+insert into public.volunteer_interest_areas (key, label, description, sort_order) values
+  ('chapter_events', 'Helping run chapter events', 'Men''s Night, fly tying nights, community events', 10),
+  ('teaching_on_water', 'Teaching fly fishing on the water', null, 20),
+  ('lead_program', 'Leading a chapter program of my own, eventually', null, 30),
+  ('behind_the_scenes', 'Behind the scenes', 'Logistics, gear, transport, food', 40),
+  ('outreach', 'Outreach and community partnerships', null, 50)
+on conflict (key) do nothing;
+
+alter table public.volunteer_interest_areas enable row level security;
+
+drop policy if exists volunteer_interest_areas_select on public.volunteer_interest_areas;
+create policy volunteer_interest_areas_select on public.volunteer_interest_areas
+  for select to authenticated
+  using (true);
+
+drop policy if exists volunteer_interest_areas_insert_admin on public.volunteer_interest_areas;
+create policy volunteer_interest_areas_insert_admin on public.volunteer_interest_areas
+  for insert to authenticated
+  with check (public.is_admin());
+
+drop policy if exists volunteer_interest_areas_update_admin on public.volunteer_interest_areas;
+create policy volunteer_interest_areas_update_admin on public.volunteer_interest_areas
+  for update to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+-- No delete: deactivate instead, so past applications keep their wording.
+
+revoke all on public.volunteer_interest_areas from anon;
+revoke all on public.volunteer_interest_areas from authenticated;
+grant select, insert, update on public.volunteer_interest_areas to authenticated;
+grant all on public.volunteer_interest_areas to service_role;
+revoke all on sequence public.volunteer_interest_areas_id_seq from anon;
+grant usage, select on sequence public.volunteer_interest_areas_id_seq to authenticated, service_role;
+
+-- ---- Applications: interest areas in, role types out ------------------------------
+alter table public.volunteer_applications
+  add column if not exists interest_area_ids bigint[] not null default '{}'::bigint[];
+
+do $migrate$
+begin
+  if exists (
+    select 1 from information_schema.columns
+     where table_schema = 'public' and table_name = 'volunteer_applications' and column_name = 'role_type_ids'
+  ) then
+    update public.volunteer_applications a
+       set interest_area_ids = coalesce((
+         select array_agg(distinct ia.id order by ia.id)
+           from unnest(a.role_type_ids) as picked(role_type_id)
+           join public.volunteer_role_types rt on rt.id = picked.role_type_id
+           join public.volunteer_interest_areas ia on ia.key = case
+             when rt.key in ('fishing_instructor', 'lead_fly_fishing_instructor') then 'teaching_on_water'
+             when rt.key = 'logistics_coordinator' then 'behind_the_scenes'
+             when rt.for_chapter_events then 'chapter_events'
+           end
+       ), '{}'::bigint[])
+     where cardinality(a.interest_area_ids) = 0;
+
+    alter table public.volunteer_applications rename column role_type_ids to legacy_role_type_ids;
+  end if;
+end $migrate$;
+
+comment on column public.volunteer_applications.legacy_role_type_ids is
+  'Role types picked on the phase 1 form, before interest areas replaced them. Kept for reference; nothing writes it.';
+
+drop function if exists public.volunteer_application_role_options();
+
+-- ---- 2. The applicant's own view ----------------------------------------------------
+create or replace function public.my_volunteer_application(p_id bigint)
+returns table (
+  id bigint,
+  status text,
+  submitted_at timestamptz,
+  full_name text,
+  email text,
+  phone text,
+  chapters text[],
+  how_connected text,
+  how_long_attending text,
+  why_volunteer text,
+  hope_to_get text,
+  mission_connection text,
+  interest_area_ids bigint[],
+  interested_in_retreats boolean,
+  years_fly_fishing text,
+  water_fished text,
+  has_taught_or_guided boolean,
+  taught_details text,
+  beginner_comfort smallint,
+  cert_first_aid_cpr boolean,
+  cert_first_aid_cpr_expires date,
+  cert_wfa_wfr boolean,
+  cert_ffi_casting boolean,
+  cert_guide_license boolean,
+  cert_other text,
+  availability text[],
+  frequency text,
+  ref1_name text,
+  ref1_email text,
+  ref1_phone text,
+  ref1_how_know text,
+  ref1_chapter text,
+  ref2_name text,
+  ref2_email text,
+  ref2_phone text,
+  ref2_relationship text,
+  ref2_known_for text,
+  anything_else text
+)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select a.id, a.status, a.submitted_at, a.full_name, a.email, a.phone, a.chapters,
+         a.how_connected, a.how_long_attending, a.why_volunteer, a.hope_to_get,
+         a.mission_connection, a.interest_area_ids, a.interested_in_retreats,
+         a.years_fly_fishing, a.water_fished, a.has_taught_or_guided, a.taught_details,
+         a.beginner_comfort, a.cert_first_aid_cpr, a.cert_first_aid_cpr_expires,
+         a.cert_wfa_wfr, a.cert_ffi_casting, a.cert_guide_license, a.cert_other,
+         a.availability, a.frequency,
+         a.ref1_name, a.ref1_email, a.ref1_phone, a.ref1_how_know, a.ref1_chapter,
+         a.ref2_name, a.ref2_email, a.ref2_phone, a.ref2_relationship, a.ref2_known_for,
+         a.anything_else
+    from public.volunteer_applications a
+   where a.id = p_id and a.user_id = auth.uid();
+$function$;
+
+-- ---- 3. Screening calls --------------------------------------------------------------
+-- The raw flag (not can_view_volunteer_screening(), which is admin-only for
+-- the registry notes) AND being able to see the application.
+create or replace function public.can_record_screening(p_application_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce(
+    (select p.can_view_volunteer_screening from public.profiles p where p.id = auth.uid()),
+    false
+  ) and public.can_review_application(p_application_id);
+$function$;
+
+create table if not exists public.volunteer_screenings (
+  id bigserial primary key,
+  application_id bigint not null references public.volunteer_applications(id) on delete cascade,
+
+  -- Call record
+  call_date date not null,
+  interviewer_name text not null check (btrim(interviewer_name) <> ''),
+  length_minutes integer check (length_minutes is null or length_minutes between 1 and 600),
+
+  -- General (always)
+  why_rating smallint check (why_rating between 1 and 5),
+  why_notes text,
+  understanding_rating smallint check (understanding_rating between 1 and 5),
+  understanding_notes text,
+  listening_rating smallint check (listening_rating between 1 and 5),
+  listening_notes text,
+  scenario_rating smallint check (scenario_rating between 1 and 5),
+  scenario_notes text,
+  realism_rating smallint check (realism_rating between 1 and 5),
+  realism_notes text,
+  concerns text,
+
+  -- Retreat volunteering (only when they said yes to retreats)
+  retreat_section boolean not null default false,
+  on_three_days_rating smallint check (on_three_days_rating between 1 and 5),
+  on_three_days_notes text,
+  emotional_weight_rating smallint check (emotional_weight_rating between 1 and 5),
+  emotional_weight_notes text,
+  physical_water_day_rating smallint check (physical_water_day_rating between 1 and 5),
+  physical_water_day_notes text,
+  been_on_retreat boolean,
+  been_on_retreat_notes text,
+
+  -- Fishing instruction (same trigger)
+  casting_teach_rating smallint check (casting_teach_rating between 1 and 5),
+  casting_teach_notes text,
+  rigging_knots_rating smallint check (rigging_knots_rating between 1 and 5),
+  rigging_knots_notes text,
+  reading_water_rating smallint check (reading_water_rating between 1 and 5),
+  reading_water_notes text,
+  wading_safety_rating smallint check (wading_safety_rating between 1 and 5),
+  wading_safety_notes text,
+  taught_beginners text,
+  two_participants_rating smallint check (two_participants_rating between 1 and 5),
+  two_participants_notes text,
+
+  -- Outcome
+  outcome text not null check (outcome in ('advance', 'hold', 'decline')),
+  -- Set when a decline was saved by someone who can't decline (a chapter
+  -- lead): it stands as a recommendation for an admin.
+  decline_is_recommendation boolean not null default false,
+  summary text,
+
+  recorded_by uuid references auth.users(id) on delete set null,
+  recorded_at timestamptz not null default now(),
+  updated_by uuid references auth.users(id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists volunteer_screenings_application_idx
+  on public.volunteer_screenings (application_id, call_date desc, recorded_at desc);
+
+alter table public.volunteer_screenings enable row level security;
+
+drop policy if exists volunteer_screenings_select on public.volunteer_screenings;
+create policy volunteer_screenings_select on public.volunteer_screenings
+  for select to authenticated
+  using (public.can_record_screening(application_id));
+
+drop policy if exists volunteer_screenings_insert on public.volunteer_screenings;
+create policy volunteer_screenings_insert on public.volunteer_screenings
+  for insert to authenticated
+  with check (public.can_record_screening(application_id));
+
+-- The person who recorded it, or any admin — and either way still someone
+-- who can see screenings for this application.
+drop policy if exists volunteer_screenings_update on public.volunteer_screenings;
+create policy volunteer_screenings_update on public.volunteer_screenings
+  for update to authenticated
+  using (public.can_record_screening(application_id) and (recorded_by = auth.uid() or public.is_admin()))
+  with check (public.can_record_screening(application_id) and (recorded_by = auth.uid() or public.is_admin()));
+-- No delete.
+
+revoke all on public.volunteer_screenings from anon;
+revoke all on public.volunteer_screenings from authenticated;
+grant select, insert, update on public.volunteer_screenings to authenticated;
+grant all on public.volunteer_screenings to service_role;
+revoke all on sequence public.volunteer_screenings_id_seq from anon;
+grant usage, select on sequence public.volunteer_screenings_id_seq to authenticated, service_role;
+
+-- Who/when from the session; the application can't be switched; a decline
+-- from a non-admin is marked as a recommendation.
+create or replace function public.volunteer_screenings_stamp()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if tg_op = 'INSERT' then
+    new.recorded_by := coalesce(auth.uid(), new.recorded_by);
+    new.recorded_at := now();
+  else
+    new.application_id := old.application_id;
+    new.recorded_by := old.recorded_by;
+    new.recorded_at := old.recorded_at;
+  end if;
+  new.updated_by := coalesce(auth.uid(), new.updated_by);
+  new.updated_at := now();
+  -- Worked out when the outcome is set; an edit that leaves the outcome alone
+  -- (an admin tidying a lead's notes) doesn't turn a recommendation into a
+  -- decline — the admin uses Decline for that.
+  if tg_op = 'INSERT' or new.outcome is distinct from old.outcome then
+    new.decline_is_recommendation := new.outcome = 'decline' and auth.uid() is not null and not public.is_admin();
+  else
+    new.decline_is_recommendation := old.decline_is_recommendation;
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists volunteer_screenings_stamp on public.volunteer_screenings;
+create trigger volunteer_screenings_stamp
+  before insert or update on public.volunteer_screenings
+  for each row execute function public.volunteer_screenings_stamp();
+
+-- History: "screening call recorded" (never the outcome — reviewers without
+-- the flag can read the history).
+alter table public.volunteer_application_events drop constraint if exists volunteer_application_events_action_check;
+alter table public.volunteer_application_events
+  add constraint volunteer_application_events_action_check check (action in (
+    'submitted', 'attendance_reached', 'invited_to_schedule', 'asked_to_attend_more',
+    'screening_recorded', 'screened', 'declined', 'reapplication_allowed', 'withdrawn'
+  ));
+
+-- Status from a screening's outcome (see the header), on save and when the
+-- outcome is edited.
+create or replace function public.volunteer_screenings_apply_outcome()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_status text;
+begin
+  if tg_op = 'INSERT' then
+    insert into public.volunteer_application_events (application_id, action, actor)
+    values (new.application_id, 'screening_recorded', auth.uid());
+  elsif new.outcome is not distinct from old.outcome then
+    return new;
+  end if;
+
+  select a.status into v_status from public.volunteer_applications a where a.id = new.application_id for update;
+  if v_status not in ('invited_to_schedule', 'screening_scheduled', 'screened') then
+    return new;
+  end if;
+
+  if new.outcome = 'decline' and not new.decline_is_recommendation then
+    -- An admin's decline, by the same route as the Decline button.
+    perform public.volunteer_application_act(new.application_id, 'declined', 'Declined after a screening call', false);
+  elsif v_status <> 'screened' then
+    update public.volunteer_applications
+       set status = 'screened', status_changed_at = now()
+     where id = new.application_id;
+    insert into public.volunteer_application_events (application_id, action, from_status, to_status, actor)
+    values (new.application_id, 'screened', v_status, 'screened', auth.uid());
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists volunteer_screenings_apply_outcome on public.volunteer_screenings;
+create trigger volunteer_screenings_apply_outcome
+  after insert or update of outcome on public.volunteer_screenings
+  for each row execute function public.volunteer_screenings_apply_outcome();
+
+revoke all on function public.volunteer_screenings_stamp() from public, anon, authenticated;
+revoke all on function public.volunteer_screenings_apply_outcome() from public, anon, authenticated;
+
+-- Whether the latest screening recommends declining (for the review screen's
+-- Decline button) — only answered for someone who can see screenings.
+create or replace function public.application_decline_recommended(p_application_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select public.can_record_screening(p_application_id) and coalesce((
+    select s.outcome = 'decline'
+      from public.volunteer_screenings s
+     where s.application_id = p_application_id
+     order by s.call_date desc, s.recorded_at desc
+     limit 1
+  ), false);
+$function$;
+
+-- ---- 4. Digest sections (service role only) ---------------------------------------
+create or replace function public.digest_screened_applications()
+returns table (id bigint, full_name text, chapters text[], screened_since timestamptz, decline_recommended boolean)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select a.id, a.full_name, a.chapters, a.status_changed_at,
+         coalesce((
+           select s.outcome = 'decline'
+             from public.volunteer_screenings s
+            where s.application_id = a.id
+            order by s.call_date desc, s.recorded_at desc
+            limit 1
+         ), false)
+    from public.volunteer_applications a
+   where a.status = 'screened'
+   order by a.status_changed_at;
+$function$;
+
+-- ---- Function grants -------------------------------------------------------------
+revoke all on function public.my_volunteer_application(bigint) from public, anon;
+grant execute on function public.my_volunteer_application(bigint) to authenticated;
+revoke all on function public.can_record_screening(bigint) from public, anon;
+grant execute on function public.can_record_screening(bigint) to authenticated, service_role;
+revoke all on function public.application_decline_recommended(bigint) from public, anon;
+grant execute on function public.application_decline_recommended(bigint) to authenticated;
+revoke all on function public.digest_screened_applications() from public, anon, authenticated;
+grant execute on function public.digest_screened_applications() to service_role;
+
+commit;
+
+-- =============================================================================
+-- 2026-09-25 — Screening call form v2, retreat commitments on the
+--              application, practical instruction checks
+-- =============================================================================
+-- Runs on top of "interest areas, the applicant's own view, and phase 2".
+-- Access rules, statuses, digest sections and permissions for screening
+-- calls are unchanged; only the form's content and rating mechanism are
+-- replaced.
+--
+-- 1. volunteer_screenings is rebuilt (it was empty when this was written —
+--    no screening had been recorded): each rated section gets a level
+--    (needs_improvement / meets / excellent), an independent Concern
+--    checkbox and notes. No total, score or average anywhere. Sections:
+--      why_here, struggling (everyone); fishing_skill + water_safety
+--      (retreat applicants: retreat_track); chapter_help (chapter-only);
+--      working_with_us (everyone). Then the assessment: four yes/maybe/no
+--    reads, recommended role types (prefills phase 4's approval), next step
+--    (outcome: advance / hold / decline — same status behaviour as before,
+--    including a chapter lead's decline being a recommendation) and a
+--    required "why".
+--
+-- 2. Applications gain fishing_frequency ("How often do you fish now?") and
+--    four retreat-commitment acknowledgments, required on new applications
+--    when they answer yes to retreats (volunteer_applications_require_new_fields).
+--    Existing applications keep nulls — shown as "not asked".
+--    my_volunteer_application() returns them too.
+--
+-- 3. practical_instruction_checks: 45 minutes on the water with an
+--    experienced instructor. Tied to the person (profiles), not a volunteers
+--    row, so it can be recorded before approval. Outcome passed / needs_work
+--    / not_ready; the LATEST check is the one that counts; no expiry (every
+--    display shows the date and assessor so a reviewer can judge).
+--    Recordable (can_record_practical_check) by: admins, for anyone; a
+--    chapter lead, for anyone with an application in one of their chapters
+--    or on a roster (an RSVP or a volunteer shift, any status) of one of
+--    their chapters' events. Insert-only; a correction is a new check.
+--
+-- 4. The shift block: confirming someone onto a volunteer shift whose role
+--    type is an instructor (fishing_instructor, lead_fly_fishing_instructor)
+--    at an event with requires_health_history, without a latest check of
+--    passed, is refused — by a trigger on volunteer_signups, so every route
+--    (self signup, switching from attending, the roster's Add volunteer,
+--    re-confirming) is covered. An admin can override with a reason through
+--    admin_add_volunteer_signup_with_override(); the reason, admin and time
+--    are recorded on the signup. Chapter leads can't override.
+--
+-- 5. Volunteer roles at an event with requires_health_history must have a
+--    role type (a free-text role there would slip past the block). Enforced
+--    on volunteer_opportunities; turning the event setting on with untyped
+--    roles already there is caught by the event forms. At the time of
+--    writing no flagged event had an untyped role.
+--
+-- Safe to re-run. One transaction: if any statement fails, nothing is
+-- applied.
+
+begin;
+
+-- ---- 2. Application: fishing frequency and retreat commitments ------------------
+alter table public.volunteer_applications
+  add column if not exists fishing_frequency text,
+  add column if not exists ack_retreat_commitment boolean,
+  add column if not exists ack_stay_onsite boolean,
+  add column if not exists ack_shared_rooms boolean,
+  add column if not exists ack_weather boolean;
+
+-- Only for new applications: rows from before these existed keep nulls.
+create or replace function public.volunteer_applications_require_new_fields()
+returns trigger
+language plpgsql
+as $function$
+begin
+  if coalesce(btrim(new.fishing_frequency), '') = '' then
+    raise exception 'Tell us how often you fish now' using errcode = 'P0001';
+  end if;
+  if new.interested_in_retreats and not (
+    coalesce(new.ack_retreat_commitment, false) and coalesce(new.ack_stay_onsite, false)
+    and coalesce(new.ack_shared_rooms, false) and coalesce(new.ack_weather, false)
+  ) then
+    raise exception 'Tick each retreat commitment to apply for retreat volunteering' using errcode = 'P0001';
+  end if;
+  if not new.interested_in_retreats then
+    new.ack_retreat_commitment := null;
+    new.ack_stay_onsite := null;
+    new.ack_shared_rooms := null;
+    new.ack_weather := null;
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists volunteer_applications_require_new_fields on public.volunteer_applications;
+create trigger volunteer_applications_require_new_fields
+  before insert on public.volunteer_applications
+  for each row execute function public.volunteer_applications_require_new_fields();
+
+revoke all on function public.volunteer_applications_require_new_fields() from public, anon, authenticated;
+
+-- The return type changes, so it's dropped and recreated.
+drop function if exists public.my_volunteer_application(bigint);
+create function public.my_volunteer_application(p_id bigint)
+returns table (
+  id bigint,
+  status text,
+  submitted_at timestamptz,
+  full_name text,
+  email text,
+  phone text,
+  chapters text[],
+  how_connected text,
+  how_long_attending text,
+  why_volunteer text,
+  hope_to_get text,
+  mission_connection text,
+  interest_area_ids bigint[],
+  interested_in_retreats boolean,
+  ack_retreat_commitment boolean,
+  ack_stay_onsite boolean,
+  ack_shared_rooms boolean,
+  ack_weather boolean,
+  years_fly_fishing text,
+  fishing_frequency text,
+  water_fished text,
+  has_taught_or_guided boolean,
+  taught_details text,
+  beginner_comfort smallint,
+  cert_first_aid_cpr boolean,
+  cert_first_aid_cpr_expires date,
+  cert_wfa_wfr boolean,
+  cert_ffi_casting boolean,
+  cert_guide_license boolean,
+  cert_other text,
+  availability text[],
+  frequency text,
+  ref1_name text,
+  ref1_email text,
+  ref1_phone text,
+  ref1_how_know text,
+  ref1_chapter text,
+  ref2_name text,
+  ref2_email text,
+  ref2_phone text,
+  ref2_relationship text,
+  ref2_known_for text,
+  anything_else text
+)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select a.id, a.status, a.submitted_at, a.full_name, a.email, a.phone, a.chapters,
+         a.how_connected, a.how_long_attending, a.why_volunteer, a.hope_to_get,
+         a.mission_connection, a.interest_area_ids, a.interested_in_retreats,
+         a.ack_retreat_commitment, a.ack_stay_onsite, a.ack_shared_rooms, a.ack_weather,
+         a.years_fly_fishing, a.fishing_frequency, a.water_fished, a.has_taught_or_guided,
+         a.taught_details, a.beginner_comfort, a.cert_first_aid_cpr, a.cert_first_aid_cpr_expires,
+         a.cert_wfa_wfr, a.cert_ffi_casting, a.cert_guide_license, a.cert_other,
+         a.availability, a.frequency,
+         a.ref1_name, a.ref1_email, a.ref1_phone, a.ref1_how_know, a.ref1_chapter,
+         a.ref2_name, a.ref2_email, a.ref2_phone, a.ref2_relationship, a.ref2_known_for,
+         a.anything_else
+    from public.volunteer_applications a
+   where a.id = p_id and a.user_id = auth.uid();
+$function$;
+
+revoke all on function public.my_volunteer_application(bigint) from public, anon;
+grant execute on function public.my_volunteer_application(bigint) to authenticated;
+
+-- ---- 1. Screening calls, rebuilt ------------------------------------------------------
+do $guard$
+begin
+  if exists (select 1 from public.volunteer_screenings) then
+    raise exception 'volunteer_screenings has rows — this rebuild assumed it was empty. Nothing was changed.';
+  end if;
+end $guard$;
+
+drop table public.volunteer_screenings;
+
+create table public.volunteer_screenings (
+  id bigserial primary key,
+  application_id bigint not null references public.volunteer_applications(id) on delete cascade,
+
+  call_date date not null,
+  interviewer_name text not null check (btrim(interviewer_name) <> ''),
+  length_minutes integer check (length_minutes is null or length_minutes between 1 and 600),
+
+  -- Which of section 3 (retreat) or 2b (chapter-only) the call covered.
+  retreat_track boolean not null,
+
+  -- Each rated section: level, an independent concern, notes.
+  why_here_level text check (why_here_level in ('needs_improvement', 'meets', 'excellent')),
+  why_here_concern boolean not null default false,
+  why_here_notes text,
+  struggling_level text check (struggling_level in ('needs_improvement', 'meets', 'excellent')),
+  struggling_concern boolean not null default false,
+  struggling_notes text,
+  fishing_skill_level text check (fishing_skill_level in ('needs_improvement', 'meets', 'excellent')),
+  fishing_skill_concern boolean not null default false,
+  fishing_skill_notes text,
+  water_safety_level text check (water_safety_level in ('needs_improvement', 'meets', 'excellent')),
+  water_safety_concern boolean not null default false,
+  water_safety_notes text,
+  chapter_help_level text check (chapter_help_level in ('needs_improvement', 'meets', 'excellent')),
+  chapter_help_concern boolean not null default false,
+  chapter_help_notes text,
+  working_with_us_level text check (working_with_us_level in ('needs_improvement', 'meets', 'excellent')),
+  working_with_us_concern boolean not null default false,
+  working_with_us_notes text,
+
+  -- Assessment
+  read_mission_aligned text not null check (read_mission_aligned in ('yes', 'maybe', 'no')),
+  read_emotionally_grounded text not null check (read_emotionally_grounded in ('yes', 'maybe', 'no')),
+  read_coachable text not null check (read_coachable in ('yes', 'maybe', 'no')),
+  read_right_fit_now text not null check (read_right_fit_now in ('yes', 'maybe', 'no')),
+  recommended_role_type_ids bigint[] not null default '{}'::bigint[],
+  outcome text not null check (outcome in ('advance', 'hold', 'decline')),
+  decline_is_recommendation boolean not null default false,
+  summary text not null check (btrim(summary) <> ''),
+
+  recorded_by uuid references auth.users(id) on delete set null,
+  recorded_at timestamptz not null default now(),
+  updated_by uuid references auth.users(id) on delete set null,
+  updated_at timestamptz not null default now(),
+
+  -- The sections the call covered are rated; the other track's aren't.
+  constraint volunteer_screenings_levels_by_track check (
+    why_here_level is not null and struggling_level is not null and working_with_us_level is not null
+    and (
+      (retreat_track and fishing_skill_level is not null and water_safety_level is not null and chapter_help_level is null)
+      or (not retreat_track and chapter_help_level is not null and fishing_skill_level is null and water_safety_level is null)
+    )
+  )
+);
+
+create index volunteer_screenings_application_idx
+  on public.volunteer_screenings (application_id, call_date desc, recorded_at desc);
+
+alter table public.volunteer_screenings enable row level security;
+
+create policy volunteer_screenings_select on public.volunteer_screenings
+  for select to authenticated
+  using (public.can_record_screening(application_id));
+
+create policy volunteer_screenings_insert on public.volunteer_screenings
+  for insert to authenticated
+  with check (public.can_record_screening(application_id));
+
+create policy volunteer_screenings_update on public.volunteer_screenings
+  for update to authenticated
+  using (public.can_record_screening(application_id) and (recorded_by = auth.uid() or public.is_admin()))
+  with check (public.can_record_screening(application_id) and (recorded_by = auth.uid() or public.is_admin()));
+
+revoke all on public.volunteer_screenings from anon;
+revoke all on public.volunteer_screenings from authenticated;
+grant select, insert, update on public.volunteer_screenings to authenticated;
+grant all on public.volunteer_screenings to service_role;
+revoke all on sequence public.volunteer_screenings_id_seq from anon;
+grant usage, select on sequence public.volunteer_screenings_id_seq to authenticated, service_role;
+
+-- Same stamping and status behaviour as phase 2 (the functions are
+-- unchanged; the triggers went with the old table).
+create trigger volunteer_screenings_stamp
+  before insert or update on public.volunteer_screenings
+  for each row execute function public.volunteer_screenings_stamp();
+
+create trigger volunteer_screenings_apply_outcome
+  after insert or update of outcome on public.volunteer_screenings
+  for each row execute function public.volunteer_screenings_apply_outcome();
+
+-- Recreated so they're compiled against the new table.
+create or replace function public.application_decline_recommended(p_application_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select public.can_record_screening(p_application_id) and coalesce((
+    select s.outcome = 'decline'
+      from public.volunteer_screenings s
+     where s.application_id = p_application_id
+     order by s.call_date desc, s.recorded_at desc
+     limit 1
+  ), false);
+$function$;
+
+create or replace function public.digest_screened_applications()
+returns table (id bigint, full_name text, chapters text[], screened_since timestamptz, decline_recommended boolean)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select a.id, a.full_name, a.chapters, a.status_changed_at,
+         coalesce((
+           select s.outcome = 'decline'
+             from public.volunteer_screenings s
+            where s.application_id = a.id
+            order by s.call_date desc, s.recorded_at desc
+            limit 1
+         ), false)
+    from public.volunteer_applications a
+   where a.status = 'screened'
+   order by a.status_changed_at;
+$function$;
+
+-- ---- 3. Practical instruction checks -------------------------------------------
+create or replace function public.can_record_practical_check(p_user_id uuid)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select public.is_admin() or coalesce((
+    select p.role = 'chapter_lead' and (
+      exists (
+        select 1 from public.volunteer_applications a
+         where a.user_id = p_user_id and a.chapters && p.led_chapters
+      )
+      or exists (
+        select 1 from public.rsvps r
+          join public.events e on e.id = r.event_id
+         where r.user_id = p_user_id and e.chapter = any(p.led_chapters)
+      )
+      or exists (
+        select 1 from public.volunteer_signups s
+          join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+          join public.events e on e.id = vo.event_id
+         where s.user_id = p_user_id and e.chapter = any(p.led_chapters)
+      )
+    )
+      from public.profiles p where p.id = auth.uid()
+  ), false);
+$function$;
+
+create table if not exists public.practical_instruction_checks (
+  id bigserial primary key,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  checked_on date not null,
+  assessor_name text not null check (btrim(assessor_name) <> ''),
+  outcome text not null check (outcome in ('passed', 'needs_work', 'not_ready')),
+  notes text,
+  recorded_by uuid references auth.users(id) on delete set null,
+  recorded_at timestamptz not null default now()
+);
+
+create index if not exists practical_instruction_checks_user_idx
+  on public.practical_instruction_checks (user_id, checked_on desc, recorded_at desc);
+
+alter table public.practical_instruction_checks enable row level security;
+
+drop policy if exists practical_instruction_checks_select on public.practical_instruction_checks;
+create policy practical_instruction_checks_select on public.practical_instruction_checks
+  for select to authenticated
+  using (public.can_record_practical_check(user_id));
+
+drop policy if exists practical_instruction_checks_insert on public.practical_instruction_checks;
+create policy practical_instruction_checks_insert on public.practical_instruction_checks
+  for insert to authenticated
+  with check (public.can_record_practical_check(user_id));
+-- No update or delete: a correction is a new check (the latest counts).
+
+revoke all on public.practical_instruction_checks from anon;
+revoke all on public.practical_instruction_checks from authenticated;
+grant select, insert on public.practical_instruction_checks to authenticated;
+grant all on public.practical_instruction_checks to service_role;
+revoke all on sequence public.practical_instruction_checks_id_seq from anon;
+grant usage, select on sequence public.practical_instruction_checks_id_seq to authenticated, service_role;
+
+create or replace function public.practical_instruction_checks_stamp()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  new.recorded_by := coalesce(auth.uid(), new.recorded_by);
+  new.recorded_at := now();
+  return new;
+end $function$;
+
+drop trigger if exists practical_instruction_checks_stamp on public.practical_instruction_checks;
+create trigger practical_instruction_checks_stamp
+  before insert on public.practical_instruction_checks
+  for each row execute function public.practical_instruction_checks_stamp();
+
+revoke all on function public.practical_instruction_checks_stamp() from public, anon, authenticated;
+
+-- The latest check's outcome, or null for none. Internal.
+create or replace function public.latest_practical_check_outcome(p_user_id uuid)
+returns text
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select c.outcome from public.practical_instruction_checks c
+   where c.user_id = p_user_id
+   order by c.checked_on desc, c.recorded_at desc
+   limit 1;
+$function$;
+
+-- ---- 4. The shift block ------------------------------------------------------------
+alter table public.volunteer_signups
+  add column if not exists practical_check_override_reason text,
+  add column if not exists practical_check_override_by uuid references auth.users(id) on delete set null,
+  add column if not exists practical_check_override_at timestamptz;
+
+create or replace function public.volunteer_signups_practical_check_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_needs_check boolean;
+  v_outcome text;
+  v_override text := nullif(btrim(coalesce(current_setting('ftgf.practical_check_override', true), '')), '');
+begin
+  if new.status <> 'confirmed' or (tg_op = 'UPDATE' and old.status = 'confirmed') then
+    return new;
+  end if;
+
+  select e.requires_health_history and rt.key in ('fishing_instructor', 'lead_fly_fishing_instructor')
+    into v_needs_check
+    from public.volunteer_opportunities vo
+    join public.events e on e.id = vo.event_id
+    left join public.volunteer_role_types rt on rt.id = vo.role_type_id
+   where vo.id = new.opportunity_id;
+  if not coalesce(v_needs_check, false) then
+    return new;
+  end if;
+
+  v_outcome := public.latest_practical_check_outcome(new.user_id);
+  if v_outcome = 'passed' then
+    return new;
+  end if;
+
+  if v_override is not null and public.is_admin() then
+    new.practical_check_override_reason := v_override;
+    new.practical_check_override_by := auth.uid();
+    new.practical_check_override_at := now();
+    return new;
+  end if;
+
+  raise exception '%', case
+    when auth.uid() is not null and new.user_id = auth.uid() then
+      'This shift is fishing instruction at a retreat or on-the-water event, which needs a practical instruction check first — 45 minutes on the water with an experienced instructor. Contact your chapter lead to set one up.'
+    when public.is_admin() then
+      'This person hasn''t passed a practical instruction check' ||
+        case when v_outcome is null then '' else ' (their latest check wasn''t a pass)' end ||
+        ', which instructor shifts at this event need. You can add them anyway with a reason.'
+    else
+      'This person hasn''t passed a practical instruction check' ||
+        case when v_outcome is null then '' else ' (their latest check wasn''t a pass)' end ||
+        ', which instructor shifts at this event need. Only an admin can override that.'
+  end
+  using errcode = 'P0001', hint = 'practical_check_required';
+end $function$;
+
+drop trigger if exists volunteer_signups_practical_check_guard on public.volunteer_signups;
+create trigger volunteer_signups_practical_check_guard
+  before insert or update of status on public.volunteer_signups
+  for each row execute function public.volunteer_signups_practical_check_guard();
+
+revoke all on function public.volunteer_signups_practical_check_guard() from public, anon, authenticated;
+
+-- Admin-only: the roster's Add volunteer, past the practical check, with a
+-- recorded reason. Everything else is admin_add_volunteer_signup as-is.
+create or replace function public.admin_add_volunteer_signup_with_override(
+  p_opportunity_id bigint,
+  p_user_id uuid,
+  p_force boolean,
+  p_reason text
+)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if not public.is_admin() then
+    raise exception 'Only an admin can override the practical instruction check' using errcode = '42501';
+  end if;
+  if coalesce(btrim(p_reason), '') = '' then
+    raise exception 'Give a reason for adding them without a passed practical check' using errcode = 'P0001';
+  end if;
+  perform set_config('ftgf.practical_check_override', btrim(p_reason), true);
+  return public.admin_add_volunteer_signup(p_opportunity_id, p_user_id, p_force);
+end $function$;
+
+-- ---- 5. Role types required at health-history events --------------------------------
+create or replace function public.volunteer_opportunities_role_type_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if new.role_type_id is null and new.cancelled_at is null and exists (
+    select 1 from public.events e where e.id = new.event_id and e.requires_health_history
+  ) then
+    raise exception 'Volunteer roles at an event that requires health history need a role type — choose one for "%"', new.role
+      using errcode = 'P0001';
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists volunteer_opportunities_role_type_guard on public.volunteer_opportunities;
+create trigger volunteer_opportunities_role_type_guard
+  before insert or update of role_type_id, event_id, cancelled_at on public.volunteer_opportunities
+  for each row execute function public.volunteer_opportunities_role_type_guard();
+
+revoke all on function public.volunteer_opportunities_role_type_guard() from public, anon, authenticated;
+
+-- ---- Function grants -------------------------------------------------------------
+revoke all on function public.can_record_practical_check(uuid) from public, anon;
+grant execute on function public.can_record_practical_check(uuid) to authenticated, service_role;
+revoke all on function public.latest_practical_check_outcome(uuid) from public, anon, authenticated;
+revoke all on function public.admin_add_volunteer_signup_with_override(bigint, uuid, boolean, text) from public, anon;
+grant execute on function public.admin_add_volunteer_signup_with_override(bigint, uuid, boolean, text) to authenticated;
+
+commit;

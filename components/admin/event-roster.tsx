@@ -26,6 +26,7 @@ import { RevealPanel } from "@/components/reveal-panel";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Select } from "@/components/ui/select";
 import { RegistrationFieldInput } from "@/components/registration-fields";
 import { HomeChapterField } from "@/components/chapter-select";
@@ -50,6 +51,9 @@ import type {
 } from "@/lib/admin/roster";
 import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
 import { RosterHealthLine, type RosterHealth } from "@/components/admin/roster-health";
+import { practicalCheckSummary, type PracticalCheck } from "@/lib/practical-checks";
+
+type LatestPracticalCheck = Pick<PracticalCheck, "outcome" | "checked_on" | "assessor_name">;
 
 const DIRECTORY_FIELD = REGISTRATION_SECTIONS.find((s) => s.id === "directory")!.fields[0];
 
@@ -94,6 +98,7 @@ export function EventRoster({
   shareCard,
   canSaveAsTemplate = false,
   health,
+  practicalChecks = null,
 }: {
   eventId: number;
   eventCard: EventCardEvent;
@@ -128,6 +133,10 @@ export function EventRoster({
   /** Health form status for everyone, markers only for a health-access
    * viewer (see RosterHealthLine). */
   health: RosterHealth;
+  /** Latest practical instruction check per volunteer on an instructor
+   * shift — only at an event that requires health history, and only for
+   * admins and chapter leads; null otherwise (nothing shown). */
+  practicalChecks?: Record<string, LatestPracticalCheck> | null;
 }) {
   const router = useRouter();
   const isCancelled = status === "cancelled";
@@ -261,8 +270,10 @@ export function EventRoster({
   // the walk-up capacity flow. Overrides already confirmed are remembered
   // (addVolunteerAcked) so a later check doesn't send the admin back to one.
   const [addVolunteerConfirm, setAddVolunteerConfirm] = useState<
-    "not_approved" | "has_rsvp" | "capacity" | null
+    "not_approved" | "has_rsvp" | "capacity" | "practical_check" | null
   >(null);
+  // An admin's reason for adding someone past a missing practical check.
+  const [practicalOverrideReason, setPracticalOverrideReason] = useState("");
   const [addVolunteerAcked, setAddVolunteerAcked] = useState<Set<string>>(() => new Set());
   // Their RSVP to attend, when the has_rsvp warning is showing.
   const [addVolunteerRsvpStatus, setAddVolunteerRsvpStatus] = useState<string | null>(null);
@@ -506,6 +517,7 @@ export function EventRoster({
     setAddVolunteerConfirm(null);
     setAddVolunteerAcked(new Set());
     setAddVolunteerError(null);
+    setPracticalOverrideReason("");
   };
 
   const closeAddVolunteerForm = () => {
@@ -518,6 +530,11 @@ export function EventRoster({
     setIsAddingVolunteer(true);
     setAddVolunteerError(null);
 
+    if (addVolunteerConfirm === "practical_check" && !practicalOverrideReason.trim()) {
+      setIsAddingVolunteer(false);
+      setAddVolunteerError("Give a reason for adding them without a passed practical check.");
+      return;
+    }
     const acked = new Set(addVolunteerAcked);
     if (addVolunteerConfirm) acked.add(addVolunteerConfirm);
     setAddVolunteerAcked(acked);
@@ -528,6 +545,7 @@ export function EventRoster({
       overrideApproval: acked.has("not_approved"),
       overrideRsvp: acked.has("has_rsvp"),
       forceCapacity: acked.has("capacity"),
+      practicalCheckOverrideReason: acked.has("practical_check") ? practicalOverrideReason : undefined,
     });
 
     setIsAddingVolunteer(false);
@@ -561,6 +579,17 @@ export function EventRoster({
     if (result.status === "capacity_exceeded") {
       setAddVolunteerConfirm("capacity");
       setAddVolunteerError("This shift is full.");
+      return;
+    }
+    if (result.status === "practical_check_required") {
+      // Chapter leads can't override — they just get the reason.
+      if (result.canOverride) {
+        setAddVolunteerConfirm("practical_check");
+      } else {
+        setAddVolunteerAcked(new Set());
+        setAddVolunteerConfirm(null);
+      }
+      setAddVolunteerError(result.message);
       return;
     }
 
@@ -842,6 +871,11 @@ export function EventRoster({
                     person={person}
                     answerSections={answerSections}
                     onToggleCheckIn={toggleVolunteerCheckIn}
+                    practicalCheck={
+                      practicalChecks && person.instructorShift
+                        ? { latest: practicalChecks[person.userId] ?? null }
+                        : null
+                    }
                     health={
                       <RosterHealthLine
                         eventId={eventId}
@@ -923,6 +957,20 @@ export function EventRoster({
                   >
                     {addVolunteerError}
                   </RevealPanel>
+                )}
+                {addVolunteerConfirm === "practical_check" && (
+                  <div className="grid gap-2">
+                    <Label htmlFor="add_volunteer_override_reason">Reason for adding them anyway</Label>
+                    <Textarea
+                      id="add_volunteer_override_reason"
+                      value={practicalOverrideReason}
+                      onChange={(e) => setPracticalOverrideReason(e.target.value)}
+                      placeholder="e.g. Assessed on the water last season before checks were recorded here"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Recorded on their shift with your name and the time.
+                    </p>
+                  </div>
                 )}
                 {(addVolunteerConfirm === "not_approved" || addVolunteerConfirm === "capacity") && (
                   <p className="text-sm text-amber-600">
@@ -1346,12 +1394,15 @@ function VolunteerRosterRow({
   answerSections,
   onToggleCheckIn,
   health,
+  practicalCheck,
 }: {
   person: VolunteerRosterPerson;
   /** The event's sections to show answers for (see rosterAnswerSections). */
   answerSections: RegistrationSection[];
   onToggleCheckIn: (person: VolunteerRosterPerson) => void;
   health: React.ReactNode;
+  /** Set only for an instructor shift where the viewer can see checks. */
+  practicalCheck: { latest: LatestPracticalCheck | null } | null;
 }) {
   const contact = [person.phone, person.email].filter(Boolean).join(" · ");
   const emergency = [person.emergencyContact, person.emergencyPhone].filter(Boolean).join(" · ");
@@ -1378,6 +1429,17 @@ function VolunteerRosterRow({
           }
           collectsDietary={answerSections.some((section) => section.id === "dietary")}
         />
+        {practicalCheck && (
+          <Link
+            href={`/protected/admin/practical-checks/${person.userId}`}
+            className={cn(
+              "w-fit text-sm underline underline-offset-4",
+              practicalCheck.latest?.outcome === "passed" ? "text-muted-foreground" : "font-medium text-amber-700 dark:text-amber-400",
+            )}
+          >
+            Practical check: {practicalCheckSummary(practicalCheck.latest)}
+          </Link>
+        )}
         {health}
       </div>
       <button

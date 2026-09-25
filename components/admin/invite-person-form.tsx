@@ -6,7 +6,7 @@ import Link from "next/link";
 import { HeartPulse, ShieldCheck } from "lucide-react";
 
 import { invitePersonAction } from "@/lib/actions/person-invite";
-import { ROLE_LABELS, type Role } from "@/lib/roles";
+import { ROLE_LABELS, SCREENING_FLAG_RULE, screeningFlagGrants, type Role } from "@/lib/roles";
 import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -163,7 +163,9 @@ export function InvitePersonForm() {
                     <ShieldCheck className="size-4 text-sky-600 dark:text-sky-400" aria-hidden />
                     Volunteer screening
                   </span>
-                  <span className="text-xs text-muted-foreground">Only takes effect for an admin.</span>
+                  <span className="text-xs text-muted-foreground">
+                    {screening ? screeningFlagGrants(role, chapters) : SCREENING_FLAG_RULE}
+                  </span>
                 </span>
               </label>
               <label className="flex items-start gap-2 rounded-md border border-rose-500/40 p-2 text-sm">

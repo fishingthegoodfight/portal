@@ -47,7 +47,11 @@ import { LeadContactFields } from "@/components/admin/fields/lead-contact-fields
 import { MarketingBoostField } from "@/components/admin/fields/marketing-boost-field";
 import { RequiresHealthHistoryField } from "@/components/admin/fields/requires-health-history-field";
 import { RegistrationSectionsFields } from "@/components/admin/fields/registration-sections-fields";
-import { VolunteerRoleFields, volunteerRoleErrors } from "@/components/admin/fields/volunteer-role-fields";
+import {
+  roleTypesForEvent,
+  VolunteerRoleFields,
+  volunteerRoleErrors,
+} from "@/components/admin/fields/volunteer-role-fields";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -59,7 +63,12 @@ const STEP_LABELS = ["Basics", "Details", "Volunteers", "Recurrence & marketing"
 
 type AdminPrefill = { leadName: string; leadEmail: string; leadPhone: string };
 
-export type ChapterEventRoleType = { id: number; name: string };
+export type ChapterEventRoleType = {
+  id: number;
+  name: string;
+  for_chapter_events?: boolean;
+  for_retreats?: boolean;
+};
 
 function emptyForm(prefill: AdminPrefill): CreateEventInput {
   return {
@@ -187,7 +196,7 @@ function step3Errors(form: CreateEventInput): string[] {
     errors.push('Add at least one volunteer role, or switch back to "No"');
   }
   form.volunteerRoles.forEach((role, i) => {
-    errors.push(...volunteerRoleErrors(role, role.title.trim() || `Role ${i + 1}`));
+    errors.push(...volunteerRoleErrors(role, role.title.trim() || `Role ${i + 1}`, 0, form.requiresHealthHistory));
   });
   return errors;
 }
@@ -953,7 +962,11 @@ export function EventCreateWizard({
                       idPrefix="create"
                       index={i}
                       role={role}
-                      roleTypes={roleTypes}
+                      roleTypes={roleTypesForEvent(
+                        roleTypes,
+                        form.requiresHealthHistory,
+                        new Set(role.roleTypeId ? [Number(role.roleTypeId)] : []),
+                      )}
                       onChange={(field, value) => updateRole(i, field, value)}
                     />
                   </div>

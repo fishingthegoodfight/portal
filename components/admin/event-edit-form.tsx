@@ -31,6 +31,7 @@ import { isVirtualChapter } from "@/lib/chapters";
 import { RegistrationSectionsFields } from "@/components/admin/fields/registration-sections-fields";
 import {
   VolunteerRoleFields,
+  roleTypesForEvent,
   volunteerRoleErrors,
   type VolunteerRoleTypeOption,
 } from "@/components/admin/fields/volunteer-role-fields";
@@ -251,7 +252,9 @@ export function EventEditForm({
       return;
     }
     const roleErrors = form.volunteerRoles.flatMap((role, i) =>
-      role.removal ? [] : volunteerRoleErrors(role, role.title.trim() || `Role ${i + 1}`, signedUp(role)),
+      role.removal
+        ? []
+        : volunteerRoleErrors(role, role.title.trim() || `Role ${i + 1}`, signedUp(role), form.requiresHealthHistory),
     );
     if (roleErrors.length > 0) {
       showFieldError("roles", roleErrors.join(". "));
@@ -632,7 +635,11 @@ export function EventEditForm({
                     idPrefix="edit"
                     index={i}
                     role={role}
-                    roleTypes={roleTypes}
+                    roleTypes={roleTypesForEvent(
+                      roleTypes,
+                      form.requiresHealthHistory,
+                      new Set(role.roleTypeId ? [Number(role.roleTypeId)] : []),
+                    )}
                     signedUp={count}
                     onChange={(field, value) => updateRole(i, { [field]: value })}
                   />

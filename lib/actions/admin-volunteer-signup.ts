@@ -24,6 +24,10 @@ export type AdminAddVolunteerResult =
    * 'offered'). Someone can't normally be both — adding them anyway is the
    * admin's call (overrideRsvp), and leaves the RSVP in place. */
   | { ok: true; status: "has_rsvp"; rsvpStatus: string }
+  /** An instructor shift at an event that requires health history, and
+   * they haven't passed a practical instruction check. Only an admin can
+   * add them anyway, with a recorded reason (practicalCheckOverrideReason). */
+  | { ok: true; status: "practical_check_required"; message: string; canOverride: boolean }
   | { ok: false; error: string };
 
 /**
@@ -43,6 +47,9 @@ export async function adminAddVolunteerSignupAction(input: {
   overrideApproval?: boolean;
   overrideRsvp?: boolean;
   forceCapacity?: boolean;
+  /** Admin only: add past a missing practical check, with this reason
+   * (recorded on the signup). */
+  practicalCheckOverrideReason?: string;
 }): Promise<AdminAddVolunteerResult> {
   const supabase = await createClient();
 
@@ -105,11 +112,23 @@ export async function adminAddVolunteerSignupAction(input: {
     if (rsvpStatus) return { ok: true, status: "has_rsvp", rsvpStatus };
   }
 
-  const { data, error } = await supabase.rpc("admin_add_volunteer_signup", {
-    p_opportunity_id: input.opportunityId,
-    p_user_id: userId,
-    p_force: input.forceCapacity ?? false,
-  });
+  const overrideReason = isAdmin ? input.practicalCheckOverrideReason?.trim() : undefined;
+  const { data, error } = overrideReason
+    ? await supabase.rpc("admin_add_volunteer_signup_with_override", {
+        p_opportunity_id: input.opportunityId,
+        p_user_id: userId,
+        p_force: input.forceCapacity ?? false,
+        p_reason: overrideReason,
+      })
+    : await supabase.rpc("admin_add_volunteer_signup", {
+        p_opportunity_id: input.opportunityId,
+        p_user_id: userId,
+        p_force: input.forceCapacity ?? false,
+      });
+  // The database's practical-check refusal (volunteer_signups_practical_check_guard).
+  if (error?.hint === "practical_check_required") {
+    return { ok: true, status: "practical_check_required", message: error.message, canOverride: isAdmin };
+  }
   if (error) {
     console.error(`[admin-volunteer] opportunity ${input.opportunityId}: add failed:`, error);
     return { ok: false, error: error.message };

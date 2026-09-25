@@ -204,6 +204,13 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
   for (const role of roles) {
     const roleTitle = role.title.trim();
     if (!roleTitle) return fail("Every volunteer role needs a title", 3, "roles");
+    if (input.requiresHealthHistory && !role.roleTypeId) {
+      return fail(
+        `"${roleTitle}" needs a role type — every volunteer role at an event that requires health history needs one`,
+        3,
+        "roles",
+      );
+    }
     const needed = Number(role.numberNeeded.trim());
     if (!Number.isFinite(needed) || needed < 1) {
       return fail(`"${roleTitle}" needs a number needed of at least 1`, 3, "roles");

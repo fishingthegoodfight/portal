@@ -58,7 +58,10 @@ async function VolunteerHomeLoader({
           <p className="rounded-md bg-accent p-3 text-sm">Thanks — your application is in.</p>
         )}
         {declinedHold ? (
-          <p className="text-sm text-muted-foreground">{APPLICATION_STATUS_FOR_APPLICANT.declined}</p>
+          <>
+            <p className="text-sm text-muted-foreground">{APPLICATION_STATUS_FOR_APPLICANT.declined}</p>
+            <ViewApplicationLink id={latest.id} />
+          </>
         ) : open ? (
           <>
             <p className="text-sm">
@@ -66,6 +69,7 @@ async function VolunteerHomeLoader({
               {formatDateInZone(open.submitted_at, "America/Denver")}):{" "}
               {APPLICATION_STATUS_FOR_APPLICANT[open.status]}
             </p>
+            <ViewApplicationLink id={open.id} />
             <WithdrawApplicationButton applicationId={open.id} />
           </>
         ) : (
@@ -342,5 +346,14 @@ export default function VolunteerHomePage({
         <VolunteerHomeLoader searchParams={searchParams} />
       </Suspense>
     </div>
+  );
+}
+
+/** To the applicant's own read-only application. */
+function ViewApplicationLink({ id }: { id: number }) {
+  return (
+    <Link href={`/protected/volunteer/application/${id}`} className="w-fit text-sm underline underline-offset-4">
+      View your application
+    </Link>
   );
 }

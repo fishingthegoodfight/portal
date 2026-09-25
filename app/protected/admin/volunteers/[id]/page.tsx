@@ -11,6 +11,8 @@ import { VolunteerRoleApprovals, type RoleTypeForApproval } from "@/components/a
 import { VolunteerAdminNotes } from "@/components/admin/volunteer-admin-notes";
 import { ResendInviteButton } from "@/components/admin/resend-invite-button";
 import { Badge } from "@/components/ui/badge";
+import { PracticalChecksPanel } from "@/components/admin/practical-checks-panel";
+import { loadPracticalChecks } from "@/lib/admin/practical-checks";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
@@ -38,6 +40,11 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
   });
   const latestHealthYear =
     ((healthYears ?? []) as { latest_year: number }[])[0]?.latest_year ?? null;
+
+  const [practical, { data: me }] = await Promise.all([
+    loadPracticalChecks(supabase, volunteerId),
+    supabase.from("profiles").select("first_name, last_name").eq("id", adminCheck.actor.userId).maybeSingle(),
+  ]);
 
   const [{ data: allRoleTypes }, { data: activeApprovals }, { data: certs }, { data: signatures }, screeningResult] =
     await Promise.all([
@@ -186,6 +193,21 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
               </div>
             ))
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Practical instruction check</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <PracticalChecksPanel
+            userId={volunteerId}
+            checks={practical.checks}
+            recorderNames={practical.recorderNames}
+            canRecord
+            defaultAssessor={[me?.first_name, me?.last_name].filter(Boolean).join(" ")}
+          />
         </CardContent>
       </Card>
 

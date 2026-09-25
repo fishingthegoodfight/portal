@@ -865,6 +865,18 @@ export async function updateEventAction(
     ),
   ];
   const roleErrors = rolePlans.flatMap((p) => p.errors);
+  // Every kept role needs a role type at an event that requires health
+  // history (the practical-check block keys on it) — including roles that
+  // were already there when the setting is turned on.
+  if (after.requires_health_history) {
+    for (const role of input.volunteerRoles) {
+      if (!role.removal && !role.roleTypeId) {
+        roleErrors.push(
+          `"${role.title.trim() || "A role"}" needs a role type — every volunteer role at an event that requires health history needs one`,
+        );
+      }
+    }
+  }
   if (roleErrors.length > 0) return { ok: false, error: roleErrors.join(". "), field: "roles" };
   const roleOps: RoleOp[] = rolePlans.flatMap((p) => p.ops);
 

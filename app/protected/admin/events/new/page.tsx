@@ -37,8 +37,9 @@ async function NewEventLoader() {
       supabase.from("profiles").select("first_name, last_name, email, phone").eq("id", userId).maybeSingle(),
       supabase
         .from("volunteer_role_types")
-        .select("id, name")
-        .eq("for_chapter_events", true)
+        // Chapter-event and retreat roles; the wizard offers retreat ones
+        // only when the event requires health history.
+        .select("id, name, for_chapter_events, for_retreats")
         .eq("active", true)
         .order("sort_order", { ascending: true }),
       supabase

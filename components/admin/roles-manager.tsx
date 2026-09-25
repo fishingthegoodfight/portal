@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { HeartPulse, ShieldCheck } from "lucide-react";
 
 import { setDataAccessAction, setUserRoleAction } from "@/lib/actions/roles";
-import { ROLE_LABELS, type Role } from "@/lib/roles";
+import { ROLE_LABELS, SCREENING_FLAG_RULE, screeningFlagGrants, type Role } from "@/lib/roles";
 import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -318,7 +318,6 @@ function DataAccessFlags({ person }: { person: RolePerson }) {
     router.refresh();
   };
 
-  const screeningInactive = flags.screening && person.role !== "admin";
 
   return (
     <div className="mt-3 grid gap-2 border-t pt-3 sm:grid-cols-2">
@@ -343,9 +342,9 @@ function DataAccessFlags({ person }: { person: RolePerson }) {
             </span>
           </span>
           <span className="text-xs text-muted-foreground">
-            {screeningInactive
-              ? "Inactive — only takes effect while they're an admin."
-              : "Screening notes in the volunteer registry. Only takes effect for an admin."}
+            {flags.screening
+              ? screeningFlagGrants(person.role, person.ledChapters)
+              : SCREENING_FLAG_RULE}
           </span>
         </span>
       </label>

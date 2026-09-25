@@ -9,7 +9,11 @@ import {
   AVAILABILITY_OPTIONS,
   BEGINNER_COMFORT_LABELS,
   EMPTY_APPLICATION,
+  interestAreaLabel,
+  RETREAT_COMMITMENTS,
+  RETREAT_QUESTION,
   type ApplicationInput,
+  type InterestArea,
   type YesNo,
 } from "@/lib/volunteer-applications";
 import { formatPhoneNumber } from "@/lib/phone";
@@ -21,8 +25,6 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
-export type RoleOption = { id: number; name: string; description: string | null };
-
 /**
  * The volunteer application. Name, email and phone start from the profile
  * and can be changed here (saved with the application; the profile isn't
@@ -32,11 +34,12 @@ export type RoleOption = { id: number; name: string; description: string | null 
 export function VolunteerApplicationForm({
   contact,
   chapterOptions,
-  roleOptions,
+  interestAreas,
 }: {
   contact: Pick<ApplicationInput, "fullName" | "email" | "phone">;
   chapterOptions: string[];
-  roleOptions: RoleOption[];
+  /** Active interest areas, in their Setup order. */
+  interestAreas: Pick<InterestArea, "id" | "label" | "description">[];
 }) {
   const router = useRouter();
   const [form, setForm] = useState<ApplicationInput>({ ...EMPTY_APPLICATION, ...contact });
@@ -130,32 +133,45 @@ export function VolunteerApplicationForm({
 
       <Card>
         <CardHeader>
-          <CardTitle>Roles</CardTitle>
+          <CardTitle>What you&apos;d like to help with</CardTitle>
         </CardHeader>
-        <CardContent className="flex flex-col gap-4">
+        <CardContent className="flex flex-col gap-5">
           <fieldset className="grid gap-2">
-            <legend className="mb-1 text-sm font-medium">Which roles are you interested in? (optional)</legend>
-            {roleOptions.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No roles listed right now — tell us below.</p>
-            ) : (
-              roleOptions.map((role) => (
-                <label key={role.id} className="flex items-start gap-2 text-sm">
-                  <Checkbox
-                    className="mt-0.5"
-                    checked={form.roleTypeIds.includes(role.id)}
-                    onCheckedChange={(c) =>
-                      setForm((prev) => ({ ...prev, roleTypeIds: toggle(prev.roleTypeIds, role.id, c === true) }))
-                    }
-                  />
-                  <span>
-                    {role.name}
-                    {role.description && <span className="block text-xs text-muted-foreground">{role.description}</span>}
-                  </span>
-                </label>
-              ))
-            )}
+            <legend className="mb-1 text-sm font-medium">What are you interested in helping with?</legend>
+            {interestAreas.map((area) => (
+              <label key={area.id} className="flex items-start gap-2 text-sm">
+                <Checkbox
+                  className="mt-0.5"
+                  checked={form.interestAreaIds.includes(area.id)}
+                  onCheckedChange={(c) =>
+                    setForm((prev) => ({ ...prev, interestAreaIds: toggle(prev.interestAreaIds, area.id, c === true) }))
+                  }
+                />
+                {interestAreaLabel(area)}
+              </label>
+            ))}
+            <p className="text-xs text-muted-foreground">
+              Pick as many as you like — we&apos;ll talk about specific roles later.
+            </p>
           </fieldset>
-          <YesNoField name="app_retreats" label="Are you interested in volunteering at retreats?" value={form.interestedInRetreats} onChange={setYesNo("interestedInRetreats")} />
+          <div className="border-t pt-4">
+            <YesNoField name="app_retreats" label={RETREAT_QUESTION} value={form.interestedInRetreats} onChange={setYesNo("interestedInRetreats")} />
+            {form.interestedInRetreats === "true" && (
+              <fieldset className="mt-4 grid gap-2 rounded-md border bg-muted/40 p-3">
+                <legend className="px-1 text-sm font-medium">What retreat volunteering involves — tick each to confirm</legend>
+                {RETREAT_COMMITMENTS.map((c) => (
+                  <label key={c.key} className="flex items-start gap-2 text-sm">
+                    <Checkbox
+                      className="mt-0.5"
+                      checked={form[c.key]}
+                      onCheckedChange={(v) => setForm((prev) => ({ ...prev, [c.key]: v === true }))}
+                    />
+                    {c.label}
+                  </label>
+                ))}
+              </fieldset>
+            )}
+          </div>
         </CardContent>
       </Card>
 
@@ -166,8 +182,15 @@ export function VolunteerApplicationForm({
         <CardContent className="flex flex-col gap-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <Field id="app_years" label="Years fly fishing" value={form.yearsFlyFishing} onChange={onText("yearsFlyFishing")} />
-            <Field id="app_water" label="What water do you fish most?" value={form.waterFished} onChange={onText("waterFished")} />
+            <Field
+              id="app_how_often"
+              label="How often do you fish now?"
+              value={form.fishingFrequency}
+              onChange={onText("fishingFrequency")}
+              placeholder="e.g. A couple of times a month"
+            />
           </div>
+          <Field id="app_water" label="What water do you fish most?" value={form.waterFished} onChange={onText("waterFished")} />
           <YesNoField name="app_taught" label="Have you taught or guided anyone?" value={form.hasTaughtOrGuided} onChange={setYesNo("hasTaughtOrGuided")} />
           {form.hasTaughtOrGuided === "true" && (
             <Area id="app_taught_details" label="Tell us about it" value={form.taughtDetails} onChange={onText("taughtDetails")} />

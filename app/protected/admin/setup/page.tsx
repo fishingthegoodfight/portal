@@ -30,6 +30,11 @@ const SETUP_LINKS = [
     description: "How many events someone attends before a screening call, and the link applicants use to book one.",
   },
   {
+    href: "/protected/admin/setup/interest-areas",
+    title: "Interest areas",
+    description: "The plain-language “What are you interested in helping with?” choices on the volunteer application. Separate from role types.",
+  },
+  {
     href: "/protected/admin/volunteers/roles",
     title: "Volunteer role types",
     description: "The catalog of roles volunteers can be approved for and events can ask for.",

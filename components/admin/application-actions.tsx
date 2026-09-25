@@ -34,6 +34,7 @@ export function ApplicationActions({
   isAdmin,
   hasSchedulingUrl,
   reapplicationAllowed,
+  declineRecommended = false,
 }: {
   applicationId: number;
   status: ApplicationStatus;
@@ -42,6 +43,9 @@ export function ApplicationActions({
   isAdmin: boolean;
   hasSchedulingUrl: boolean;
   reapplicationAllowed: boolean;
+  /** The latest screening call recommends declining — only ever true for
+   * someone who can see screenings. */
+  declineRecommended?: boolean;
 }) {
   const router = useRouter();
   const [pending, setPending] = useState<Pending>(null);
@@ -132,9 +136,20 @@ export function ApplicationActions({
         </div>
       )}
 
+      {declineRecommended && (
+        <p className="rounded-md border border-red-500/50 bg-red-500/5 p-2 text-sm">
+          The latest screening call recommends declining.{" "}
+          {isAdmin ? "Decline below if you agree." : "An admin will decide."}
+        </p>
+      )}
       <div className="flex flex-wrap gap-2">
         {isAdmin && (
-          <Button type="button" variant="outline" disabled={busy} onClick={() => setPending("decline")}>
+          <Button
+            type="button"
+            variant={declineRecommended ? "destructive" : "outline"}
+            disabled={busy}
+            onClick={() => setPending("decline")}
+          >
             Decline
           </Button>
         )}

@@ -89,9 +89,10 @@ export default function AdminRolesPage({ searchParams }: { searchParams: Promise
           setup, the volunteer registry, approvals, or roles. Admins can do everything.
         </p>
         <p className="mt-2 text-sm text-muted-foreground">
-          Sensitive data is separate from role: each person&apos;s row shows whether they can see
-          volunteer screening notes or health histories. Neither widens what they can reach —
-          they only unlock that data within it.
+          Sensitive data is separate from role: each person&apos;s row shows whether they have
+          volunteer screening (the registry&apos;s screening notes for admins; screening calls on
+          the applications they can see) or health histories. Neither widens what they can reach
+          — they only unlock that data within it, and each row says what it grants that person.
         </p>
       </div>
       <InvitePersonForm />

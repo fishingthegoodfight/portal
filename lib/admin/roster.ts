@@ -95,6 +95,9 @@ export type RosterDietary = {
 export type VolunteerRosterPerson = {
   signupId: number;
   userId: string;
+  /** Their shift is a Fishing Instructor / Lead Fly Fishing Instructor role
+   * — the ones the practical instruction check applies to. */
+  instructorShift: boolean;
   opportunityId: number;
   role: string;
   /** Pre-formatted in the event's own timezone. */
@@ -309,20 +312,26 @@ export async function loadEventRoster(
   // profiles(id), not auth.users(id) independently, so PostgREST can walk it.
   const { data: opportunityRows } = await supabase
     .from("volunteer_opportunities")
-    .select("id, role, shift_start, shift_end, slots, slots_taken")
+    .select("id, role, shift_start, shift_end, slots, slots_taken, role_type:volunteer_role_types(key)")
     .eq("event_id", eventId)
     // A cancelled role (edit form, "Cancel role") has no signups left and
     // isn't offered any more.
     .is("cancelled_at", null);
 
-  const opportunities = (opportunityRows ?? []) as {
+  const opportunities = (opportunityRows ?? []) as unknown as {
     id: number;
     role: string;
     shift_start: string;
     shift_end: string;
     slots: number;
     slots_taken: number;
+    role_type: { key: string } | null;
   }[];
+  const instructorOpportunities = new Set(
+    opportunities
+      .filter((o) => ["fishing_instructor", "lead_fly_fishing_instructor"].includes(o.role_type?.key ?? ""))
+      .map((o) => o.id),
+  );
 
   const volunteerRoles: VolunteerRoleSummary[] = opportunities.map((o) => ({
     opportunityId: o.id,
@@ -359,6 +368,7 @@ export async function loadEventRoster(
       return {
         signupId: s.id,
         userId: (s.profile?.id as string | undefined) ?? "",
+        instructorShift: instructorOpportunities.has(s.opportunity_id),
         opportunityId: s.opportunity_id,
         role: roleByOpportunity.get(s.opportunity_id) ?? "",
         shiftLabel: shiftLabelByOpportunity.get(s.opportunity_id) ?? "",

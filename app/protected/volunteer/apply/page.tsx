@@ -11,7 +11,7 @@ import {
   CLOSED_STATUSES,
   type ApplicationStatus,
 } from "@/lib/volunteer-applications";
-import { VolunteerApplicationForm, type RoleOption } from "@/components/volunteer-application-form";
+import { VolunteerApplicationForm } from "@/components/volunteer-application-form";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 const CHAPTER_OPTIONS = [...CHAPTERS.map((c) => c.name), VIRTUAL_CHAPTER];
@@ -57,10 +57,14 @@ async function ApplyLoader() {
     );
   }
 
-  const [{ data: profile }, { data: roles }, { data: attendedRows }, { data: total }, { data: settings }] =
+  const [{ data: profile }, { data: interestAreas }, { data: attendedRows }, { data: total }, { data: settings }] =
     await Promise.all([
       supabase.from("profiles").select("first_name, last_name, email, phone").eq("id", userId).maybeSingle(),
-      supabase.rpc("volunteer_application_role_options"),
+      supabase
+        .from("volunteer_interest_areas")
+        .select("id, label, description")
+        .eq("active", true)
+        .order("sort_order", { ascending: true }),
       supabase
         .from("rsvps")
         .select("event:events(id, name, starts_at, timezone)")
@@ -111,7 +115,7 @@ async function ApplyLoader() {
 
       <VolunteerApplicationForm
         chapterOptions={CHAPTER_OPTIONS}
-        roleOptions={((roles ?? []) as RoleOption[]).map((r) => ({ id: r.id, name: r.name, description: r.description }))}
+        interestAreas={(interestAreas ?? []) as { id: number; label: string; description: string | null }[]}
         contact={{
           fullName: [profile?.first_name, profile?.last_name].filter(Boolean).join(" "),
           email: (profile?.email as string | null) ?? (data.claims.email as string | undefined) ?? "",

@@ -84,6 +84,38 @@ export const BEGINNER_COMFORT_LABELS: Record<number, string> = {
 
 export type YesNo = "true" | "false" | "";
 
+/** Kept apart from the interest list: it's what decides whether the
+ * screening call covers retreats and on-the-water instruction. */
+export const RETREAT_QUESTION =
+  "Are you interested in volunteering at retreats? New retreat volunteers start as fishing instructors, working with participants on the water.";
+
+/** Shown only when they answer yes to retreats; each must be ticked to
+ * apply. Up front on the application, so nobody first hears them on the
+ * call. Stored as ack_* columns, in this order. */
+export const RETREAT_COMMITMENTS = [
+  { key: "ackRetreatCommitment", column: "ack_retreat_commitment", label: "The commitment is the full weekend, plus annual training and a briefing the week of the retreat" },
+  { key: "ackStayOnsite", column: "ack_stay_onsite", label: "Volunteers stay on-site for the whole retreat" },
+  { key: "ackSharedRooms", column: "ack_shared_rooms", label: "Bedrooms are shared" },
+  { key: "ackWeather", column: "ack_weather", label: "Wading and being outdoors in whatever weather we get" },
+] as const;
+export type RetreatCommitmentKey = (typeof RETREAT_COMMITMENTS)[number]["key"];
+
+/** A row of volunteer_interest_areas — the plain-language "what are you
+ * interested in helping with?" list, admin-editable in Setup and separate
+ * from role types (roles are picked at approval). */
+export type InterestArea = {
+  id: number;
+  key: string;
+  label: string;
+  description: string | null;
+  sort_order: number;
+  active: boolean;
+};
+
+export function interestAreaLabel(area: Pick<InterestArea, "label" | "description">): string {
+  return area.description ? `${area.label} — ${area.description}` : area.label;
+}
+
 /** The form while it's being filled in. */
 export type ApplicationInput = {
   fullName: string;
@@ -95,9 +127,14 @@ export type ApplicationInput = {
   whyVolunteer: string;
   hopeToGet: string;
   missionConnection: string;
-  roleTypeIds: number[];
+  interestAreaIds: number[];
   interestedInRetreats: YesNo;
+  ackRetreatCommitment: boolean;
+  ackStayOnsite: boolean;
+  ackSharedRooms: boolean;
+  ackWeather: boolean;
   yearsFlyFishing: string;
+  fishingFrequency: string;
   waterFished: string;
   hasTaughtOrGuided: YesNo;
   taughtDetails: string;
@@ -134,9 +171,14 @@ export const EMPTY_APPLICATION: ApplicationInput = {
   whyVolunteer: "",
   hopeToGet: "",
   missionConnection: "",
-  roleTypeIds: [],
+  interestAreaIds: [],
   interestedInRetreats: "",
+  ackRetreatCommitment: false,
+  ackStayOnsite: false,
+  ackSharedRooms: false,
+  ackWeather: false,
   yearsFlyFishing: "",
+  fishingFrequency: "",
   waterFished: "",
   hasTaughtOrGuided: "",
   taughtDetails: "",
@@ -184,9 +226,14 @@ export function applicationErrors(input: ApplicationInput, chapterNames: string[
   if (blank(input.whyVolunteer)) errors.push("Tell us why you want to volunteer");
   if (blank(input.hopeToGet)) errors.push("Tell us what you hope to get out of it");
 
-  if (unanswered(input.interestedInRetreats)) errors.push("Answer whether you're interested in retreats");
+  if (input.interestAreaIds.length === 0) errors.push("Pick at least one thing you're interested in helping with");
+  if (unanswered(input.interestedInRetreats)) errors.push("Answer whether you're interested in volunteering at retreats");
+  if (input.interestedInRetreats === "true" && RETREAT_COMMITMENTS.some((c) => !input[c.key])) {
+    errors.push("Tick each retreat commitment to apply for retreat volunteering");
+  }
 
   if (blank(input.yearsFlyFishing)) errors.push("Tell us how many years you've been fly fishing");
+  if (blank(input.fishingFrequency)) errors.push("Tell us how often you fish now");
   if (blank(input.waterFished)) errors.push("Tell us what water you fish most");
   if (unanswered(input.hasTaughtOrGuided)) errors.push("Answer whether you've taught or guided anyone");
   else if (input.hasTaughtOrGuided === "true" && blank(input.taughtDetails)) {
@@ -253,9 +300,19 @@ export type ApplicationRecord = {
   why_volunteer: string;
   hope_to_get: string;
   mission_connection: string | null;
-  role_type_ids: number[];
+  interest_area_ids: number[];
+  /** Role types picked on the phase 1 form, before interest areas — kept
+   * for reference, never written now. Reviewer-only. */
+  legacy_role_type_ids?: number[];
   interested_in_retreats: boolean;
+  /** Null on applications from before these were asked. */
+  ack_retreat_commitment: boolean | null;
+  ack_stay_onsite: boolean | null;
+  ack_shared_rooms: boolean | null;
+  ack_weather: boolean | null;
   years_fly_fishing: string;
+  /** Null on applications from before this was asked. */
+  fishing_frequency: string | null;
   water_fished: string;
   has_taught_or_guided: boolean;
   taught_details: string | null;

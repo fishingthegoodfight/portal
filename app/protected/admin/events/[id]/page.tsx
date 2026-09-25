@@ -13,6 +13,7 @@ import { ShareEventCard } from "@/components/admin/share-event-card";
 import { publicEventPath } from "@/lib/event-slug";
 import { getSiteUrl } from "@/lib/site-url";
 import { loadHealthMarkers, loadHealthStatus } from "@/lib/health-access";
+import { loadLatestPracticalChecks } from "@/lib/admin/practical-checks";
 
 async function AdminEventLoader({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -36,6 +37,17 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
     notFound();
   }
   const { event, roster, waitlist, waiver, dietary, volunteerRoles, volunteerRoster } = data;
+  // Practical instruction checks for instructor shifts at an event that
+  // requires health history — shown to admins and chapter leads (the people
+  // who can record one; RLS returns only what they may see).
+  const showPracticalChecks =
+    event.requires_health_history && (access?.role === "admin" || access?.role === "chapter_lead");
+  const practicalChecks = showPracticalChecks
+    ? await loadLatestPracticalChecks(
+        supabase,
+        volunteerRoster.filter((v) => v.instructorShift).map((v) => v.userId),
+      )
+    : null;
   const offeredCount = waitlist.filter((w) => w.status === "offered").length;
   // Only needed for the restore dialog — shifts don't come back on restore.
   const volunteersCancelledWithEvent =
@@ -73,6 +85,16 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
         seriesId={event.series_id}
         volunteersCancelledWithEvent={volunteersCancelledWithEvent}
         canSaveAsTemplate={access?.isAdmin ?? false}
+        practicalChecks={
+          practicalChecks
+            ? Object.fromEntries(
+                Object.entries(practicalChecks).map(([userId, c]) => [
+                  userId,
+                  { outcome: c.outcome, checked_on: c.checked_on, assessor_name: c.assessor_name },
+                ]),
+              )
+            : null
+        }
         health={{
           status: Object.fromEntries(healthStatus),
           markers: healthMarkers ? Object.fromEntries(healthMarkers) : null,

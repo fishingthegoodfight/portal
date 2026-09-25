@@ -35,8 +35,12 @@ export async function submitVolunteerApplicationAction(input: ApplicationInput):
   const errors = applicationErrors(input, CHAPTER_NAMES);
   if (errors.length > 0) return { ok: false, error: errors[0] };
 
-  const { data: roleOptions } = await supabase.rpc("volunteer_application_role_options");
-  const validRoleIds = new Set(((roleOptions ?? []) as { id: number }[]).map((r) => r.id));
+  const { data: areas } = await supabase.from("volunteer_interest_areas").select("id").eq("active", true);
+  const validAreaIds = new Set(((areas ?? []) as { id: number }[]).map((a) => a.id));
+  const interestAreaIds = [...new Set(input.interestAreaIds)].filter((id) => validAreaIds.has(id));
+  if (interestAreaIds.length === 0) {
+    return { ok: false, error: "Pick at least one thing you're interested in helping with" };
+  }
 
   const { error } = await supabase.from("volunteer_applications").insert({
     user_id: claims.claims.sub as string,
@@ -52,8 +56,13 @@ export async function submitVolunteerApplicationAction(input: ApplicationInput):
     why_volunteer: input.whyVolunteer.trim(),
     hope_to_get: input.hopeToGet.trim(),
     mission_connection: text(input.missionConnection),
-    role_type_ids: [...new Set(input.roleTypeIds)].filter((id) => validRoleIds.has(id)),
+    interest_area_ids: interestAreaIds,
     interested_in_retreats: yes(input.interestedInRetreats),
+    ack_retreat_commitment: yes(input.interestedInRetreats) ? input.ackRetreatCommitment : null,
+    ack_stay_onsite: yes(input.interestedInRetreats) ? input.ackStayOnsite : null,
+    ack_shared_rooms: yes(input.interestedInRetreats) ? input.ackSharedRooms : null,
+    ack_weather: yes(input.interestedInRetreats) ? input.ackWeather : null,
+    fishing_frequency: input.fishingFrequency.trim(),
     years_fly_fishing: input.yearsFlyFishing.trim(),
     water_fished: input.waterFished.trim(),
     has_taught_or_guided: yes(input.hasTaughtOrGuided),

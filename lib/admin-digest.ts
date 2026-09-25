@@ -13,6 +13,9 @@ type AdminClient = ReturnType<typeof createAdminClient>;
  *
  * To add a section (phase 3: pending reference checks), write another
  * DigestSource and add it to DIGEST_SOURCES in the order it should appear.
+ * A source whose items should be listed only once (a new arrival) marks them
+ * in markSent; one that's a standing reminder (still waiting on someone)
+ * leaves markSent empty and is listed every day until it's dealt with.
  */
 export type DigestSource = (admin: AdminClient) => Promise<{
   section: AdminDigestSection;
@@ -55,5 +58,61 @@ const readyApplications: DigestSource = async (admin) => {
   };
 };
 
+type ScreenedRow = {
+  id: number;
+  full_name: string;
+  chapters: string[];
+  screened_since: string;
+  decline_recommended: boolean;
+};
+
+async function loadScreened(admin: AdminClient): Promise<ScreenedRow[]> {
+  const { data, error } = await admin.rpc("digest_screened_applications");
+  if (error) throw new Error(`digest_screened_applications: ${error.message}`);
+  return (data ?? []) as ScreenedRow[];
+}
+
+function daysSince(iso: string): string {
+  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000);
+  return days <= 0 ? "since today" : `for ${days} ${days === 1 ? "day" : "days"}`;
+}
+
+/** Screened applications whose latest call recommends declining — only an
+ * admin can decline. Listed every day until actioned. Never says what the
+ * outcome was: recipients may not have the screening flag. */
+const screeningDecisions: DigestSource = async (admin) => {
+  const rows = (await loadScreened(admin)).filter((r) => r.decline_recommended);
+  return {
+    section: {
+      title: "Screening calls needing an admin decision",
+      intro: "Open each one to see the screening call (needs volunteer-screening access).",
+      items: rows.map((row) => ({
+        label: row.full_name,
+        detail: `${row.chapters.join(", ")} · screened ${daysSince(row.screened_since)}`,
+        url: `${getSiteUrl()}/protected/admin/applications/${row.id}`,
+      })),
+    },
+    markSent: async () => {},
+  };
+};
+
+/** Screened and waiting on references — so nothing stalls after the call.
+ * Listed every day while it applies. Phase 3 (reference checks) extends
+ * this same pattern. */
+const screenedAwaitingReferences: DigestSource = async (admin) => {
+  const rows = (await loadScreened(admin)).filter((r) => !r.decline_recommended);
+  return {
+    section: {
+      title: "Screened, references not sent yet",
+      items: rows.map((row) => ({
+        label: row.full_name,
+        detail: `${row.chapters.join(", ")} · screened ${daysSince(row.screened_since)}`,
+        url: `${getSiteUrl()}/protected/admin/applications/${row.id}`,
+      })),
+    },
+    markSent: async () => {},
+  };
+};
+
 /** In the order the sections appear — most pressing first. */
-export const DIGEST_SOURCES: DigestSource[] = [readyApplications];
+export const DIGEST_SOURCES: DigestSource[] = [readyApplications, screeningDecisions, screenedAwaitingReferences];

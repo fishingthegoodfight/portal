@@ -6,7 +6,29 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
-export type VolunteerRoleTypeOption = { id: number; name: string };
+export type VolunteerRoleTypeOption = {
+  id: number;
+  name: string;
+  /** Retreat roles (e.g. Fishing Instructor) are only offered at an event
+   * that requires health history — see roleTypesForEvent. */
+  for_retreats?: boolean;
+  for_chapter_events?: boolean;
+};
+
+/** The role types an event's form offers: chapter-event roles always, and
+ * retreat roles too when the event requires health history (retreats,
+ * fish-a-longs — where instructor shifts and the practical check apply).
+ * `keepIds` stay offered whatever they are, so saving never drops a type a
+ * role already uses. */
+export function roleTypesForEvent(
+  roleTypes: VolunteerRoleTypeOption[],
+  requiresHealthHistory: boolean,
+  keepIds: Set<number> = new Set(),
+): VolunteerRoleTypeOption[] {
+  return roleTypes.filter(
+    (rt) => rt.for_chapter_events || (requiresHealthHistory && rt.for_retreats) || keepIds.has(rt.id),
+  );
+}
 
 /** One volunteer role's fields — shared by the create wizard's Volunteers
  * step and the edit form's Volunteer roles section. The caller renders the
@@ -153,9 +175,20 @@ export function RoleDescriptionField({
 
 /** Per-role problems, same rules for create and edit (the server actions
  * re-check them). `label` names the role in each message. */
-export function volunteerRoleErrors(role: VolunteerRoleInput, label: string, signedUp = 0): string[] {
+export function volunteerRoleErrors(
+  role: VolunteerRoleInput,
+  label: string,
+  signedUp = 0,
+  /** At an event that requires health history every role needs a role
+   * type — a free-text role there would slip past the practical-check
+   * block (volunteer_opportunities_role_type_guard enforces it too). */
+  requireRoleType = false,
+): string[] {
   const errors: string[] = [];
   if (!role.title.trim()) errors.push(`${label}: title is required`);
+  if (requireRoleType && !role.roleTypeId) {
+    errors.push(`${label}: choose a role type — every volunteer role at an event that requires health history needs one`);
+  }
   const needed = Number(role.numberNeeded.trim());
   if (!role.numberNeeded.trim() || !Number.isInteger(needed) || needed < 1) {
     errors.push(`${label}: number needed must be at least 1`);

@@ -43,7 +43,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
       .order("sort_order", { ascending: true }),
     supabase
       .from("volunteer_role_types")
-      .select("id, name, for_chapter_events, active")
+      .select("id, name, for_chapter_events, for_retreats, active")
       .order("sort_order", { ascending: true }),
     loadActiveRoles(supabase, [eventId]),
     loadManageableChapters(supabase, [...CHAPTERS.map((c) => c.name), VIRTUAL_CHAPTER]),
@@ -62,12 +62,18 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
     ? toZonedDateTimeInputs(new Date(event.ends_at), timezone).time
     : "";
 
-  // Same offer as the create wizard (active, chapter-event role types), plus
-  // any type a role here already uses, so saving never silently drops it.
+  // Active role types plus any a role here already uses, so saving never
+  // silently drops it; the form narrows them to what the event offers
+  // (roleTypesForEvent — retreat roles only when it requires health history).
   const usedRoleTypeIds = new Set(roles.map((r) => r.role_type_id));
   const roleTypeOptions = (roleTypes ?? [])
-    .filter((rt) => (rt.for_chapter_events && rt.active) || usedRoleTypeIds.has(rt.id as number))
-    .map((rt) => ({ id: rt.id as number, name: rt.name as string }));
+    .filter((rt) => rt.active || usedRoleTypeIds.has(rt.id as number))
+    .map((rt) => ({
+      id: rt.id as number,
+      name: rt.name as string,
+      for_chapter_events: Boolean(rt.for_chapter_events),
+      for_retreats: Boolean(rt.for_retreats),
+    }));
 
   return (
     <EventEditForm
