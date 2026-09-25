@@ -23,6 +23,7 @@ import {
   TitleField,
 } from "@/components/admin/fields/event-text-fields";
 import { LeadContactFields } from "@/components/admin/fields/lead-contact-fields";
+import { MarketingBoostField } from "@/components/admin/fields/marketing-boost-field";
 import { LocationFields } from "@/components/admin/fields/location-fields";
 import { VirtualEventFields } from "@/components/admin/fields/virtual-event-fields";
 import { isVirtualChapter } from "@/lib/chapters";
@@ -66,13 +67,14 @@ const FIELD_INPUT_IDS: Partial<Record<EventFormField, string>> = {
   capacity: "capacity",
   lead: "lead_name",
   custom_note: "custom_note",
+  boost: "boost",
 };
 
 /** Fields with a problemFor(...) slot in the form below. */
 const FIELDS_WITH_SLOTS = new Set<EventFormField>([
   "chapter", "event_type", "template", "title", "slug", "date", "time", "timezone",
   "venue", "street", "city", "state", "postal_code", "virtual_link", "description",
-  "occurrence_note", "capacity", "lead", "custom_note", "sections", "roles",
+  "occurrence_note", "capacity", "lead", "custom_note", "sections", "roles", "boost",
 ]);
 
 /** Every rule the database also enforces that can be checked here, so a
@@ -102,7 +104,7 @@ function fieldProblem(form: EventEditInput): { field: EventFormField; message: s
   return null;
 }
 
-type StringField = Exclude<keyof EventEditInput, "registrationSections" | "volunteerRoles">;
+type StringField = Exclude<keyof EventEditInput, "registrationSections" | "volunteerRoles" | "boostTier1">;
 
 function emptyRole(): EditableVolunteerRole {
   return {
@@ -488,6 +490,23 @@ export function EventEditForm({
             <p className="text-sm text-muted-foreground">
               Waiver: {waiverLabel ?? "not set (this chapter has no waiver state)"}
             </p>
+
+            <MarketingBoostField
+              idPrefix="edit"
+              checked={form.boostTier1}
+              onChange={(checked) => edit((prev) => ({ ...prev, boostTier1: checked }))}
+              disabledReason={
+                allowedChapters.includes(form.chapter)
+                  ? undefined
+                  : `Only an admin or a chapter lead for ${form.chapter || "this chapter"} can change this.`
+              }
+              note={
+                seriesId
+                  ? "Applies to this occurrence only — never the rest of the series, even when you save changes to all future events."
+                  : undefined
+              }
+            />
+            {problemFor("boost")}
           </CardContent>
         </Card>
 

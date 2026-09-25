@@ -84,10 +84,13 @@ type EventRow = {
   series_id: string | null;
   /** The public URL's /events/<slug> — see lib/event-slug.ts. */
   slug: string;
+  /** 1 (most marketing) – 3 (least), or null. Only ever this occurrence's
+   * own — never carried across a series. */
+  marketing_tier: number | null;
 };
 
 const EVENT_COLUMNS =
-  "id, slug, name, event_type, description, occurrence_note, location, venue_name, street_address, city, state, postal_code, virtual_link, virtual_access_notes, capacity, lead_name, lead_user_id, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason, cancelled_at, series_id";
+  "id, slug, name, event_type, description, occurrence_note, location, venue_name, street_address, city, state, postal_code, virtual_link, virtual_access_notes, capacity, lead_name, lead_user_id, lead_phone, lead_email, custom_email_note, registration_sections, chapter, waiver_state, starts_at, ends_at, timezone, ics_sequence, status, cancellation_reason, cancelled_at, series_id, marketing_tier";
 
 async function loadEvent(
   supabase: SupabaseServerClient,
@@ -344,6 +347,9 @@ export type EventEditInput = {
   /** Every active role the form loaded, plus any added — see
    * EditableVolunteerRole for delete/cancel marks. */
   volunteerRoles: EditableVolunteerRole[];
+  /** Tier 1 marketing for this occurrence only, whatever the series scope.
+   * Only an admin or the chapter's lead may change it. */
+  boostTier1: boolean;
 };
 
 /** How far an edit reaches, for an event in a series. "future" carries only
@@ -576,6 +582,8 @@ function eventUpdateColumns(row: EventRow, icsSequence: number) {
     // Unchanged for every row but the one being edited (later occurrences
     // keep their own); the events_slug_guard trigger retires a changed one.
     slug: row.slug,
+    // Likewise: a boost never reaches past the occurrence it was set on.
+    marketing_tier: row.marketing_tier,
     ics_sequence: icsSequence,
     updated_at: new Date().toISOString(),
   };
@@ -750,7 +758,44 @@ export async function updateEventAction(
     ends_at: newEnds ? newEnds.toISOString() : null,
     timezone: input.timezone,
     slug,
+    // Unticking clears Tier 1; a tier 2/3 set some other way is left alone.
+    marketing_tier: input.boostTier1 ? 1 : before.marketing_tier === 1 ? null : before.marketing_tier,
   };
+
+  // Tier 1 boost: only an admin or the chapter's lead may change it, and one
+  // Tier 1 event per chapter per month — checked now, before any warnings,
+  // so the refusal names the event already holding the month.
+  // events_marketing_guard enforces both again on save.
+  if (after.marketing_tier !== before.marketing_tier) {
+    const { data: canBoost } = await supabase.rpc("can_manage_chapter", { p_chapter: after.chapter });
+    if (!canBoost) {
+      return {
+        ok: false,
+        error: "Only an admin or a chapter lead for this chapter can change the marketing boost",
+        field: "boost",
+      };
+    }
+  }
+  if (
+    after.marketing_tier === 1 &&
+    after.status !== "cancelled" &&
+    (before.marketing_tier !== 1 ||
+      before.chapter !== after.chapter ||
+      before.starts_at !== after.starts_at ||
+      before.timezone !== after.timezone)
+  ) {
+    const { data: conflict, error: conflictError } = await supabase.rpc("tier1_boost_conflict_message", {
+      p_event_id: eventId,
+      p_chapter: after.chapter,
+      p_starts_at: after.starts_at,
+      p_timezone: after.timezone,
+    });
+    if (conflictError) {
+      const problem = friendlyEventDbError(conflictError, `boost check event ${eventId}`);
+      return { ok: false, error: problem.message, field: problem.field };
+    }
+    if (conflict) return { ok: false, error: conflict as string, field: "boost" };
+  }
 
   // A chapter change counts like a location change: attendees are offered the
   // "notify" choice for it too. A changed meeting link is the virtual

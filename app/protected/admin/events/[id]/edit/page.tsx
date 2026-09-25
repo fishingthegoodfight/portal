@@ -31,7 +31,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
     supabase
       .from("events")
       .select(
-        "id, slug, name, event_type, series_id, description, occurrence_note, location, venue_name, street_address, city, state, postal_code, virtual_link, virtual_access_notes, capacity, lead_name, lead_user_id, lead_phone, lead_email, custom_email_note, registration_sections, starts_at, ends_at, timezone, chapter, status, waiver_state",
+        "id, slug, name, event_type, series_id, description, occurrence_note, location, venue_name, street_address, city, state, postal_code, virtual_link, virtual_access_notes, capacity, lead_name, lead_user_id, lead_phone, lead_email, custom_email_note, registration_sections, starts_at, ends_at, timezone, chapter, status, waiver_state, marketing_tier",
       )
       .eq("id", eventId)
       .maybeSingle(),
@@ -117,6 +117,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
         endTime,
         timezone,
         volunteerRoles: roles.map((r) => toEditableRole(r, timezone)),
+        boostTier1: event.marketing_tier === 1,
       }}
     />
   );

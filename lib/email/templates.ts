@@ -699,6 +699,50 @@ export function volunteerInviteEmail({
 }
 
 /**
+ * An invite to the portal itself — staff, board members, anyone who needs an
+ * account but isn't joining the volunteer team (that's volunteerInviteEmail).
+ * The link sets a password, then lands on their profile.
+ */
+export function personInviteEmail({
+  recipientName,
+  actionUrl,
+}: {
+  recipientName: string | null;
+  actionUrl: string;
+}): RenderedEmail {
+  const subject = "You're invited to the Fishing the Good Fight portal";
+  const greeting = recipientName ? `Hi ${escapeHtml(recipientName)},` : "Hi,";
+  const greetingText = recipientName ? `Hi ${recipientName},` : "Hi,";
+  const intro =
+    "You've been given an account on the Fishing the Good Fight portal. Click below to set your password and check your contact details.";
+  const buttonLabel = "Set up your account";
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">You're invited to the portal</p>`,
+      `<p style="margin:0 0 16px;">${greeting}</p>`,
+      `<p style="margin:0 0 16px;">${intro}</p>`,
+      `<p style="margin:24px 0 8px;"><a href="${actionUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Questions? Just reply to this email.</p>`,
+    ].join("\n"),
+  );
+
+  const text = [
+    "You're invited to the portal",
+    "",
+    greetingText,
+    "",
+    intro,
+    "",
+    `${buttonLabel}: ${actionUrl}`,
+    "",
+    "Questions? Just reply to this email.",
+  ].join("\n");
+
+  return { subject, html, text };
+}
+
+/**
  * Internal heads-up to an event's lead (lead_email) when a participant
  * cancels their confirmed RSVP: who cancelled, and whether the freed spot
  * went to someone on the waitlist.

@@ -340,7 +340,7 @@ function FillFigure({ label, fill, low }: { label: string; fill: Fill; low: bool
  * an admin and to a chapter lead's own chapters.
  */
 /** The header buttons, limited to what this person can reach: the volunteer
- * registry, waivers and setup are admin-only; "New event" needs a chapter
+ * registry, waivers, marketing and setup are admin-only; "New event" needs a chapter
  * they can create events in (manageable_chapters). */
 async function AdminIndexActions() {
   const supabase = await createClient();
@@ -357,6 +357,9 @@ async function AdminIndexActions() {
           </Button>
           <Button asChild variant="outline">
             <Link href="/protected/admin/waivers">Waivers</Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link href="/protected/admin/marketing">Marketing</Link>
           </Button>
           <Button asChild variant="outline">
             <Link href="/protected/admin/setup">Setup</Link>

@@ -2,9 +2,11 @@ import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
 import { RolesManager, type RolePerson } from "@/components/admin/roles-manager";
+import { InvitePersonForm } from "@/components/admin/invite-person-form";
 import type { Role } from "@/lib/roles";
 
-const PERSON_COLUMNS = "id, first_name, last_name, email, chapter, role, led_chapters";
+const PERSON_COLUMNS =
+  "id, first_name, last_name, email, chapter, role, led_chapters, can_view_volunteer_screening, can_view_health_history";
 
 type PersonRow = {
   id: string;
@@ -14,6 +16,8 @@ type PersonRow = {
   chapter: string | null;
   role: Role;
   led_chapters: string[] | null;
+  can_view_volunteer_screening: boolean;
+  can_view_health_history: boolean;
 };
 
 function toPerson(row: PersonRow): RolePerson {
@@ -24,6 +28,8 @@ function toPerson(row: PersonRow): RolePerson {
     chapter: row.chapter ?? "",
     role: row.role,
     ledChapters: row.led_chapters ?? [],
+    canViewScreening: row.can_view_volunteer_screening,
+    canViewHealthHistory: row.can_view_health_history,
   };
 }
 
@@ -33,10 +39,15 @@ async function RolesLoader({ searchParams }: { searchParams: Promise<{ q?: strin
   const supabase = await createClient();
   const { data: claims } = await supabase.auth.getClaims();
 
+  // Everyone with a role above participant or either sensitive-data flag —
+  // an event lead with the health flag is a participant by role, and still
+  // has to show up here so "who can see medical?" is answerable at a glance.
   const staffQuery = supabase
     .from("profiles")
     .select(PERSON_COLUMNS)
-    .in("role", ["admin", "chapter_lead"])
+    .or(
+      "role.in.(admin,chapter_lead),can_view_volunteer_screening.is.true,can_view_health_history.is.true",
+    )
     .order("role", { ascending: true })
     .order("first_name", { ascending: true });
 
@@ -77,7 +88,13 @@ export default function AdminRolesPage({ searchParams }: { searchParams: Promise
           check-in, walk-ups, volunteer shifts, edits and cancellations — but can&apos;t reach
           setup, the volunteer registry, approvals, or roles. Admins can do everything.
         </p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Sensitive data is separate from role: each person&apos;s row shows whether they can see
+          volunteer screening notes or health histories. Neither widens what they can reach —
+          they only unlock that data within it.
+        </p>
       </div>
+      <InvitePersonForm />
       <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>
         <RolesLoader searchParams={searchParams} />
       </Suspense>

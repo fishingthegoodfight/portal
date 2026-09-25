@@ -83,6 +83,10 @@ export type CreateEventInput = {
   recurrence: "none" | RecurrenceFrequency;
   /** "YYYY-MM-DD" — required, ignored, when recurrence is "none". */
   recurrenceEndDate: string;
+  /** Tier 1 marketing (events.marketing_tier = 1). One-time events only — a
+   * boost is always one occurrence, so a series is created unboosted and an
+   * occurrence boosted afterwards from its edit form. */
+  boostTier1: boolean;
 };
 
 export type CreateEventResult =
@@ -231,6 +235,29 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
 
   const seriesId = occurrenceDates.length > 1 ? randomUUID() : null;
 
+  // --- Marketing boost ---
+  // Never a whole series. The chapter's month is checked here so the wizard
+  // can say which event already has it; events_marketing_guard re-checks on
+  // insert.
+  const boost = input.boostTier1 === true;
+  if (boost && occurrenceDates.length > 1) {
+    return fail(
+      "A repeating event can't be boosted as a whole — create the series, then boost one occurrence from its edit page",
+      4,
+      "boost",
+    );
+  }
+  if (boost) {
+    const { data: conflict, error: conflictError } = await supabase.rpc("tier1_boost_conflict_message", {
+      p_event_id: null,
+      p_chapter: input.chapter,
+      p_starts_at: firstStarts.toISOString(),
+      p_timezone: timezone,
+    });
+    if (conflictError) return failWith(friendlyEventDbError(conflictError, `boost check "${title}"`));
+    if (conflict) return fail(conflict as string, 4, "boost");
+  }
+
   // --- Create ---
   const eventIds: number[] = [];
 
@@ -274,6 +301,7 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
         series_id: seriesId,
         recurrence_frequency: recurrenceFrequency,
         recurrence_end_date: input.recurrence === "none" ? null : input.recurrenceEndDate,
+        marketing_tier: boost ? 1 : null,
       })
       .select("id")
       .single();

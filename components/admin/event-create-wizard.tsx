@@ -44,6 +44,7 @@ import { zonedDateTimeToUtc } from "@/lib/timezone";
 import { cn } from "@/lib/utils";
 import { DateTimeFields } from "@/components/admin/fields/datetime-fields";
 import { LeadContactFields } from "@/components/admin/fields/lead-contact-fields";
+import { MarketingBoostField } from "@/components/admin/fields/marketing-boost-field";
 import { RegistrationSectionsFields } from "@/components/admin/fields/registration-sections-fields";
 import { VolunteerRoleFields, volunteerRoleErrors } from "@/components/admin/fields/volunteer-role-fields";
 import { Button } from "@/components/ui/button";
@@ -53,7 +54,7 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 
 const DRAFT_KEY = "admin-event-create-draft";
-const STEP_LABELS = ["Basics", "Details", "Volunteers", "Recurrence", "Review"];
+const STEP_LABELS = ["Basics", "Details", "Volunteers", "Recurrence & marketing", "Review"];
 
 type AdminPrefill = { leadName: string; leadEmail: string; leadPhone: string };
 
@@ -89,6 +90,7 @@ function emptyForm(prefill: AdminPrefill): CreateEventInput {
     volunteerRoles: [],
     recurrence: "none",
     recurrenceEndDate: "",
+    boostTier1: false,
   };
 }
 
@@ -129,6 +131,7 @@ const FIELD_INPUT_IDS: Partial<Record<EventFormField, string>> = {
   custom_note: "custom_note",
   recurrence: "recurrence",
   template: "template",
+  boost: "boost",
 };
 
 const CHOOSE_CHAPTER_FIRST = "Choose a chapter to set the date and time";
@@ -955,9 +958,15 @@ export function EventCreateWizard({
               <Select
                 id="create_recurrence"
                 value={form.recurrence}
-                onChange={(e) =>
-                  setField("recurrence")(e.target.value as "none" | RecurrenceFrequency)
-                }
+                onChange={(e) => {
+                  const recurrence = e.target.value as "none" | RecurrenceFrequency;
+                  // A boost is one occurrence, never a series — see below.
+                  setForm((prev) => ({
+                    ...prev,
+                    recurrence,
+                    boostTier1: recurrence === "none" ? prev.boostTier1 : false,
+                  }));
+                }}
               >
                 <option value="none">One-time</option>
                 <option value="weekly">Weekly</option>
@@ -993,6 +1002,20 @@ export function EventCreateWizard({
                   ))}
                 </ul>
               </div>
+            )}
+
+            {form.recurrence === "none" ? (
+              <MarketingBoostField
+                idPrefix="create"
+                checked={form.boostTier1}
+                onChange={setField("boostTier1")}
+              />
+            ) : (
+              <p className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">Tier 1 marketing boost:</span> a
+                boost is always one occurrence, never a whole series. Create the series first,
+                then boost the occurrence you want from its edit page.
+              </p>
             )}
           </div>
         )}
@@ -1063,7 +1086,7 @@ export function EventCreateWizard({
               )}
             </ReviewSection>
 
-            <ReviewSection title="Recurrence" onEdit={() => goToStep(4)}>
+            <ReviewSection title="Recurrence and marketing" onEdit={() => goToStep(4)}>
               <ReviewRow
                 label="Pattern"
                 value={
@@ -1073,6 +1096,10 @@ export function EventCreateWizard({
                 }
               />
               <ReviewRow label="Occurrences" value={String(occurrenceDates.length)} />
+              <ReviewRow
+                label="Tier 1 marketing boost"
+                value={form.recurrence === "none" && form.boostTier1 ? "Yes" : "No"}
+              />
               {occurrenceDates.length > 1 && (
                 <div className="text-sm text-muted-foreground">
                   {occurrenceDates.join(", ")}

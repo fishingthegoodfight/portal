@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { getSiteUrl } from "@/lib/site-url";
+import { authConfirmUrl, buildConfirmUrl } from "@/lib/auth-confirm-link";
 import { sendVolunteerInviteEmail } from "@/lib/email/send";
 
 const REGISTER_PATH = "/protected/volunteer/register";
@@ -15,23 +16,6 @@ const SET_PASSWORD_NEXT = `/auth/update-password?next=${encodeURIComponent(REGIS
 export type InviteVolunteerResult =
   | { ok: true; wasResend: boolean }
   | { ok: false; error: string };
-
-/**
- * Builds a link through our own /auth/confirm route (token_hash + type,
- * verified server-side with verifyOtp — see app/auth/confirm/route.ts)
- * instead of using Supabase's own action_link. The action_link redirects
- * with the session in a URL *fragment*, which nothing in this app parses
- * (there's no client-side "detect session in URL" step on the registration
- * page), so it silently failed to establish a session; token_hash avoids
- * that entirely by exchanging it for cookies on our own server route.
- */
-function buildConfirmUrl(tokenHash: string, type: "invite" | "recovery", next: string): string {
-  const url = new URL(`${getSiteUrl()}/auth/confirm`);
-  url.searchParams.set("token_hash", tokenHash);
-  url.searchParams.set("type", type);
-  url.searchParams.set("next", next);
-  return url.toString();
-}
 
 /**
  * Admin "Invite volunteer" action, also used to re-send an invite (called
@@ -92,7 +76,7 @@ export async function inviteVolunteerAction(input: {
       type: "invite",
       email,
       options: {
-        redirectTo: `${getSiteUrl()}/auth/confirm`,
+        redirectTo: authConfirmUrl(),
         data: firstName ? { first_name: firstName, last_name: lastName } : undefined,
       },
     });

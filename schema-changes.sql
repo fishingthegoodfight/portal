@@ -5716,3 +5716,499 @@ begin
 end $rename$;
 
 commit;
+
+-- =============================================================================
+-- 2026-09-25 — Sensitive-data flags, health access log, Tier 1 marketing
+--              boost, posted-to-website tracking
+-- =============================================================================
+-- 1. profiles.can_view_health_history — a sensitivity flag, next to
+--    can_view_volunteer_screening. Default false; only an admin (or a trusted
+--    server context) can set it — profiles_role_guard is extended to cover it
+--    (it only knew about the screening flag), and admin_set_data_access sets
+--    both flags from the People & roles screen.
+--
+--    Differs from the screening flag on purpose: can_view_volunteer_screening
+--    is only honoured for admins, because what it unlocks (screening notes on
+--    the volunteer registry) is admin-only scope. The health flag is honoured
+--    for ANYONE, but never grants scope of its own — it only applies within
+--    the events can_manage_event() already gives that person. So a retreat's
+--    own lead (events.lead_user_id) with the flag sees that retreat's roster
+--    and nothing else; an admin with it sees every event's, because admin
+--    scope is everything.
+--
+--    The rule lives in ONE place:
+--      can_view_event_health_history(event_id) — flag AND can_manage_event.
+--      can_view_health_history(subject, event) — that, AND the subject is on
+--        the event's roster (an active RSVP or a confirmed volunteer shift).
+--    Everything that ever reads health data calls the second one (from the
+--    app: lib/health-access.ts). No health data exists yet; this is only the
+--    gate.
+--
+-- 2. health_access_log — append-only record of every read or print of health
+--    data: who, which subject, which event, what action, when. Nothing
+--    writes to it yet. The only insert path is log_health_access(), which
+--    re-checks can_view_health_history and stamps who/when itself, so an
+--    entry can't be forged or written for access that wasn't allowed.
+--    Admins can read it. Nobody can update, delete or truncate it —
+--    including admins and the service role: no UPDATE/DELETE policy, no
+--    UPDATE/DELETE/TRUNCATE grant to any API role, and a trigger that
+--    refuses them for everyone else (the table owner included).
+--    Deliberately NOT "grant all to service_role" (the CLAUDE.md default) —
+--    it gets select + insert only, since "nobody, including admins" is the
+--    point of this table.
+--    No foreign keys: a log entry must never block deleting a person or an
+--    event, and must never be rewritten (set null / cascade) when one is.
+--
+-- 3. events.marketing_tier: 1 (most) / 2 / 3 (least), null = not set. The
+--    column already existed as unused TEXT (2026-09-18 entry); it's converted
+--    to smallint with a check. Guarded: refuses if any row holds something
+--    other than '1', '2' or '3'.
+--
+--    One Tier 1 event per chapter per calendar month, by the event's start
+--    date in its own timezone. Enforced by:
+--      - events.marketing_month: a STORED generated column holding the first
+--        day of that local month. date_trunc('month', starts_at at time zone
+--        timezone) can't be declared immutable by Postgres's own rules for
+--        every form of the expression, so it's wrapped in
+--        event_local_month(), declared IMMUTABLE. (Strictly, a tz-database
+--        update could shift a zone's offset — that would only move an event
+--        between months if it starts within an hour of local midnight on the
+--        1st, and the next write to the row recomputes it.)
+--      - events_tier1_per_chapter_month: a partial UNIQUE index on
+--        (chapter, marketing_month) where marketing_tier = 1 and the event
+--        isn't cancelled. This is the real guarantee — two people boosting
+--        at the same moment can't both succeed.
+--      - events_marketing_guard: a BEFORE trigger that gives the readable
+--        refusal first, naming the event that's already boosted and its
+--        date (tier1_boost_conflict_internal — the app checks the same
+--        thing before saving, through tier1_boost_conflict_message). It
+--        never un-boosts the other event. It also enforces who may change the tier: an admin or a
+--        chapter lead for the event's chapter (can_manage_chapter) — an
+--        event's own lead can edit the event but not its boost.
+--    Cancelled events don't count toward the limit. Restoring a cancelled
+--    event that's still boosted is refused the same way if its month has
+--    been taken meanwhile.
+--
+-- 4. event_marketing_posts — "posted to <channel>" ticks, keyed by
+--    (event_id, channel), with who ticked it and when. 'website' is the only
+--    channel for now; adding one later is a change to the check constraint,
+--    nothing else. Unticking deletes the row. Admin-only (the marketing
+--    page is admin-only).
+--
+-- Safe to re-run. One transaction: if any statement fails, nothing is
+-- applied.
+
+begin;
+
+-- ---- 1. Health-history flag ----------------------------------------------------
+alter table public.profiles
+  add column if not exists can_view_health_history boolean not null default false;
+
+-- Same as the 2026-09-24 version, plus can_view_health_history everywhere
+-- can_view_volunteer_screening appears.
+create or replace function public.profiles_role_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_privileged boolean := auth.uid() is null or public.is_admin();
+begin
+  if tg_op = 'INSERT' then
+    if not v_privileged then
+      new.role := 'participant';
+      new.led_chapters := '{}'::text[];
+      new.can_view_volunteer_screening := false;
+      new.can_view_health_history := false;
+    end if;
+  else
+    if not v_privileged and (
+      new.role is distinct from old.role
+      or new.led_chapters is distinct from old.led_chapters
+      or new.is_admin is distinct from old.is_admin
+      or new.can_view_volunteer_screening is distinct from old.can_view_volunteer_screening
+      or new.can_view_health_history is distinct from old.can_view_health_history
+    ) then
+      raise exception 'Only admins can change roles or sensitive-data access' using errcode = '42501';
+    end if;
+    -- Back-compat: a trusted write that flips is_admin alone (the old way of
+    -- making someone an admin) is mapped onto role.
+    if new.is_admin is distinct from old.is_admin and new.role is not distinct from old.role then
+      new.role := case
+        when new.is_admin then 'admin'
+        when old.role = 'admin' then 'participant'
+        else old.role
+      end;
+    end if;
+  end if;
+
+  if new.role is distinct from 'chapter_lead' then
+    new.led_chapters := '{}'::text[];
+  end if;
+  new.is_admin := (new.role = 'admin');
+  return new;
+end $function$;
+
+-- THE health rule, at event level: the flag, within can_manage_event scope.
+-- Never true for an event the caller doesn't already manage.
+create or replace function public.can_view_event_health_history(p_event_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select auth.uid() is not null
+     and coalesce(
+       (select can_view_health_history from public.profiles where id = auth.uid()),
+       false
+     )
+     and public.can_manage_event(p_event_id);
+$function$;
+
+-- The check every health-data read goes through: the event-level rule, and
+-- the subject is on that event's roster — an RSVP that's confirmed,
+-- waitlisted or offered, or a confirmed volunteer shift.
+create or replace function public.can_view_health_history(p_subject_user_id uuid, p_event_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select public.can_view_event_health_history(p_event_id)
+     and (
+       exists (
+         select 1 from public.rsvps r
+          where r.event_id = p_event_id
+            and r.user_id = p_subject_user_id
+            and r.status in ('confirmed', 'waitlisted', 'offered')
+       )
+       or exists (
+         select 1 from public.volunteer_signups s
+           join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+          where vo.event_id = p_event_id
+            and s.user_id = p_subject_user_id
+            and s.status = 'confirmed'
+       )
+     );
+$function$;
+
+-- Admin-only: set both sensitive-data flags at once (the People & roles
+-- screen sends the row's current value for the one it isn't changing).
+create or replace function public.admin_set_data_access(
+  p_user_id uuid,
+  p_can_view_volunteer_screening boolean,
+  p_can_view_health_history boolean
+)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can change sensitive-data access' using errcode = '42501';
+  end if;
+  update public.profiles
+     set can_view_volunteer_screening = coalesce(p_can_view_volunteer_screening, false),
+         can_view_health_history = coalesce(p_can_view_health_history, false)
+   where id = p_user_id;
+  if not found then
+    raise exception 'Person not found';
+  end if;
+end $function$;
+
+-- ---- 2. Health access log ------------------------------------------------------
+create table if not exists public.health_access_log (
+  id bigserial primary key,
+  accessed_by uuid not null,
+  subject_user_id uuid not null,
+  event_id bigint not null,
+  action text not null check (action in ('view', 'print')),
+  accessed_at timestamptz not null default now()
+);
+
+create index if not exists health_access_log_subject_idx
+  on public.health_access_log (subject_user_id, accessed_at desc);
+create index if not exists health_access_log_event_idx
+  on public.health_access_log (event_id, accessed_at desc);
+
+alter table public.health_access_log enable row level security;
+
+drop policy if exists health_access_log_select_admin on public.health_access_log;
+create policy health_access_log_select_admin on public.health_access_log
+  for select to authenticated
+  using (public.is_admin());
+-- No insert policy (log_health_access is the only way in), and no update or
+-- delete policy for anyone.
+
+revoke all on public.health_access_log from anon;
+revoke all on public.health_access_log from authenticated;
+grant select on public.health_access_log to authenticated;
+revoke all on public.health_access_log from service_role;
+grant select, insert on public.health_access_log to service_role;
+revoke all on sequence public.health_access_log_id_seq from anon, authenticated;
+grant usage, select on sequence public.health_access_log_id_seq to service_role;
+
+-- Append-only for everyone, the table owner and SQL editor included.
+create or replace function public.health_access_log_immutable()
+returns trigger
+language plpgsql
+as $function$
+begin
+  raise exception 'The health access log is append-only — entries can''t be changed or removed'
+    using errcode = '42501';
+end $function$;
+
+drop trigger if exists health_access_log_no_update_delete on public.health_access_log;
+create trigger health_access_log_no_update_delete
+  before update or delete on public.health_access_log
+  for each row execute function public.health_access_log_immutable();
+
+drop trigger if exists health_access_log_no_truncate on public.health_access_log;
+create trigger health_access_log_no_truncate
+  before truncate on public.health_access_log
+  for each statement execute function public.health_access_log_immutable();
+
+revoke all on function public.health_access_log_immutable() from public, anon, authenticated;
+
+-- The one write path: refuses unless the caller may see this subject's
+-- health data for this event right now, and records who/when itself.
+create or replace function public.log_health_access(
+  p_subject_user_id uuid,
+  p_event_id bigint,
+  p_action text
+)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if p_action not in ('view', 'print') then
+    raise exception 'Unknown health access action %', p_action;
+  end if;
+  if not public.can_view_health_history(p_subject_user_id, p_event_id) then
+    raise exception 'You can''t see this person''s health history for this event' using errcode = '42501';
+  end if;
+  insert into public.health_access_log (accessed_by, subject_user_id, event_id, action)
+  values (auth.uid(), p_subject_user_id, p_event_id, p_action);
+end $function$;
+
+-- ---- 3. Tier 1 marketing boost -------------------------------------------------
+do $tier$
+declare
+  v_type text;
+  v_bad bigint;
+begin
+  select data_type into v_type
+    from information_schema.columns
+   where table_schema = 'public' and table_name = 'events' and column_name = 'marketing_tier';
+
+  if v_type is null then
+    alter table public.events add column marketing_tier smallint;
+  elsif v_type = 'text' then
+    select count(*) into v_bad
+      from public.events
+     where marketing_tier is not null and btrim(marketing_tier) not in ('1', '2', '3');
+    if v_bad > 0 then
+      raise exception '% event(s) have a marketing_tier other than 1, 2 or 3 — nothing was changed. Check: select id, name, marketing_tier from events where marketing_tier is not null;', v_bad;
+    end if;
+    alter table public.events
+      alter column marketing_tier type smallint using nullif(btrim(marketing_tier), '')::smallint;
+  elsif v_type <> 'smallint' then
+    raise exception 'events.marketing_tier is %, expected text or smallint — nothing was changed', v_type;
+  end if;
+end $tier$;
+
+alter table public.events drop constraint if exists events_marketing_tier_check;
+alter table public.events
+  add constraint events_marketing_tier_check check (marketing_tier in (1, 2, 3));
+
+-- First day of the month an instant falls in, in the given zone.
+create or replace function public.event_local_month(p_starts_at timestamptz, p_timezone text)
+returns date
+language sql
+immutable
+parallel safe
+set search_path to 'public'
+as $function$
+  select date_trunc('month', p_starts_at at time zone p_timezone)::date;
+$function$;
+
+alter table public.events
+  add column if not exists marketing_month date
+    generated always as (public.event_local_month(starts_at, timezone)) stored;
+
+create unique index if not exists events_tier1_per_chapter_month
+  on public.events (chapter, marketing_month)
+  where marketing_tier = 1 and status <> 'cancelled';
+
+-- The readable refusal: null when an event with these values could be Tier 1,
+-- otherwise which event already holds that chapter's month. Internal — the
+-- trigger below calls it whoever is saving.
+create or replace function public.tier1_boost_conflict_internal(
+  p_event_id bigint,
+  p_chapter text,
+  p_starts_at timestamptz,
+  p_timezone text
+)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+declare
+  v_month date := public.event_local_month(p_starts_at, p_timezone);
+  v_other record;
+begin
+  select e.id, e.name, e.starts_at, e.timezone into v_other
+    from public.events e
+   where e.chapter = p_chapter
+     and e.marketing_month = v_month
+     and e.marketing_tier = 1
+     and e.status <> 'cancelled'
+     and e.id is distinct from p_event_id
+   limit 1;
+  if not found then
+    return null;
+  end if;
+  return format(
+    '%s already has a Tier 1 event in %s: "%s" on %s. Only one event per chapter per month can be boosted — un-boost that one first.',
+    p_chapter,
+    to_char(v_month, 'FMMonth YYYY'),
+    v_other.name,
+    to_char(v_other.starts_at at time zone v_other.timezone, 'Dy, Mon FMDD')
+  );
+end $function$;
+
+-- The same, for the app to check before saving — answers only for a chapter
+-- the caller manages (the only people who can boost there).
+create or replace function public.tier1_boost_conflict_message(
+  p_event_id bigint,
+  p_chapter text,
+  p_starts_at timestamptz,
+  p_timezone text
+)
+returns text
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select case
+    when auth.uid() is null or public.can_manage_chapter(p_chapter)
+      then public.tier1_boost_conflict_internal(p_event_id, p_chapter, p_starts_at, p_timezone)
+  end;
+$function$;
+
+create or replace function public.events_marketing_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_message text;
+begin
+  if (tg_op = 'INSERT' and new.marketing_tier is not null)
+     or (tg_op = 'UPDATE' and new.marketing_tier is distinct from old.marketing_tier) then
+    if auth.uid() is not null and not public.can_manage_chapter(new.chapter) then
+      raise exception 'Only an admin or a chapter lead for % can change this event''s marketing boost', coalesce(new.chapter, 'this chapter')
+        using errcode = '42501';
+    end if;
+  end if;
+
+  if new.marketing_tier = 1 and new.status <> 'cancelled' and (
+    tg_op = 'INSERT'
+    or old.marketing_tier is distinct from 1
+    or old.status = 'cancelled'
+    or new.chapter is distinct from old.chapter
+    or new.starts_at is distinct from old.starts_at
+    or new.timezone is distinct from old.timezone
+  ) then
+    v_message := public.tier1_boost_conflict_internal(new.id, new.chapter, new.starts_at, new.timezone);
+    if v_message is not null then
+      raise exception '%', v_message using errcode = 'P0001';
+    end if;
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists events_marketing_guard on public.events;
+create trigger events_marketing_guard
+  before insert or update of marketing_tier, chapter, starts_at, timezone, status on public.events
+  for each row execute function public.events_marketing_guard();
+
+revoke all on function public.events_marketing_guard() from public, anon, authenticated;
+
+-- ---- 4. Posted-to-channel ticks ------------------------------------------------
+create table if not exists public.event_marketing_posts (
+  event_id bigint not null references public.events(id) on delete cascade,
+  channel text not null check (channel in ('website')),
+  posted_by uuid references auth.users(id) on delete set null,
+  posted_at timestamptz not null default now(),
+  primary key (event_id, channel)
+);
+
+alter table public.event_marketing_posts enable row level security;
+
+drop policy if exists event_marketing_posts_select_admin on public.event_marketing_posts;
+create policy event_marketing_posts_select_admin on public.event_marketing_posts
+  for select to authenticated
+  using (public.is_admin());
+
+drop policy if exists event_marketing_posts_insert_admin on public.event_marketing_posts;
+create policy event_marketing_posts_insert_admin on public.event_marketing_posts
+  for insert to authenticated
+  with check (public.is_admin());
+
+drop policy if exists event_marketing_posts_delete_admin on public.event_marketing_posts;
+create policy event_marketing_posts_delete_admin on public.event_marketing_posts
+  for delete to authenticated
+  using (public.is_admin());
+
+revoke all on public.event_marketing_posts from anon;
+revoke all on public.event_marketing_posts from authenticated;
+grant select, insert, delete on public.event_marketing_posts to authenticated;
+grant all on public.event_marketing_posts to service_role;
+
+-- Who and when are always the caller and now, whatever the insert says.
+create or replace function public.event_marketing_posts_stamp()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if auth.uid() is not null then
+    new.posted_by := auth.uid();
+  end if;
+  new.posted_at := now();
+  return new;
+end $function$;
+
+drop trigger if exists event_marketing_posts_stamp on public.event_marketing_posts;
+create trigger event_marketing_posts_stamp
+  before insert on public.event_marketing_posts
+  for each row execute function public.event_marketing_posts_stamp();
+
+revoke all on function public.event_marketing_posts_stamp() from public, anon, authenticated;
+
+-- ---- Function grants -------------------------------------------------------------
+revoke all on function public.can_view_event_health_history(bigint) from public, anon;
+grant execute on function public.can_view_event_health_history(bigint) to authenticated, service_role;
+revoke all on function public.can_view_health_history(uuid, bigint) from public, anon;
+grant execute on function public.can_view_health_history(uuid, bigint) to authenticated, service_role;
+revoke all on function public.admin_set_data_access(uuid, boolean, boolean) from public, anon;
+grant execute on function public.admin_set_data_access(uuid, boolean, boolean) to authenticated;
+revoke all on function public.log_health_access(uuid, bigint, text) from public, anon;
+grant execute on function public.log_health_access(uuid, bigint, text) to authenticated;
+revoke all on function public.tier1_boost_conflict_internal(bigint, text, timestamptz, text) from public, anon, authenticated;
+revoke all on function public.tier1_boost_conflict_message(bigint, text, timestamptz, text) from public, anon;
+grant execute on function public.tier1_boost_conflict_message(bigint, text, timestamptz, text) to authenticated, service_role;
+
+commit;

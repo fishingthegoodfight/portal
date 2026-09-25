@@ -20,6 +20,7 @@ import {
   volunteerRoleCancelledEmail,
   volunteerShiftEventCancelledEmail,
   volunteerEventRestoredEmail,
+  personInviteEmail,
   volunteerInviteEmail,
   volunteerReminderEmail,
   volunteerSignupConfirmationEmail,
@@ -497,6 +498,20 @@ export async function sendVolunteerInviteEmail({
   needsPasswordSetup: boolean;
 }): Promise<void> {
   const { subject, html, text } = volunteerInviteEmail({ recipientName, actionUrl, needsPasswordSetup });
+  await deliverEmail({ to: toEmail, subject, html, text });
+}
+
+/** A portal invite for someone who isn't a volunteer (personInviteEmail). */
+export async function sendPersonInviteEmail({
+  toEmail,
+  recipientName,
+  actionUrl,
+}: {
+  toEmail: string;
+  recipientName: string | null;
+  actionUrl: string;
+}): Promise<void> {
+  const { subject, html, text } = personInviteEmail({ recipientName, actionUrl });
   await deliverEmail({ to: toEmail, subject, html, text });
 }
 

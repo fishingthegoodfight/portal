@@ -12,7 +12,7 @@
  * taken, template deleted meanwhile), or a trigger's own refusal.
  */
 
-/** 1 Basics · 2 Details · 3 Volunteers · 4 Recurrence — as in the wizard. */
+/** 1 Basics · 2 Details · 3 Volunteers · 4 Recurrence & marketing — as in the wizard. */
 export type EventFormStep = 1 | 2 | 3 | 4;
 
 /** The field an error points at; also the suffix of its input's id on
@@ -39,7 +39,8 @@ export type EventFormField =
   | "custom_note"
   | "sections"
   | "roles"
-  | "recurrence";
+  | "recurrence"
+  | "boost";
 
 export type EventFormProblem = {
   message: string;
@@ -81,6 +82,7 @@ const COLUMNS: Record<string, FieldInfo> = {
   series_id: { label: "Repeats", step: 4, field: "recurrence" },
   recurrence_frequency: { label: "Repeats", step: 4, field: "recurrence" },
   recurrence_end_date: { label: "Repeat until", step: 4, field: "recurrence" },
+  marketing_tier: { label: "Tier 1 marketing boost", step: 4, field: "boost" },
   // volunteer_opportunities
   role: { label: "Volunteer role title", step: 3, field: "roles" },
   slots: { label: "Volunteer role number needed", step: 3, field: "roles" },
@@ -128,7 +130,8 @@ export function friendlyEventDbError(error: DbError, context: string): EventForm
   const text = [error.message, error.details].filter(Boolean).join(" ");
   console.error(`[event save] ${context}: ${code} ${text}`);
 
-  const column = columnIn(text);
+  // events_marketing_guard's refusals name no column; they're the boost's.
+  const column = /Tier 1 event|marketing boost/.test(text) ? "marketing_tier" : columnIn(text);
   const label = column ? COLUMNS[column].label : null;
 
   switch (code) {
@@ -140,6 +143,15 @@ export function friendlyEventDbError(error: DbError, context: string): EventForm
         (column && CHECK_MESSAGES[column]) ?? (label ? `${label} isn't valid` : "One of the values isn't valid"),
       );
     case "23505": // unique_violation
+      // events_tier1_per_chapter_month: someone else boosted the same
+      // chapter's month between the check and this save (the trigger's own
+      // refusal, which names the event, normally comes first).
+      if (/tier1_per_chapter_month/.test(text)) {
+        return at(
+          "marketing_tier",
+          "Another event in this chapter was just boosted to Tier 1 for the same month — reload to see which, or save without the boost",
+        );
+      }
       if (column === "slug") return at(column, "That public link is already used by another event");
       return at(column, label ? `${label} is already in use` : "This would duplicate something that already exists");
     case "23503": // foreign_key_violation

@@ -40,3 +40,26 @@ export async function setUserRoleAction(
   if (error) return { ok: false, error: error.message };
   return { ok: true };
 }
+
+/**
+ * Admin-only: set someone's sensitive-data flags. Both are sent, so the
+ * caller passes the current value of the one it isn't changing.
+ * admin_set_data_access re-checks that the caller is an admin, and
+ * profiles_role_guard blocks every other route.
+ */
+export async function setDataAccessAction(
+  userId: string,
+  flags: { screening: boolean; healthHistory: boolean },
+): Promise<SetRoleResult> {
+  const supabase = await createClient();
+  const adminCheck = await requireAdmin(supabase);
+  if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
+
+  const { error } = await supabase.rpc("admin_set_data_access", {
+    p_user_id: userId,
+    p_can_view_volunteer_screening: flags.screening,
+    p_can_view_health_history: flags.healthHistory,
+  });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}

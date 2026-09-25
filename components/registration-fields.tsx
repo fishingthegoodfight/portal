@@ -181,6 +181,7 @@ function YesNoNotesField({
           />
         </div>
       )}
+      {field.helpText && <p className="text-xs text-muted-foreground">{field.helpText}</p>}
     </div>
   );
 }

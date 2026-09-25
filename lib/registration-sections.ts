@@ -35,7 +35,7 @@ export type RegistrationField = {
   label: string;
   type: RegistrationFieldType;
   placeholder?: string;
-  /** Explanatory text shown under the input (used by checkbox fields). */
+  /** Explanatory text shown under the input (checkbox and yesno fields). */
   helpText?: string;
   /**
    * Whether this field must have a value for the section to count as complete
@@ -142,7 +142,11 @@ export const REGISTRATION_SECTIONS: RegistrationSection[] = [
         key: "dietary_notes",
         label: "What should we know?",
         type: "yesno",
-        placeholder: "Allergies, medical needs, preferences…",
+        // Food only. The answer is shown on rosters and print sheets for
+        // meal planning, so it mustn't invite medical information, which
+        // is collected separately (health history).
+        placeholder: "Vegetarian, gluten-free, food allergies, dislikes…",
+        helpText: "Food only — medical and health information is collected separately.",
         required: true,
       },
     ],

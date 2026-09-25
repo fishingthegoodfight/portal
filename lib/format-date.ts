@@ -84,3 +84,32 @@ export function formatDateInZone(instant: string, timeZone: string): string {
     timeZone,
   }).format(new Date(instant));
 }
+
+/**
+ * The long form of formatEventDateRange, with the weekday and month spelled
+ * out and the year — for text pasted somewhere else (the marketing page's
+ * copy button), e.g. "Thursday, October 8, 2026 · 6:00 – 8:00 PM MDT".
+ */
+export function formatEventDateRangeLong(
+  startsAt: string,
+  endsAt: string | null,
+  timeZone: string,
+): string {
+  const longDate = new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    timeZone,
+  });
+  const { time, timeWithZone } = buildFormatters(timeZone);
+  const start = new Date(startsAt);
+  const end = endsAt ? new Date(endsAt) : null;
+  if (!end || end.getTime() === start.getTime()) {
+    return `${longDate.format(start)} · ${timeWithZone.format(start)}`;
+  }
+  if (longDate.format(start) === longDate.format(end)) {
+    return `${longDate.format(start)} · ${time.format(start)} – ${timeWithZone.format(end)}`;
+  }
+  return `${longDate.format(start)} · ${time.format(start)} – ${longDate.format(end)} · ${timeWithZone.format(end)}`;
+}
