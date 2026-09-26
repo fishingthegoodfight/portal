@@ -53,7 +53,7 @@ async function HeaderContent() {
 
   const userId = claims.sub as string;
   const [{ data: profile }, { data: volunteer }, { data: hasEventAdminAccess }] = await Promise.all([
-    supabase.from("profiles").select("role").eq("id", userId).maybeSingle(),
+    supabase.from("profiles").select("role, first_name").eq("id", userId).maybeSingle(),
     supabase.from("volunteers").select("user_id").eq("user_id", userId).maybeSingle(),
     supabase.rpc("has_event_admin_access"),
   ]);
@@ -76,7 +76,8 @@ async function HeaderContent() {
         )}
       </div>
       <div className="flex items-center gap-4">
-        Hey, {claims.email as string}!
+        {/* First name when there is one; the email only if none is on file. */}
+        Hey, {(profile?.first_name as string | null)?.trim() || (claims.email as string)}!
         <LogoutButton />
       </div>
     </>

@@ -5,13 +5,19 @@ import { useRouter } from "next/navigation";
 
 import { submitVolunteerApplicationAction } from "@/lib/actions/volunteer-applications";
 import {
+  APPLICATION_CHAPTER_OPTIONS,
   applicationErrors,
   AVAILABILITY_OPTIONS,
   BEGINNER_COMFORT_LABELS,
   EMPTY_APPLICATION,
+  FISHING_FREQUENCY_OPTIONS,
+  HELP_FREQUENCY_OPTIONS,
+  HOW_LONG_ATTENDING_OPTIONS,
+  INTEREST_AREA_KINDS,
   interestAreaLabel,
   RETREAT_COMMITMENTS,
   RETREAT_QUESTION,
+  YEARS_FLY_FISHING_OPTIONS,
   type ApplicationInput,
   type InterestArea,
   type YesNo,
@@ -33,13 +39,11 @@ import { Textarea } from "@/components/ui/textarea";
  */
 export function VolunteerApplicationForm({
   contact,
-  chapterOptions,
   interestAreas,
 }: {
   contact: Pick<ApplicationInput, "fullName" | "email" | "phone">;
-  chapterOptions: string[];
-  /** Active interest areas, in their Setup order. */
-  interestAreas: Pick<InterestArea, "id" | "label" | "description">[];
+  /** Active interest areas (both lists), in their Setup order. */
+  interestAreas: Pick<InterestArea, "id" | "kind" | "label" | "description">[];
 }) {
   const router = useRouter();
   const [form, setForm] = useState<ApplicationInput>({ ...EMPTY_APPLICATION, ...contact });
@@ -58,7 +62,7 @@ export function VolunteerApplicationForm({
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const problems = applicationErrors(form, chapterOptions);
+    const problems = applicationErrors(form);
     setErrors(problems);
     if (problems.length > 0) return;
     setSaving(true);
@@ -91,26 +95,28 @@ export function VolunteerApplicationForm({
             <Field id="app_phone" label="Phone" type="tel" value={form.phone} onChange={onPhone("phone")} />
           </div>
           <fieldset className="grid gap-2">
-            <legend className="mb-1 text-sm font-medium">Which chapter(s) would you volunteer with?</legend>
-            <div className="flex flex-wrap gap-4 text-sm">
-              {chapterOptions.map((chapter) => (
-                <label key={chapter} className="flex items-center gap-2">
-                  <Checkbox
-                    checked={form.chapters.includes(chapter)}
-                    onCheckedChange={(c) => setForm((prev) => ({ ...prev, chapters: toggle(prev.chapters, chapter, c === true) }))}
+            <legend className="mb-1 text-sm font-medium">Which chapter would you volunteer with?</legend>
+            <div className="flex flex-col gap-2 text-sm">
+              {APPLICATION_CHAPTER_OPTIONS.map((option) => (
+                <label key={option.value} className="flex items-center gap-2">
+                  <input
+                    type="radio"
+                    name="app_chapter"
+                    checked={form.chapter === option.value}
+                    onChange={() => setForm((prev) => ({ ...prev, chapter: option.value }))}
                   />
-                  {chapter}
+                  {option.label}
                 </label>
               ))}
             </div>
           </fieldset>
           <Area id="app_connected" label="How did you first get connected to FTGF?" value={form.howConnected} onChange={onText("howConnected")} />
-          <Field
+          <Choice
             id="app_how_long"
             label="How long have you been coming to events?"
+            options={HOW_LONG_ATTENDING_OPTIONS}
             value={form.howLongAttending}
             onChange={onText("howLongAttending")}
-            placeholder="e.g. About a year"
           />
         </CardContent>
       </Card>
@@ -136,24 +142,48 @@ export function VolunteerApplicationForm({
           <CardTitle>What you&apos;d like to help with</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-5">
-          <fieldset className="grid gap-2">
-            <legend className="mb-1 text-sm font-medium">What are you interested in helping with?</legend>
-            {interestAreas.map((area) => (
-              <label key={area.id} className="flex items-start gap-2 text-sm">
-                <Checkbox
-                  className="mt-0.5"
-                  checked={form.interestAreaIds.includes(area.id)}
-                  onCheckedChange={(c) =>
-                    setForm((prev) => ({ ...prev, interestAreaIds: toggle(prev.interestAreaIds, area.id, c === true) }))
-                  }
-                />
-                {interestAreaLabel(area)}
-              </label>
-            ))}
-            <p className="text-xs text-muted-foreground">
-              Pick as many as you like — we&apos;ll talk about specific roles later.
-            </p>
-          </fieldset>
+          {INTEREST_AREA_KINDS.map((kind) => (
+            <fieldset key={kind.value} className="grid gap-2">
+              <legend className="mb-1 text-sm font-medium">{kind.question}</legend>
+              {interestAreas
+                .filter((area) => area.kind === kind.value)
+                .map((area) => (
+                  <label key={area.id} className="flex items-start gap-2 text-sm">
+                    <Checkbox
+                      className="mt-0.5"
+                      checked={form.interestAreaIds.includes(area.id)}
+                      onCheckedChange={(c) =>
+                        setForm((prev) => ({ ...prev, interestAreaIds: toggle(prev.interestAreaIds, area.id, c === true) }))
+                      }
+                    />
+                    {interestAreaLabel(area)}
+                  </label>
+                ))}
+              {kind.value === "skill" && (
+                <>
+                  <label className="flex items-start gap-2 text-sm">
+                    <Checkbox
+                      className="mt-0.5"
+                      checked={form.interestOtherPicked}
+                      onCheckedChange={(c) => setForm((prev) => ({ ...prev, interestOtherPicked: c === true }))}
+                    />
+                    Other
+                  </label>
+                  {form.interestOtherPicked && (
+                    <Input
+                      aria-label="Your other skill or interest area"
+                      placeholder="Describe your other skill or interest area"
+                      value={form.interestOther}
+                      onChange={onText("interestOther")}
+                    />
+                  )}
+                </>
+              )}
+            </fieldset>
+          ))}
+          <p className="text-xs text-muted-foreground">
+            Pick as many as you like — we&apos;ll talk about specific roles later.
+          </p>
           <div className="border-t pt-4">
             <YesNoField name="app_retreats" label={RETREAT_QUESTION} value={form.interestedInRetreats} onChange={setYesNo("interestedInRetreats")} />
             {form.interestedInRetreats === "true" && (
@@ -181,13 +211,19 @@ export function VolunteerApplicationForm({
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field id="app_years" label="Years fly fishing" value={form.yearsFlyFishing} onChange={onText("yearsFlyFishing")} />
-            <Field
+            <Choice
+              id="app_years"
+              label="How many years have you been fly fishing?"
+              options={YEARS_FLY_FISHING_OPTIONS}
+              value={form.yearsFlyFishing}
+              onChange={onText("yearsFlyFishing")}
+            />
+            <Choice
               id="app_how_often"
               label="How often do you fish now?"
+              options={FISHING_FREQUENCY_OPTIONS}
               value={form.fishingFrequency}
               onChange={onText("fishingFrequency")}
-              placeholder="e.g. A couple of times a month"
             />
           </div>
           <Field id="app_water" label="What water do you fish most?" value={form.waterFished} onChange={onText("waterFished")} />
@@ -248,12 +284,12 @@ export function VolunteerApplicationForm({
               ))}
             </div>
           </fieldset>
-          <Field
+          <Choice
             id="app_frequency"
             label="Roughly how often could you help?"
+            options={HELP_FREQUENCY_OPTIONS}
             value={form.frequency}
             onChange={onText("frequency")}
-            placeholder="e.g. Once a month"
           />
         </CardContent>
       </Card>
@@ -270,20 +306,7 @@ export function VolunteerApplicationForm({
               <Field id="app_r1_email" label="Email" type="email" value={form.ref1Email} onChange={onText("ref1Email")} />
               <Field id="app_r1_phone" label="Phone" type="tel" value={form.ref1Phone} onChange={onPhone("ref1Phone")} />
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field id="app_r1_how" label="How do they know you?" value={form.ref1HowKnow} onChange={onText("ref1HowKnow")} />
-              <div className="grid gap-1">
-                <Label htmlFor="app_r1_chapter" className="text-xs">Which chapter do they volunteer with?</Label>
-                <Select id="app_r1_chapter" value={form.ref1Chapter} onChange={onText("ref1Chapter")}>
-                  <option value="">Choose a chapter</option>
-                  {chapterOptions.map((chapter) => (
-                    <option key={chapter} value={chapter}>
-                      {chapter}
-                    </option>
-                  ))}
-                </Select>
-              </div>
-            </div>
+            <Field id="app_r1_how" label="How do they know you?" value={form.ref1HowKnow} onChange={onText("ref1HowKnow")} />
           </fieldset>
           <fieldset className="grid gap-3">
             <legend className="mb-1 text-sm font-semibold">Reference 2 — anyone who knows you well</legend>
@@ -361,6 +384,36 @@ function Field({
         {label}
       </Label>
       <Input id={id} type={type} value={value} onChange={onChange} placeholder={placeholder} />
+    </div>
+  );
+}
+
+function Choice({
+  id,
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  options: readonly string[];
+  value: string;
+  onChange: (e: React.ChangeEvent<HTMLSelectElement>) => void;
+}) {
+  return (
+    <div className="grid gap-1 sm:max-w-sm">
+      <Label htmlFor={id} className="text-xs">
+        {label}
+      </Label>
+      <Select id={id} value={value} onChange={onChange}>
+        <option value="">Choose one</option>
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </Select>
     </div>
   );
 }

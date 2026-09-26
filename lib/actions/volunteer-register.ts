@@ -110,7 +110,9 @@ export async function submitVolunteerRegistrationAction(
     return { ok: false, error: "You must confirm you are 18 years of age or older" };
   }
 
-  const skillInterests = input.skillInterests.filter((s) => SKILL_INTERESTS.includes(s as never));
+  // "Other" isn't in SKILL_INTERESTS (it's the form's extra box), so it's
+  // allowed through explicitly — filtering it out lost the description.
+  const skillInterests = input.skillInterests.filter((s) => s === "Other" || SKILL_INTERESTS.includes(s as never));
   const skillInterestsOther = skillInterests.includes("Other")
     ? input.skillInterestsOther.trim()
     : "";

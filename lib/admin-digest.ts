@@ -2,6 +2,7 @@ import type { createAdminClient } from "@/lib/supabase/admin";
 import type { AdminDigestSection } from "@/lib/email/templates";
 import { getSiteUrl } from "@/lib/site-url";
 import { formatDateInZone } from "@/lib/format-date";
+import { formatCheckDate } from "@/lib/practical-checks";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
@@ -64,6 +65,10 @@ type ScreenedRow = {
   chapters: string[];
   screened_since: string;
   decline_recommended: boolean;
+  /** The latest call's "Pause, revisit later" date; null if it wasn't a pause. */
+  revisit_on: string | null;
+  /** revisit_on has arrived (Denver date). */
+  revisit_due: boolean;
 };
 
 async function loadScreened(admin: AdminClient): Promise<ScreenedRow[]> {
@@ -96,11 +101,31 @@ const screeningDecisions: DigestSource = async (admin) => {
   };
 };
 
+/** Paused on the call ("Pause, revisit later") and the revisit date has
+ * come. Listed every day from that date until someone acts — a new call,
+ * references sent, or a decline. Before the date, a paused application is
+ * in no section at all. */
+const pausedToRevisit: DigestSource = async (admin) => {
+  const rows = (await loadScreened(admin)).filter((r) => r.revisit_on != null && r.revisit_due);
+  return {
+    section: {
+      title: "Paused applications to revisit",
+      intro: "Paused after the screening call until now. Record another call, send references, or decline.",
+      items: rows.map((row) => ({
+        label: row.full_name,
+        detail: `${row.chapters.join(", ")} · revisit from ${formatCheckDate(row.revisit_on as string)}`,
+        url: `${getSiteUrl()}/protected/admin/applications/${row.id}`,
+      })),
+    },
+    markSent: async () => {},
+  };
+};
+
 /** Screened and waiting on references — so nothing stalls after the call.
  * Listed every day while it applies. Phase 3 (reference checks) extends
- * this same pattern. */
+ * this same pattern. Paused ones aren't waiting on references. */
 const screenedAwaitingReferences: DigestSource = async (admin) => {
-  const rows = (await loadScreened(admin)).filter((r) => !r.decline_recommended);
+  const rows = (await loadScreened(admin)).filter((r) => !r.decline_recommended && r.revisit_on == null);
   return {
     section: {
       title: "Screened, references not sent yet",
@@ -115,4 +140,9 @@ const screenedAwaitingReferences: DigestSource = async (admin) => {
 };
 
 /** In the order the sections appear — most pressing first. */
-export const DIGEST_SOURCES: DigestSource[] = [readyApplications, screeningDecisions, screenedAwaitingReferences];
+export const DIGEST_SOURCES: DigestSource[] = [
+  readyApplications,
+  screeningDecisions,
+  pausedToRevisit,
+  screenedAwaitingReferences,
+];

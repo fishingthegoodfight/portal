@@ -9,12 +9,13 @@ import {
   updateInterestAreaAction,
   type InterestAreaInput,
 } from "@/lib/actions/interest-areas";
-import type { InterestArea } from "@/lib/volunteer-applications";
+import { INTEREST_AREA_KINDS, type InterestArea, type InterestAreaKind } from "@/lib/volunteer-applications";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
 
 function Fields({
   value,
@@ -26,7 +27,21 @@ function Fields({
   idPrefix: string;
 }) {
   return (
-    <div className="grid gap-3 sm:grid-cols-[1fr_1fr_6rem]">
+    <div className="grid gap-3 sm:grid-cols-[9rem_1fr_1fr_5rem]">
+      <div className="grid gap-1">
+        <Label htmlFor={`${idPrefix}_kind`} className="text-xs">List</Label>
+        <Select
+          id={`${idPrefix}_kind`}
+          value={value.kind}
+          onChange={(e) => onChange({ ...value, kind: e.target.value as InterestAreaKind })}
+        >
+          {INTEREST_AREA_KINDS.map((k) => (
+            <option key={k.value} value={k.value}>
+              {k.label}
+            </option>
+          ))}
+        </Select>
+      </div>
       <div className="grid gap-1">
         <Label htmlFor={`${idPrefix}_label`} className="text-xs">Wording</Label>
         <Input id={`${idPrefix}_label`} value={value.label} onChange={(e) => onChange({ ...value, label: e.target.value })} />
@@ -37,7 +52,7 @@ function Fields({
           id={`${idPrefix}_desc`}
           value={value.description}
           onChange={(e) => onChange({ ...value, description: e.target.value })}
-          placeholder="e.g. Logistics, gear, transport, food"
+          placeholder="e.g. Instagram, newsletter"
         />
       </div>
       <div className="grid gap-1">
@@ -53,14 +68,15 @@ function Fields({
   );
 }
 
-/** Setup → Interest areas. Rewording or reordering here changes the
- * application form only — role types are untouched. */
+/** Setup → Interest areas, in the application's two lists. Rewording or
+ * reordering here changes the application form only — role types are
+ * untouched. */
 export function InterestAreasManager({ areas }: { areas: InterestArea[] }) {
   const router = useRouter();
   const nextOrder = (areas.reduce((m, a) => Math.max(m, a.sort_order), 0) || 0) + 10;
-  const [adding, setAdding] = useState<InterestAreaInput>({ label: "", description: "", sortOrder: nextOrder });
+  const [adding, setAdding] = useState<InterestAreaInput>({ kind: "skill", label: "", description: "", sortOrder: nextOrder });
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [editing, setEditing] = useState<InterestAreaInput>({ label: "", description: "", sortOrder: 0 });
+  const [editing, setEditing] = useState<InterestAreaInput>({ kind: "skill", label: "", description: "", sortOrder: 0 });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -79,67 +95,75 @@ export function InterestAreasManager({ areas }: { areas: InterestArea[] }) {
 
   return (
     <div className="flex flex-col gap-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>On the application</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          {areas.map((area) =>
-            editingId === area.id ? (
-              <div key={area.id} className="flex flex-col gap-2 rounded-md border p-3">
-                <Fields value={editing} onChange={setEditing} idPrefix={`area_${area.id}`} />
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    disabled={busy}
-                    onClick={() => run(() => updateInterestAreaAction(area.id, editing), () => setEditingId(null))}
-                  >
-                    Save
-                  </Button>
-                  <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => setEditingId(null)}>
-                    Cancel
-                  </Button>
+      {INTEREST_AREA_KINDS.map((kind) => (
+        <Card key={kind.value}>
+          <CardHeader>
+            <CardTitle>{kind.label}</CardTitle>
+            <p className="text-sm text-muted-foreground">On the application: &ldquo;{kind.question}&rdquo;</p>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            {areas.filter((area) => area.kind === kind.value).map((area) =>
+              editingId === area.id ? (
+                <div key={area.id} className="flex flex-col gap-2 rounded-md border p-3">
+                  <Fields value={editing} onChange={setEditing} idPrefix={`area_${area.id}`} />
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => run(() => updateInterestAreaAction(area.id, editing), () => setEditingId(null))}
+                    >
+                      Save
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => setEditingId(null)}>
+                      Cancel
+                    </Button>
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <div key={area.id} className="flex items-start justify-between gap-3 rounded-md border p-3">
-                <div className="flex flex-col gap-0.5">
-                  <span className="flex items-center gap-2 font-medium">
-                    {area.label}
-                    {!area.active && <Badge variant="secondary">Off</Badge>}
-                  </span>
-                  {area.description && <span className="text-sm text-muted-foreground">{area.description}</span>}
+              ) : (
+                <div key={area.id} className="flex items-start justify-between gap-3 rounded-md border p-3">
+                  <div className="flex flex-col gap-0.5">
+                    <span className="flex items-center gap-2 font-medium">
+                      {area.label}
+                      {!area.active && <Badge variant="secondary">Off</Badge>}
+                    </span>
+                    {area.description && <span className="text-sm text-muted-foreground">{area.description}</span>}
+                  </div>
+                  <div className="flex shrink-0 gap-1">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      disabled={busy}
+                      onClick={() => {
+                        setEditing({ kind: area.kind, label: area.label, description: area.description ?? "", sortOrder: area.sort_order });
+                        setEditingId(area.id);
+                      }}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => run(() => setInterestAreaActiveAction(area.id, !area.active))}
+                    >
+                      {area.active ? "Turn off" : "Turn on"}
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex shrink-0 gap-1">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    disabled={busy}
-                    onClick={() => {
-                      setEditing({ label: area.label, description: area.description ?? "", sortOrder: area.sort_order });
-                      setEditingId(area.id);
-                    }}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => run(() => setInterestAreaActiveAction(area.id, !area.active))}
-                  >
-                    {area.active ? "Turn off" : "Turn on"}
-                  </Button>
-                </div>
-              </div>
-            ),
-          )}
-          {error && <p className="text-sm text-red-500">{error}</p>}
-        </CardContent>
-      </Card>
+              ),
+            )}
+            {kind.value === "skill" && (
+              <p className="text-xs text-muted-foreground">
+                The form always adds an &ldquo;Other&rdquo; box with a description here, as the registration form does.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      ))}
+      {error && <p className="text-sm text-red-500">{error}</p>}
 
       <Card>
         <CardHeader>
@@ -154,7 +178,7 @@ export function InterestAreasManager({ areas }: { areas: InterestArea[] }) {
               onClick={() =>
                 run(
                   () => createInterestAreaAction(adding),
-                  () => setAdding({ label: "", description: "", sortOrder: nextOrder + 10 }),
+                  () => setAdding({ kind: adding.kind, label: "", description: "", sortOrder: nextOrder + 10 }),
                 )
               }
             >

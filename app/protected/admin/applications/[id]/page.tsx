@@ -7,7 +7,8 @@ import { loadEventAdminAccess } from "@/lib/admin/require-admin";
 import { formatDateInZone, formatEventInstant } from "@/lib/format-date";
 import {
   APPLICATION_STATUS_LABELS,
-  interestAreaLabel,
+  applicationChapterLabel,
+  interestAreaNames,
   type ApplicationRecord,
 } from "@/lib/volunteer-applications";
 import { SCREENABLE_STATUSES, type ScreeningRecord } from "@/lib/volunteer-screenings";
@@ -125,9 +126,11 @@ async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }
   const roleNameById = new Map(((allRoleTypes ?? []) as { id: number; name: string }[]).map((r) => [r.id, r.name]));
   const roleNamesFor = (ids: number[]) => ids.map((id) => roleNameById.get(id)).filter((n): n is string => Boolean(n));
   const legacyRoleNames = roleNamesFor(legacyRoleIds);
-  const interestAreaNames = ((interestAreas ?? []) as { id: number; label: string; description: string | null }[])
-    .filter((a) => app.interest_area_ids.includes(a.id))
-    .map(interestAreaLabel);
+  const interestNames = interestAreaNames(
+    (interestAreas ?? []) as { id: number; label: string; description: string | null }[],
+    app.interest_area_ids,
+    app.interest_other ?? null,
+  );
 
   return (
     <div className="flex flex-col gap-6">
@@ -135,7 +138,7 @@ async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }
         <div>
           <h1 className="text-2xl font-bold">{app.full_name}</h1>
           <p className="text-sm text-muted-foreground">
-            Applied {formatDateInZone(app.submitted_at, ZONE)} · {app.chapters.join(", ")}
+            Applied {formatDateInZone(app.submitted_at, ZONE)} · {app.chapters.map(applicationChapterLabel).join(", ")}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -271,7 +274,7 @@ async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }
 
       <ApplicationAnswers
         app={app}
-        interestAreaNames={interestAreaNames}
+        interestAreaNames={interestNames}
         reviewer={{ ref1Matched: app.ref1_matched_volunteer, legacyRoleNames }}
       />
 

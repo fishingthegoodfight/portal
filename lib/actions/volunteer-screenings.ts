@@ -62,10 +62,10 @@ export async function saveScreeningAction(
   const row: Record<string, unknown> = {
     call_date: input.callDate,
     interviewer_name: input.interviewerName.trim(),
-    length_minutes: input.lengthMinutes.trim() ? Number(input.lengthMinutes.trim()) : null,
     retreat_track: retreatTrack,
     recommended_role_type_ids: [...new Set(input.recommendedRoleTypeIds)].filter((id) => activeRoleIds.has(id)),
     outcome: input.outcome,
+    revisit_on: input.outcome === "hold" ? input.revisitOn : null,
     summary: input.summary.trim(),
   };
   // The other track's sections are cleared, not left over.

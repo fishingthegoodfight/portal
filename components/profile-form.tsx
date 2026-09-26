@@ -414,7 +414,7 @@ export function ProfileForm({
             Want to help run events? Apply to join the volunteer team, or check on an
             application you&apos;ve sent.
           </p>
-          <Link href="/protected/volunteer" className="text-sm underline underline-offset-4">
+          <Link href="/protected/volunteer/apply" className="text-sm underline underline-offset-4">
             Apply to volunteer
           </Link>
         </CardContent>

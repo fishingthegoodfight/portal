@@ -51,6 +51,8 @@ async function VolunteerHomeLoader({
     // After a decline: no Apply button and nothing about applying again,
     // until an admin chooses "Allow re-application".
     const declinedHold = latest?.status === "declined" && !latest.reapplication_allowed;
+    // Nothing to show but a way to apply: go straight to the form.
+    if (!open && !declinedHold) redirect("/protected/volunteer/apply");
     return (
       <div className="flex max-w-md flex-col gap-3">
         <h1 className="text-2xl font-bold">Volunteer</h1>
@@ -62,29 +64,18 @@ async function VolunteerHomeLoader({
             <p className="text-sm text-muted-foreground">{APPLICATION_STATUS_FOR_APPLICANT.declined}</p>
             <ViewApplicationLink id={latest.id} />
           </>
-        ) : open ? (
-          <>
-            <p className="text-sm">
-              <span className="font-medium">Your application</span> (sent{" "}
-              {formatDateInZone(open.submitted_at, "America/Denver")}):{" "}
-              {APPLICATION_STATUS_FOR_APPLICANT[open.status]}
-            </p>
-            <ViewApplicationLink id={open.id} />
-            <WithdrawApplicationButton applicationId={open.id} />
-          </>
         ) : (
-          <>
-            <p className="text-sm text-muted-foreground">
-              Volunteers help run our events on and off the water. If you&apos;d like to be one,
-              we&apos;d love to hear from you.
-              {latest?.status === "withdrawn" && " You withdrew your last application — you're welcome to apply again."}
-            </p>
-            <div>
-              <Button asChild>
-                <Link href="/protected/volunteer/apply">Apply to volunteer</Link>
-              </Button>
-            </div>
-          </>
+          open && (
+            <>
+              <p className="text-sm">
+                <span className="font-medium">Your application</span> (sent{" "}
+                {formatDateInZone(open.submitted_at, "America/Denver")}):{" "}
+                {APPLICATION_STATUS_FOR_APPLICANT[open.status]}
+              </p>
+              <ViewApplicationLink id={open.id} />
+              <WithdrawApplicationButton applicationId={open.id} />
+            </>
+          )
         )}
       </div>
     );

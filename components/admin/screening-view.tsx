@@ -14,6 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { formatCheckDate } from "@/lib/practical-checks";
 
 /**
  * One screening call, read-only, for someone who passed
@@ -46,7 +47,6 @@ export function ScreeningView({
         <div>
           <p className="font-semibold">
             Call on {record.call_date} with {record.interviewer_name}
-            {record.length_minutes ? ` · ${record.length_minutes} min` : ""}
             {record.retreat_track ? " · retreat track" : " · chapter track"}
           </p>
           <p className="text-xs text-muted-foreground">
@@ -67,7 +67,10 @@ export function ScreeningView({
           record.outcome === "decline" ? "border-red-500/50 bg-red-500/5" : "bg-muted/40",
         )}
       >
-        <p className="font-medium">Next step: {outcomeLabel(record.outcome, record.decline_is_recommendation)}</p>
+        <p className="font-medium">
+          Next step: {outcomeLabel(record.outcome, record.decline_is_recommendation)}
+          {record.outcome === "hold" && record.revisit_on ? ` — revisit from ${formatCheckDate(record.revisit_on)}` : ""}
+        </p>
         <p className="mt-1 whitespace-pre-line">{record.summary}</p>
       </div>
 

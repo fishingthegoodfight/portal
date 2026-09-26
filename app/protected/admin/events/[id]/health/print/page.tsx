@@ -8,6 +8,7 @@ import { formatEventDateRange } from "@/lib/format-date";
 import { eventYear } from "@/lib/waivers";
 import { PrintButton } from "@/components/admin/print-button";
 import { HealthHistoryView } from "@/components/health-history-view";
+import { personDisplayName } from "@/lib/person-name";
 
 type Person = {
   userId: string;
@@ -53,13 +54,13 @@ async function HealthPrintLoader({ params }: { params: Promise<{ id: string }> }
   const people: Person[] = [
     ...roster.roster.map((p) => ({
       userId: p.userId,
-      name: `${p.firstName} ${p.lastName}`.trim(),
+      name: personDisplayName(p),
       role: "Participant",
       emergency: emergencyOf(p.emergencyContact, p.emergencyPhone),
     })),
     ...roster.volunteerRoster.map((v) => ({
       userId: v.userId,
-      name: `${v.firstName} ${v.lastName}`.trim(),
+      name: personDisplayName(v),
       role: `Volunteer — ${v.role}`,
       emergency: emergencyOf(v.emergencyContact, v.emergencyPhone),
     })),

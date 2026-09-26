@@ -1,3 +1,5 @@
+import { NOT_LOCAL_CHAPTER } from "@/lib/chapters";
+
 /**
  * Volunteer applications (table `volunteer_applications` — see the
  * 2026-09-25 "Volunteer applications, phase 1" entry in schema-changes.sql):
@@ -62,9 +64,27 @@ export function isApplicationStatus(value: unknown): value is ApplicationStatus 
   return typeof value === "string" && (APPLICATION_STATUSES as readonly string[]).includes(value);
 }
 
+/** One chapter per application, stored as a one-element `chapters` array
+ * (values as in lib/chapters.ts, so chapter leads' led_chapters match).
+ * "No local chapter" matches no chapter lead, so only admins see those. */
+export const APPLICATION_CHAPTER_OPTIONS = [
+  { value: "Denver", label: "Denver" },
+  { value: "CO Springs", label: "Colorado Springs" },
+  { value: "Atlanta", label: "Atlanta" },
+  { value: "Rome", label: "Rome" },
+  { value: NOT_LOCAL_CHAPTER, label: "No local chapter — I'd travel or help remotely" },
+] as const;
+
+export function applicationChapterLabel(value: string): string {
+  return APPLICATION_CHAPTER_OPTIONS.find((o) => o.value === value)?.label ?? value;
+}
+
+/** Keep in step with the volunteer_applications_availability_check constraint. */
 export const AVAILABILITY_OPTIONS = [
-  { value: "weeknights", label: "Weeknights" },
+  { value: "weekday_evenings", label: "Weekday evenings" },
+  { value: "weekday_daytime", label: "Weekday daytime" },
   { value: "weekend_mornings", label: "Weekend mornings" },
+  { value: "weekend_afternoons_evenings", label: "Weekend afternoons and evenings" },
   { value: "weekend_days", label: "Full weekend days" },
   { value: "multi_day_retreats", label: "Multi-day retreats" },
 ] as const;
@@ -73,6 +93,40 @@ export type Availability = (typeof AVAILABILITY_OPTIONS)[number]["value"];
 export function availabilityLabel(value: string): string {
   return AVAILABILITY_OPTIONS.find((o) => o.value === value)?.label ?? value;
 }
+
+/** The four dropdowns. Stored as the chosen wording in their text columns,
+ * so older free-text answers still read as written. */
+export const HOW_LONG_ATTENDING_OPTIONS = [
+  "This is my first time",
+  "Less than 6 months",
+  "6 months to a year",
+  "1–2 years",
+  "More than 2 years",
+] as const;
+
+export const HELP_FREQUENCY_OPTIONS = [
+  "Once or twice a year",
+  "Every few months",
+  "About once a month",
+  "Twice a month or more",
+  "Retreats only",
+] as const;
+
+export const YEARS_FLY_FISHING_OPTIONS = [
+  "Less than a year",
+  "1–3 years",
+  "3–5 years",
+  "5–10 years",
+  "More than 10 years",
+] as const;
+
+export const FISHING_FREQUENCY_OPTIONS = [
+  "Not much these days",
+  "A few times a year",
+  "About monthly",
+  "A couple of times a month",
+  "Weekly or more",
+] as const;
 
 export const BEGINNER_COMFORT_LABELS: Record<number, string> = {
   1: "1 — Not comfortable yet",
@@ -100,20 +154,43 @@ export const RETREAT_COMMITMENTS = [
 ] as const;
 export type RetreatCommitmentKey = (typeof RETREAT_COMMITMENTS)[number]["key"];
 
-/** A row of volunteer_interest_areas — the plain-language "what are you
- * interested in helping with?" list, admin-editable in Setup and separate
- * from role types (roles are picked at approval). */
+/** A row of volunteer_interest_areas — admin-editable in Setup and
+ * separate from role types (roles are picked at approval). Two lists, the
+ * same two the volunteer registration form asks (lib/volunteers.ts):
+ * skills & interest areas (SKILL_INTERESTS) and programs
+ * (PROGRAM_INTERESTS). Each row's wording is the registration form's string,
+ * so phase 4 can prefill registration by matching labels — reword one here
+ * and it no longer carries over. "Retreats" isn't a program row: the
+ * separate retreat question covers it. */
 export type InterestArea = {
   id: number;
   key: string;
+  kind: InterestAreaKind;
   label: string;
   description: string | null;
   sort_order: number;
   active: boolean;
 };
 
+export const INTEREST_AREA_KINDS = [
+  { value: "skill", label: "Skills & interest areas", question: "Which skills or interest areas could you help with?" },
+  { value: "program", label: "Programs", question: "Which programs would you like to support?" },
+] as const;
+export type InterestAreaKind = (typeof INTEREST_AREA_KINDS)[number]["value"];
+
 export function interestAreaLabel(area: Pick<InterestArea, "label" | "description">): string {
   return area.description ? `${area.label} — ${area.description}` : area.label;
+}
+
+/** An application's picks, as display lines, in Setup order, with their
+ * "Other" last. `areas` must include turned-off ones so older picks show. */
+export function interestAreaNames(
+  areas: Pick<InterestArea, "id" | "label" | "description">[],
+  ids: number[],
+  other: string | null,
+): string[] {
+  const names = areas.filter((a) => ids.includes(a.id)).map(interestAreaLabel);
+  return other ? [...names, `Other: ${other}`] : names;
 }
 
 /** The form while it's being filled in. */
@@ -121,13 +198,16 @@ export type ApplicationInput = {
   fullName: string;
   email: string;
   phone: string;
-  chapters: string[];
+  chapter: string;
   howConnected: string;
   howLongAttending: string;
   whyVolunteer: string;
   hopeToGet: string;
   missionConnection: string;
   interestAreaIds: number[];
+  /** The skills list's "Other" box, as on the registration form. */
+  interestOtherPicked: boolean;
+  interestOther: string;
   interestedInRetreats: YesNo;
   ackRetreatCommitment: boolean;
   ackStayOnsite: boolean;
@@ -151,7 +231,6 @@ export type ApplicationInput = {
   ref1Email: string;
   ref1Phone: string;
   ref1HowKnow: string;
-  ref1Chapter: string;
   ref2Name: string;
   ref2Email: string;
   ref2Phone: string;
@@ -165,13 +244,15 @@ export const EMPTY_APPLICATION: ApplicationInput = {
   fullName: "",
   email: "",
   phone: "",
-  chapters: [],
+  chapter: "",
   howConnected: "",
   howLongAttending: "",
   whyVolunteer: "",
   hopeToGet: "",
   missionConnection: "",
   interestAreaIds: [],
+  interestOtherPicked: false,
+  interestOther: "",
   interestedInRetreats: "",
   ackRetreatCommitment: false,
   ackStayOnsite: false,
@@ -195,7 +276,6 @@ export const EMPTY_APPLICATION: ApplicationInput = {
   ref1Email: "",
   ref1Phone: "",
   ref1HowKnow: "",
-  ref1Chapter: "",
   ref2Name: "",
   ref2Email: "",
   ref2Phone: "",
@@ -208,32 +288,41 @@ export const EMPTY_APPLICATION: ApplicationInput = {
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Every problem with an application, in form order — one rule for the form
- * and the server action. `chapterNames` is the valid chapter list. */
-export function applicationErrors(input: ApplicationInput, chapterNames: string[]): string[] {
+ * and the server action. */
+export function applicationErrors(input: ApplicationInput): string[] {
   const errors: string[] = [];
   const blank = (v: string) => !v.trim();
   const unanswered = (v: string) => v === "";
+  const notOneOf = (v: string, options: readonly string[]) => !options.includes(v);
 
   if (blank(input.fullName)) errors.push("Your name is required");
   if (!EMAIL_PATTERN.test(input.email.trim())) errors.push("A valid email is required");
   if (blank(input.phone)) errors.push("A phone number is required");
 
-  if (input.chapters.length === 0) errors.push("Pick at least one chapter you'd volunteer with");
-  if (input.chapters.some((c) => !chapterNames.includes(c))) errors.push("Unknown chapter");
+  if (notOneOf(input.chapter, APPLICATION_CHAPTER_OPTIONS.map((o) => o.value))) {
+    errors.push("Choose the chapter you'd volunteer with");
+  }
   if (blank(input.howConnected)) errors.push("Tell us how you first got connected to FTGF");
-  if (blank(input.howLongAttending)) errors.push("Tell us how long you've been coming to events");
+  if (notOneOf(input.howLongAttending, HOW_LONG_ATTENDING_OPTIONS)) {
+    errors.push("Tell us how long you've been coming to events");
+  }
 
   if (blank(input.whyVolunteer)) errors.push("Tell us why you want to volunteer");
   if (blank(input.hopeToGet)) errors.push("Tell us what you hope to get out of it");
 
-  if (input.interestAreaIds.length === 0) errors.push("Pick at least one thing you're interested in helping with");
+  if (input.interestAreaIds.length === 0 && !input.interestOtherPicked) {
+    errors.push("Pick at least one skill, interest area or program");
+  }
+  if (input.interestOtherPicked && blank(input.interestOther)) errors.push('Describe your "Other" skill or interest area');
   if (unanswered(input.interestedInRetreats)) errors.push("Answer whether you're interested in volunteering at retreats");
   if (input.interestedInRetreats === "true" && RETREAT_COMMITMENTS.some((c) => !input[c.key])) {
     errors.push("Tick each retreat commitment to apply for retreat volunteering");
   }
 
-  if (blank(input.yearsFlyFishing)) errors.push("Tell us how many years you've been fly fishing");
-  if (blank(input.fishingFrequency)) errors.push("Tell us how often you fish now");
+  if (notOneOf(input.yearsFlyFishing, YEARS_FLY_FISHING_OPTIONS)) {
+    errors.push("Tell us how many years you've been fly fishing");
+  }
+  if (notOneOf(input.fishingFrequency, FISHING_FREQUENCY_OPTIONS)) errors.push("Tell us how often you fish now");
   if (blank(input.waterFished)) errors.push("Tell us what water you fish most");
   if (unanswered(input.hasTaughtOrGuided)) errors.push("Answer whether you've taught or guided anyone");
   else if (input.hasTaughtOrGuided === "true" && blank(input.taughtDetails)) {
@@ -256,13 +345,13 @@ export function applicationErrors(input: ApplicationInput, chapterNames: string[
   if (input.availability.some((a) => !AVAILABILITY_OPTIONS.some((o) => o.value === a))) {
     errors.push("Unknown availability option");
   }
-  if (blank(input.frequency)) errors.push("Tell us roughly how often you could help");
+  if (notOneOf(input.frequency, HELP_FREQUENCY_OPTIONS)) errors.push("Tell us roughly how often you could help");
 
   if (
-    blank(input.ref1Name) || blank(input.ref1Phone) || blank(input.ref1HowKnow) || blank(input.ref1Chapter) ||
+    blank(input.ref1Name) || blank(input.ref1Phone) || blank(input.ref1HowKnow) ||
     !EMAIL_PATTERN.test(input.ref1Email.trim())
   ) {
-    errors.push("Reference 1 needs a name, valid email, phone, how they know you, and their chapter");
+    errors.push("Reference 1 needs a name, valid email, phone, and how they know you");
   }
   if (
     blank(input.ref2Name) || blank(input.ref2Phone) || blank(input.ref2Relationship) || blank(input.ref2KnownFor) ||
@@ -301,6 +390,8 @@ export type ApplicationRecord = {
   hope_to_get: string;
   mission_connection: string | null;
   interest_area_ids: number[];
+  /** The skills list's "Other", described. */
+  interest_other: string | null;
   /** Role types picked on the phase 1 form, before interest areas — kept
    * for reference, never written now. Reviewer-only. */
   legacy_role_type_ids?: number[];
@@ -329,7 +420,8 @@ export type ApplicationRecord = {
   ref1_email: string;
   ref1_phone: string;
   ref1_how_know: string;
-  ref1_chapter: string;
+  /** No longer asked (null on newer applications). */
+  ref1_chapter: string | null;
   ref1_matched_volunteer: boolean;
   ref2_name: string;
   ref2_email: string;

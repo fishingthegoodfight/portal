@@ -168,7 +168,7 @@ export function ScreeningForm({
         <CardHeader>
           <CardTitle>The call</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-3">
+        <CardContent className="grid gap-4 sm:grid-cols-2">
           <div className="grid gap-1">
             <Label htmlFor="scr_date" className="text-xs">Date</Label>
             <Input id="scr_date" type="date" value={form.callDate} onChange={(e) => setForm((p) => ({ ...p, callDate: e.target.value }))} />
@@ -176,10 +176,6 @@ export function ScreeningForm({
           <div className="grid gap-1">
             <Label htmlFor="scr_who" className="text-xs">Who ran it</Label>
             <Input id="scr_who" value={form.interviewerName} onChange={(e) => setForm((p) => ({ ...p, interviewerName: e.target.value }))} />
-          </div>
-          <div className="grid gap-1">
-            <Label htmlFor="scr_length" className="text-xs">Length (minutes)</Label>
-            <Input id="scr_length" inputMode="numeric" value={form.lengthMinutes} onChange={(e) => setForm((p) => ({ ...p, lengthMinutes: e.target.value }))} />
           </div>
         </CardContent>
       </Card>
@@ -279,25 +275,41 @@ export function ScreeningForm({
           <fieldset className="grid gap-2">
             <legend className="mb-1 text-sm font-medium">Next step</legend>
             {OUTCOMES.map((o) => (
-              <label key={o.value} className="flex items-start gap-2 text-sm">
-                <input
-                  type="radio"
-                  name="scr_outcome"
-                  className="mt-1"
-                  checked={form.outcome === o.value}
-                  onChange={() => setForm((p) => ({ ...p, outcome: o.value }))}
-                />
-                <span>
-                  {o.value === "decline" && !canDecline ? `${o.label} — as a recommendation` : o.label}
-                  <span className="block text-xs text-muted-foreground">
-                    {o.value !== "decline"
-                      ? "Moves the application to Screened."
-                      : canDecline
-                        ? "Declines the application straight away. No email is sent — you'll let them know yourself."
-                        : "Only an admin can decline. This goes to an admin as your recommendation; the application stays open until they act on it."}
+              <div key={o.value} className="flex flex-col gap-2">
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="scr_outcome"
+                    className="mt-1"
+                    checked={form.outcome === o.value}
+                    onChange={() => setForm((p) => ({ ...p, outcome: o.value }))}
+                  />
+                  <span>
+                    {o.value === "decline" && !canDecline ? `${o.label} — as a recommendation` : o.label}
+                    <span className="block text-xs text-muted-foreground">
+                      {o.value === "advance"
+                        ? "Moves the application to Screened."
+                        : o.value === "hold"
+                          ? "Moves the application to Screened and parks it: it comes back in the admin digest from the date you set."
+                          : canDecline
+                            ? "Declines the application straight away. No email is sent — you'll let them know yourself."
+                            : "Only an admin can decline. This goes to an admin as your recommendation; the application stays open until they act on it."}
+                    </span>
                   </span>
-                </span>
-              </label>
+                </label>
+                {o.value === "hold" && form.outcome === "hold" && (
+                  <div className="ml-6 grid gap-1 sm:max-w-xs">
+                    <Label htmlFor="scr_revisit" className="text-xs">Revisit on</Label>
+                    <Input
+                      id="scr_revisit"
+                      type="date"
+                      min={form.callDate || undefined}
+                      value={form.revisitOn}
+                      onChange={(e) => setForm((p) => ({ ...p, revisitOn: e.target.value }))}
+                    />
+                  </div>
+                )}
+              </div>
             ))}
           </fieldset>
 
@@ -411,26 +423,26 @@ function SectionCard({
         )}
         {section.beforeRating && <p className="font-semibold">{section.beforeRating}</p>}
 
-        <fieldset className="grid gap-2" aria-label={`${section.title} rating`}>
+        {/* Left to right, lowest to highest, on wide screens; stacked when narrow. */}
+        <fieldset className="grid gap-2 md:grid-cols-3" aria-label={`${section.title} rating`}>
           {LEVELS.map((l) => (
             <label
               key={l.value}
               className={cn(
-                "flex cursor-pointer items-start gap-3 rounded-md border p-3",
+                "flex cursor-pointer flex-col gap-1.5 rounded-md border p-3",
                 level === l.value ? "border-foreground bg-accent" : "hover:bg-accent/50",
               )}
             >
-              <input
-                type="radio"
-                className="mt-1"
-                name={`scr_level_${section.key}`}
-                checked={level === l.value}
-                onChange={() => onLevel(l.value)}
-              />
-              <span>
-                <span className="block font-semibold">{l.label}</span>
-                <span className="text-muted-foreground">{section.descriptors[l.value]}</span>
+              <span className="flex items-center gap-2 font-semibold">
+                <input
+                  type="radio"
+                  name={`scr_level_${section.key}`}
+                  checked={level === l.value}
+                  onChange={() => onLevel(l.value)}
+                />
+                {l.label}
               </span>
+              <span className="text-muted-foreground">{section.descriptors[l.value]}</span>
             </label>
           ))}
         </fieldset>

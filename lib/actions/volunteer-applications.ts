@@ -2,7 +2,6 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { requireAdmin } from "@/lib/admin/require-admin";
-import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
 import { formatPhoneNumber } from "@/lib/phone";
 import {
   applicationErrors,
@@ -16,7 +15,6 @@ import {
 
 export type ApplicationActionResult = { ok: true } | { ok: false; error: string };
 
-const CHAPTER_NAMES = [...CHAPTERS.map((c) => c.name), VIRTUAL_CHAPTER];
 const yes = (v: YesNo) => v === "true";
 const text = (v: string) => v.trim() || null;
 
@@ -32,14 +30,15 @@ export async function submitVolunteerApplicationAction(input: ApplicationInput):
   const { data: claims, error: authError } = await supabase.auth.getClaims();
   if (authError || !claims?.claims) return { ok: false, error: "Not authenticated" };
 
-  const errors = applicationErrors(input, CHAPTER_NAMES);
+  const errors = applicationErrors(input);
   if (errors.length > 0) return { ok: false, error: errors[0] };
 
   const { data: areas } = await supabase.from("volunteer_interest_areas").select("id").eq("active", true);
   const validAreaIds = new Set(((areas ?? []) as { id: number }[]).map((a) => a.id));
   const interestAreaIds = [...new Set(input.interestAreaIds)].filter((id) => validAreaIds.has(id));
-  if (interestAreaIds.length === 0) {
-    return { ok: false, error: "Pick at least one thing you're interested in helping with" };
+  const interestOther = input.interestOtherPicked ? input.interestOther.trim() : "";
+  if (interestAreaIds.length === 0 && !interestOther) {
+    return { ok: false, error: "Pick at least one skill, interest area or program" };
   }
 
   const { error } = await supabase.from("volunteer_applications").insert({
@@ -50,13 +49,14 @@ export async function submitVolunteerApplicationAction(input: ApplicationInput):
     full_name: input.fullName.trim(),
     email: input.email.trim().toLowerCase(),
     phone: formatPhoneNumber(input.phone),
-    chapters: [...new Set(input.chapters)],
+    chapters: [input.chapter],
     how_connected: input.howConnected.trim(),
     how_long_attending: input.howLongAttending.trim(),
     why_volunteer: input.whyVolunteer.trim(),
     hope_to_get: input.hopeToGet.trim(),
     mission_connection: text(input.missionConnection),
     interest_area_ids: interestAreaIds,
+    interest_other: interestOther || null,
     interested_in_retreats: yes(input.interestedInRetreats),
     ack_retreat_commitment: yes(input.interestedInRetreats) ? input.ackRetreatCommitment : null,
     ack_stay_onsite: yes(input.interestedInRetreats) ? input.ackStayOnsite : null,
@@ -80,7 +80,6 @@ export async function submitVolunteerApplicationAction(input: ApplicationInput):
     ref1_email: input.ref1Email.trim(),
     ref1_phone: formatPhoneNumber(input.ref1Phone),
     ref1_how_know: input.ref1HowKnow.trim(),
-    ref1_chapter: input.ref1Chapter.trim(),
     ref2_name: input.ref2Name.trim(),
     ref2_email: input.ref2Email.trim(),
     ref2_phone: formatPhoneNumber(input.ref2Phone),

@@ -1,6 +1,6 @@
 import type { createClient } from "@/lib/supabase/server";
 import { formatDateInZone } from "@/lib/format-date";
-import { interestAreaLabel } from "@/lib/volunteer-applications";
+import { interestAreaNames } from "@/lib/volunteer-applications";
 import type { ScreeningReference } from "@/components/admin/screening-form";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
@@ -18,7 +18,7 @@ export async function loadScreeningReference(
   const { data: app } = await supabase
     .from("volunteer_applications")
     .select(
-      "full_name, status, interested_in_retreats, interest_area_ids, why_volunteer, hope_to_get, mission_connection, years_fly_fishing, fishing_frequency, water_fished, has_taught_or_guided, taught_details, beginner_comfort",
+      "full_name, status, interested_in_retreats, interest_area_ids, interest_other, why_volunteer, hope_to_get, mission_connection, years_fly_fishing, fishing_frequency, water_fished, has_taught_or_guided, taught_details, beginner_comfort",
     )
     .eq("id", applicationId)
     .maybeSingle();
@@ -37,9 +37,11 @@ export async function loadScreeningReference(
     status: app.status as string,
     roleTypes: (roleTypes ?? []) as { id: number; name: string }[],
     reference: {
-      interestAreaNames: ((areas ?? []) as { id: number; label: string; description: string | null }[])
-        .filter((a) => areaIds.includes(a.id))
-        .map(interestAreaLabel),
+      interestAreaNames: interestAreaNames(
+        (areas ?? []) as { id: number; label: string; description: string | null }[],
+        areaIds,
+        (app.interest_other as string | null) ?? null,
+      ),
       interestedInRetreats: Boolean(app.interested_in_retreats),
       attendedTotal: ((attendance ?? []) as { attended: number }[])[0]?.attended ?? 0,
       attendedEvents: ((events ?? []) as { name: string; starts_at: string; timezone: string }[])

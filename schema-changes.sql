@@ -8220,6 +8220,12 @@ revoke all on function public.my_volunteer_application(bigint) from public, anon
 grant execute on function public.my_volunteer_application(bigint) to authenticated;
 
 -- ---- 1. Screening calls, rebuilt ------------------------------------------------------
+-- The one row recorded with the earlier form: a test call (2026-09-26, on
+-- the admin's own test application 2, outcome advance). Removed by id so any
+-- other row still stops the rebuild below. The status it set (screened)
+-- stays.
+delete from public.volunteer_screenings where id = 1 and application_id = 2;
+
 do $guard$
 begin
   if exists (select 1 from public.volunteer_screenings) then
@@ -8573,5 +8579,269 @@ grant execute on function public.can_record_practical_check(uuid) to authenticat
 revoke all on function public.latest_practical_check_outcome(uuid) from public, anon, authenticated;
 revoke all on function public.admin_add_volunteer_signup_with_override(bigint, uuid, boolean, text) from public, anon;
 grant execute on function public.admin_add_volunteer_signup_with_override(bigint, uuid, boolean, text) to authenticated;
+
+commit;
+
+-- =============================================================================
+-- 2026-09-26 — Screening call: revisit date for "Pause", no call length
+-- =============================================================================
+-- NOT RUN YET (as of 2026-09-26). Runs AFTER the 2026-09-25 "Screening call
+-- form v2 …" entry above (it alters the table that entry rebuilds). Ships on
+-- the volunteer-phase-2 branch.
+--
+-- - volunteer_screenings.revisit_on: required when the outcome is "Pause,
+--   revisit later" (hold), after the call date; null otherwise.
+-- - volunteer_screenings.length_minutes is dropped (the form no longer asks).
+-- - digest_screened_applications() also returns the latest call's
+--   revisit_on and whether that date has arrived (Denver date), so the digest
+--   lists paused applications from that date ("Paused applications to
+--   revisit") and leaves them out of "Screened, references not sent yet".
+--   The return type changes, so it's dropped and recreated.
+--
+-- No new table, so no new grants: authenticated's existing insert/update on
+-- volunteer_screenings covers the new column.
+--
+-- Safe to re-run. One transaction.
+
+begin;
+
+alter table public.volunteer_screenings
+  drop column if exists length_minutes,
+  add column if not exists revisit_on date;
+
+alter table public.volunteer_screenings
+  drop constraint if exists volunteer_screenings_revisit_on_hold;
+alter table public.volunteer_screenings
+  add constraint volunteer_screenings_revisit_on_hold check (
+    (outcome = 'hold' and revisit_on is not null and revisit_on > call_date)
+    or (outcome <> 'hold' and revisit_on is null)
+  );
+
+drop function if exists public.digest_screened_applications();
+create function public.digest_screened_applications()
+returns table (
+  id bigint,
+  full_name text,
+  chapters text[],
+  screened_since timestamptz,
+  decline_recommended boolean,
+  revisit_on date,
+  revisit_due boolean
+)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select a.id, a.full_name, a.chapters, a.status_changed_at,
+         coalesce(latest.outcome = 'decline', false),
+         latest.revisit_on,
+         coalesce(latest.revisit_on <= (now() at time zone 'America/Denver')::date, false)
+    from public.volunteer_applications a
+    left join lateral (
+      select s.outcome, s.revisit_on
+        from public.volunteer_screenings s
+       where s.application_id = a.id
+       order by s.call_date desc, s.recorded_at desc
+       limit 1
+    ) latest on true
+   where a.status = 'screened'
+   order by a.status_changed_at;
+$function$;
+
+revoke all on function public.digest_screened_applications() from public, anon, authenticated;
+grant execute on function public.digest_screened_applications() to service_role;
+
+commit;
+
+-- =============================================================================
+-- 2026-09-26 — Application form: one chapter, registration's skills and
+--              programs lists, new availability, no reference 1 chapter
+-- =============================================================================
+-- NOT RUN YET (as of 2026-09-26). Runs AFTER the 2026-09-25 "Screening call
+-- form v2 …" entry (it recreates my_volunteer_application, which that entry
+-- also recreates). Ships on the volunteer-phase-2 branch.
+--
+-- 1. Interest areas become the volunteer registration form's two lists
+--    (lib/volunteers.ts): volunteer_interest_areas.kind 'skill' (SKILL_INTERESTS)
+--    or 'program' (PROGRAM_INTERESTS minus "Retreats", which the separate
+--    retreat question covers). Labels are the registration form's strings
+--    exactly, so phase 4 can prefill registration by label. Still editable
+--    in Setup. The five earlier areas are turned off (not deleted — no delete
+--    policy, and past applications keep their wording).
+--    Applications gain interest_other: the skills list's "Other", described,
+--    as on the registration form. my_volunteer_application() returns it.
+--
+-- 2. Chapter is a single choice, still stored in chapters (one element):
+--    Denver / CO Springs / Atlanta / Rome / 'No local chapter' (the same
+--    sentinel profiles.chapter uses). No chapter lead's led_chapters holds
+--    'No local chapter', so can_review_application_chapters lets only admins
+--    see those — no access change needed.
+--
+-- 3. Availability: weekday_evenings, weekday_daytime, weekend_mornings,
+--    weekend_afternoons_evenings, weekend_days (full weekend days),
+--    multi_day_retreats. The constraint is replaced.
+--
+-- 4. ref1_chapter is no longer asked: nullable, its non-blank check dropped.
+--
+-- The four new dropdowns (how long attending, how often could help, years
+-- fly fishing, how often fish now) store their wording in the existing text
+-- columns — no schema change.
+--
+-- Existing applications (two, both test data): 'weeknights' -> weekday
+-- evenings; chapter 'Virtual' -> 'No local chapter'; "Teaching fly fishing
+-- on the water" -> "Fly fishing education / instruction". Everything else
+-- stays as entered (older free-text answers, turned-off interest areas,
+-- reference 1's chapter).
+--
+-- No new table, so no new grants: the existing grants on
+-- volunteer_interest_areas and volunteer_applications cover the new columns.
+--
+-- Safe to re-run. One transaction.
+
+begin;
+
+-- ---- 1. Interest areas: two lists ---------------------------------------------------
+alter table public.volunteer_interest_areas
+  add column if not exists kind text not null default 'skill';
+alter table public.volunteer_interest_areas
+  drop constraint if exists volunteer_interest_areas_kind_check;
+alter table public.volunteer_interest_areas
+  add constraint volunteer_interest_areas_kind_check check (kind in ('skill', 'program'));
+
+insert into public.volunteer_interest_areas (key, kind, label, sort_order) values
+  ('fly_fishing_instruction', 'skill', 'Fly fishing education / instruction', 110),
+  ('mental_health_programming', 'skill', 'Mental health programming / facilitation', 120),
+  ('peer_mentoring', 'skill', 'Peer mentoring / support', 130),
+  ('event_planning', 'skill', 'Event planning / hosting', 140),
+  ('photography_videography', 'skill', 'Photography / videography', 150),
+  ('fundraising', 'skill', 'Fundraising / donor outreach', 160),
+  ('administrative_support', 'skill', 'Administrative support', 170),
+  ('social_media', 'skill', 'Social media', 180),
+  ('fish_a_longs', 'program', 'Fish A-Longs', 210),
+  ('fly_tying_nights', 'program', 'Fly Tying Nights', 220),
+  ('mens_nights', 'program', 'Men''s Nights', 230),
+  ('social_events', 'program', 'Social Events', 240),
+  ('community_engagement_events', 'program', 'Community Engagement Events', 250)
+on conflict (key) do nothing;
+
+-- Existing picks: the one that maps cleanly, before the old areas go off.
+update public.volunteer_applications a
+   set interest_area_ids = array(
+         select distinct case when x = old.id then new.id else x end
+           from unnest(a.interest_area_ids) as x
+       )
+  from public.volunteer_interest_areas old, public.volunteer_interest_areas new
+ where old.key = 'teaching_on_water' and new.key = 'fly_fishing_instruction'
+   and old.id = any(a.interest_area_ids);
+
+update public.volunteer_interest_areas
+   set active = false
+ where key in ('chapter_events', 'teaching_on_water', 'lead_program', 'behind_the_scenes', 'outreach');
+
+alter table public.volunteer_applications
+  add column if not exists interest_other text;
+
+-- ---- 2. One chapter -------------------------------------------------------------------
+update public.volunteer_applications
+   set chapters = array_replace(chapters, 'Virtual', 'No local chapter')
+ where 'Virtual' = any(chapters);
+
+-- ---- 3. Availability ------------------------------------------------------------------
+-- The old constraint goes first: it would refuse the renamed value.
+alter table public.volunteer_applications
+  drop constraint if exists volunteer_applications_availability_check;
+
+update public.volunteer_applications
+   set availability = array_replace(availability, 'weeknights', 'weekday_evenings')
+ where 'weeknights' = any(availability);
+
+alter table public.volunteer_applications
+  add constraint volunteer_applications_availability_check check (
+    cardinality(availability) > 0
+    and availability <@ array[
+      'weekday_evenings', 'weekday_daytime', 'weekend_mornings',
+      'weekend_afternoons_evenings', 'weekend_days', 'multi_day_retreats'
+    ]
+  );
+
+-- ---- 4. Reference 1's chapter no longer asked -----------------------------------------
+alter table public.volunteer_applications
+  drop constraint if exists volunteer_applications_ref1_chapter_check;
+alter table public.volunteer_applications
+  alter column ref1_chapter drop not null;
+
+-- ---- my_volunteer_application: + interest_other ---------------------------------------
+-- The return type changes, so it's dropped and recreated.
+drop function if exists public.my_volunteer_application(bigint);
+create function public.my_volunteer_application(p_id bigint)
+returns table (
+  id bigint,
+  status text,
+  submitted_at timestamptz,
+  full_name text,
+  email text,
+  phone text,
+  chapters text[],
+  how_connected text,
+  how_long_attending text,
+  why_volunteer text,
+  hope_to_get text,
+  mission_connection text,
+  interest_area_ids bigint[],
+  interest_other text,
+  interested_in_retreats boolean,
+  ack_retreat_commitment boolean,
+  ack_stay_onsite boolean,
+  ack_shared_rooms boolean,
+  ack_weather boolean,
+  years_fly_fishing text,
+  fishing_frequency text,
+  water_fished text,
+  has_taught_or_guided boolean,
+  taught_details text,
+  beginner_comfort smallint,
+  cert_first_aid_cpr boolean,
+  cert_first_aid_cpr_expires date,
+  cert_wfa_wfr boolean,
+  cert_ffi_casting boolean,
+  cert_guide_license boolean,
+  cert_other text,
+  availability text[],
+  frequency text,
+  ref1_name text,
+  ref1_email text,
+  ref1_phone text,
+  ref1_how_know text,
+  ref1_chapter text,
+  ref2_name text,
+  ref2_email text,
+  ref2_phone text,
+  ref2_relationship text,
+  ref2_known_for text,
+  anything_else text
+)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select a.id, a.status, a.submitted_at, a.full_name, a.email, a.phone, a.chapters,
+         a.how_connected, a.how_long_attending, a.why_volunteer, a.hope_to_get,
+         a.mission_connection, a.interest_area_ids, a.interest_other, a.interested_in_retreats,
+         a.ack_retreat_commitment, a.ack_stay_onsite, a.ack_shared_rooms, a.ack_weather,
+         a.years_fly_fishing, a.fishing_frequency, a.water_fished, a.has_taught_or_guided,
+         a.taught_details, a.beginner_comfort, a.cert_first_aid_cpr, a.cert_first_aid_cpr_expires,
+         a.cert_wfa_wfr, a.cert_ffi_casting, a.cert_guide_license, a.cert_other,
+         a.availability, a.frequency,
+         a.ref1_name, a.ref1_email, a.ref1_phone, a.ref1_how_know, a.ref1_chapter,
+         a.ref2_name, a.ref2_email, a.ref2_phone, a.ref2_relationship, a.ref2_known_for,
+         a.anything_else
+    from public.volunteer_applications a
+   where a.id = p_id and a.user_id = auth.uid();
+$function$;
+
+revoke all on function public.my_volunteer_application(bigint) from public, anon;
+grant execute on function public.my_volunteer_application(bigint) to authenticated;
 
 commit;

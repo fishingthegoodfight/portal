@@ -144,7 +144,12 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
           <DetailRow label="18 or older" value={volunteer.is_18_plus ? "Yes" : "Not confirmed"} />
           <DetailRow
             label="Skills / interests"
-            value={[...(profile?.skill_interests ?? []), profile?.skill_interests_other].filter(Boolean).join(", ")}
+            value={[
+              ...((profile?.skill_interests as string[] | null) ?? []).filter((s) => s !== "Other"),
+              profile?.skill_interests_other ? `Other: ${profile.skill_interests_other}` : null,
+            ]
+              .filter(Boolean)
+              .join(", ")}
           />
           <DetailRow label="Program interests" value={(profile?.program_interests ?? []).join(", ")} />
           {/* Just what's on file: whether one is needed depends on the events

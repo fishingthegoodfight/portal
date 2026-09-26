@@ -52,6 +52,7 @@ import type {
 import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
 import { RosterHealthLine, type RosterHealth } from "@/components/admin/roster-health";
 import { practicalCheckSummary, type PracticalCheck } from "@/lib/practical-checks";
+import { personDisplayName } from "@/lib/person-name";
 
 type LatestPracticalCheck = Pick<PracticalCheck, "outcome" | "checked_on" | "assessor_name">;
 
@@ -375,7 +376,7 @@ export function EventRoster({
         prev.map((p) => (p.rsvpId === person.rsvpId ? { ...p, checkedInAt: previous } : p)),
       );
       setCheckInError(
-        `Couldn't update check-in for ${person.firstName} ${person.lastName}: ${error.message}`,
+        `Couldn't update check-in for ${personDisplayName(person)}: ${error.message}`,
       );
     }
   };
@@ -400,7 +401,7 @@ export function EventRoster({
         prev.map((p) => (p.signupId === person.signupId ? { ...p, checkedInAt: previous } : p)),
       );
       setVolunteerCheckInError(
-        `Couldn't update check-in for ${person.firstName} ${person.lastName}: ${error.message}`,
+        `Couldn't update check-in for ${personDisplayName(person)}: ${error.message}`,
       );
     }
   };
@@ -1262,7 +1263,7 @@ function WaitlistRow({
       <div className="flex flex-col gap-0.5">
         <span className="font-medium">
           {person.position != null ? `#${person.position} ` : ""}
-          {person.firstName} {person.lastName}
+          {personDisplayName(person)}
         </span>
         <span className="text-sm text-muted-foreground">{contact || "—"}</span>
         {person.status === "waitlisted" && (
@@ -1338,7 +1339,7 @@ function RosterRow({
     <li className="flex flex-col gap-3 border-b py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between">
       <div className="flex flex-col gap-0.5">
         <span className="font-medium">
-          {person.firstName} {person.lastName}
+          {personDisplayName(person)}
         </span>
         <span className="text-sm text-muted-foreground">{contact || "—"}</span>
         <span className="text-sm text-muted-foreground">Emergency: {emergency || "—"}</span>
@@ -1411,7 +1412,7 @@ function VolunteerRosterRow({
     <li className="flex flex-col gap-1 border-b py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between">
       <div className="flex flex-col gap-0.5">
         <span className="font-medium">
-          {person.firstName} {person.lastName} · {person.role}
+          {personDisplayName(person)} · {person.role}
         </span>
         <span className="text-sm text-muted-foreground">{person.shiftLabel}</span>
         <span className="text-sm text-muted-foreground">{contact || "—"}</span>

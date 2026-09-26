@@ -17,10 +17,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { todayInZone } from "@/lib/format-date";
 
 /**
  * A person's practical instruction checks: the one that counts (the
- * latest) up top with its date and assessor, the history below, and — for
+ * latest) up top with its date and assessor, earlier ones below, and — for
  * someone who can record one — the form. No expiry; the date is there for
  * the reader to judge.
  */
@@ -40,7 +41,7 @@ export function PracticalChecksPanel({
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
-  const [checkedOn, setCheckedOn] = useState(new Date().toISOString().slice(0, 10));
+  const [checkedOn, setCheckedOn] = useState(() => todayInZone("America/Denver"));
   const [assessor, setAssessor] = useState(defaultAssessor);
   const [outcome, setOutcome] = useState<PracticalOutcome | "">("");
   const [notes, setNotes] = useState("");
@@ -48,6 +49,7 @@ export function PracticalChecksPanel({
   const [error, setError] = useState<string | null>(null);
 
   const latest = checks[0] ?? null;
+  const previous = checks.slice(1);
 
   const save = async () => {
     setSaving(true);
@@ -66,38 +68,39 @@ export function PracticalChecksPanel({
 
   return (
     <div className="flex flex-col gap-3 text-sm">
-      <p
+      <div
         className={cn(
-          "rounded-md border p-3 font-medium",
+          "rounded-md border p-3",
           latest?.outcome === "passed"
             ? "border-green-600/50 bg-green-600/5"
             : "border-amber-500/60 bg-amber-500/10",
         )}
       >
-        {practicalCheckSummary(latest)}
+        <p className="font-medium">{practicalCheckSummary(latest)}</p>
         {latest?.outcome !== "passed" && (
-          <span className="block text-xs font-normal text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             Needed before an instructor shift at a retreat or other event that requires health history.
-          </span>
+          </p>
         )}
-      </p>
+        {latest && <CheckDetails check={latest} recorderNames={recorderNames} />}
+      </div>
 
-      {checks.length > 0 && (
-        <ul className="flex flex-col gap-2">
-          {checks.map((c, i) => (
-            <li key={c.id} className={cn("rounded-md border p-2", i > 0 && "opacity-80")}>
-              <p>
-                <span className="font-medium">{practicalOutcomeLabel(c.outcome)}</span> · {formatCheckDate(c.checked_on)} ·
-                assessed by {c.assessor_name}
-                {i === 0 && checks.length > 1 && <span className="text-xs text-muted-foreground"> (the one that counts)</span>}
-              </p>
-              {c.notes && <p className="whitespace-pre-line text-muted-foreground">{c.notes}</p>}
-              <p className="text-xs text-muted-foreground">
-                Recorded by {(c.recorded_by && recorderNames[c.recorded_by]) || "a reviewer"}
-              </p>
-            </li>
-          ))}
-        </ul>
+      {/* The current check is the headline above; only earlier ones here. */}
+      {previous.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <p className="text-xs font-medium text-muted-foreground">Previous checks</p>
+          <ul className="flex flex-col gap-2">
+            {previous.map((c) => (
+              <li key={c.id} className="rounded-md border p-2 opacity-80">
+                <p>
+                  <span className="font-medium">{practicalOutcomeLabel(c.outcome)}</span> · {formatCheckDate(c.checked_on)} ·
+                  assessed by {c.assessor_name}
+                </p>
+                <CheckDetails check={c} recorderNames={recorderNames} />
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {canRecord &&
@@ -144,5 +147,16 @@ export function PracticalChecksPanel({
           </div>
         ))}
     </div>
+  );
+}
+
+function CheckDetails({ check, recorderNames }: { check: PracticalCheck; recorderNames: Record<string, string> }) {
+  return (
+    <>
+      {check.notes && <p className="whitespace-pre-line text-muted-foreground">{check.notes}</p>}
+      <p className="text-xs text-muted-foreground">
+        Recorded by {(check.recorded_by && recorderNames[check.recorded_by]) || "a reviewer"}
+      </p>
+    </>
   );
 }

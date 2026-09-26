@@ -1,4 +1,5 @@
 import {
+  applicationChapterLabel,
   availabilityLabel,
   BEGINNER_COMFORT_LABELS,
   RETREAT_COMMITMENTS,
@@ -46,7 +47,7 @@ export function ApplicationAnswers({
       </Section>
 
       <Section title="About you">
-        <Row label="Chapters" value={app.chapters.join(", ")} />
+        <Row label="Chapter" value={app.chapters.map(applicationChapterLabel).join(", ")} />
         <Row label="How you got connected" value={app.how_connected} />
         <Row label="How long coming to events" value={app.how_long_attending} />
       </Section>
@@ -113,7 +114,7 @@ export function ApplicationAnswers({
               ))}
           </div>
           <span className="text-muted-foreground">
-            {app.ref1_email} · {app.ref1_phone} · {app.ref1_chapter}
+            {[app.ref1_email, app.ref1_phone, app.ref1_chapter].filter(Boolean).join(" · ")}
           </span>
           <span className="text-muted-foreground">How they know you: {app.ref1_how_know}</span>
         </div>

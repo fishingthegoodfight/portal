@@ -113,3 +113,9 @@ export function formatEventDateRangeLong(
   }
   return `${longDate.format(start)} · ${time.format(start)} – ${longDate.format(end)} · ${timeWithZone.format(end)}`;
 }
+
+/** Today's calendar date in a timezone, as "YYYY-MM-DD" (for a date input's
+ * default — the UTC date is tomorrow every evening in the Americas). */
+export function todayInZone(timeZone: string): string {
+  return new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone }).format(new Date());
+}

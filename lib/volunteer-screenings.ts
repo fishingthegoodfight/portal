@@ -56,7 +56,7 @@ export type RatedSection = {
   listenFor?: string;
   /** Guidance for the screener, shown above the rating. */
   note?: string;
-  /** Shown prominently: e.g. "this is the section to decline on". */
+  /** Shown prominently, above everything else in the section. */
   emphasis?: string;
   /** A question to put to yourself right above the rating. */
   beforeRating?: string;
@@ -162,7 +162,7 @@ export const SECTIONS: RatedSection[] = [
     title: "3b. Safety judgment",
     track: "retreat",
     emphasis:
-      "This is the section to decline on. Everything else can be coached; water judgment, in a weekend, cannot.",
+      "Weak answers here mean this person shouldn't be on the water with participants. It doesn't rule out chapter roles — note it here and we'll place them elsewhere.",
     ask: [
       "What would you do if he wanted to wade somewhere you thought was unsafe?",
       "What are you watching for out there?",
@@ -261,13 +261,14 @@ export function outcomeLabel(value: string, isRecommendation = false): string {
 export type ScreeningInput = {
   callDate: string;
   interviewerName: string;
-  lengthMinutes: string;
   levels: Partial<Record<RatedSection["key"], Level | "">>;
   concerns: Partial<Record<RatedSection["key"], boolean>>;
   notes: Partial<Record<RatedSection["key"], string>>;
   reads: Partial<Record<ReadKey, ReadValue | "">>;
   recommendedRoleTypeIds: number[];
   outcome: Outcome | "";
+  /** Required with "Pause, revisit later": the digest brings it back from this date. */
+  revisitOn: string;
   summary: string;
 };
 
@@ -275,13 +276,13 @@ export function emptyScreening(interviewerName: string, today: string): Screenin
   return {
     callDate: today,
     interviewerName,
-    lengthMinutes: "",
     levels: {},
     concerns: {},
     notes: {},
     reads: {},
     recommendedRoleTypeIds: [],
     outcome: "",
+    revisitOn: "",
     summary: "",
   };
 }
@@ -290,13 +291,14 @@ export function screeningErrors(input: ScreeningInput, retreatTrack: boolean): s
   const errors: string[] = [];
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.callDate)) errors.push("Give the date of the call");
   if (!input.interviewerName.trim()) errors.push("Say who ran the call");
-  if (input.lengthMinutes.trim() && !/^\d{1,3}$/.test(input.lengthMinutes.trim())) {
-    errors.push("Length should be a number of minutes");
-  }
   const unrated = sectionsFor(retreatTrack).filter((s) => !input.levels[s.key]);
   if (unrated.length > 0) errors.push(`Rate every section (${unrated.map((s) => s.title).join("; ")} still to rate)`);
   if (READS.some((r) => !input.reads[r.key])) errors.push("Answer all four quick reads");
   if (!input.outcome) errors.push("Choose a next step");
+  if (input.outcome === "hold") {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.revisitOn)) errors.push("Give a date to revisit this application");
+    else if (input.revisitOn <= input.callDate) errors.push("The revisit date should be after the call");
+  }
   if (!input.summary.trim()) errors.push("Say why, in a few sentences");
   return errors;
 }
@@ -307,7 +309,6 @@ export type ScreeningRecord = {
   application_id: number;
   call_date: string;
   interviewer_name: string;
-  length_minutes: number | null;
   retreat_track: boolean;
   read_mission_aligned: ReadValue;
   read_emotionally_grounded: ReadValue;
@@ -315,6 +316,7 @@ export type ScreeningRecord = {
   read_right_fit_now: ReadValue;
   recommended_role_type_ids: number[];
   outcome: Outcome;
+  revisit_on: string | null;
   decline_is_recommendation: boolean;
   summary: string;
   recorded_by: string | null;
@@ -351,13 +353,13 @@ export function screeningToInput(record: ScreeningRecord): ScreeningInput {
   return {
     callDate: record.call_date,
     interviewerName: record.interviewer_name,
-    lengthMinutes: record.length_minutes != null ? String(record.length_minutes) : "",
     levels,
     concerns,
     notes,
     reads,
     recommendedRoleTypeIds: record.recommended_role_type_ids ?? [],
     outcome: record.outcome,
+    revisitOn: record.revisit_on ?? "",
     summary: record.summary ?? "",
   };
 }

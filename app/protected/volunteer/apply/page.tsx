@@ -3,18 +3,16 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
-import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
 import { formatDateInZone } from "@/lib/format-date";
 import { formatPhoneNumber } from "@/lib/phone";
 import {
   APPLICATION_STATUS_FOR_APPLICANT,
   CLOSED_STATUSES,
   type ApplicationStatus,
+  type InterestArea,
 } from "@/lib/volunteer-applications";
 import { VolunteerApplicationForm } from "@/components/volunteer-application-form";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-
-const CHAPTER_OPTIONS = [...CHAPTERS.map((c) => c.name), VIRTUAL_CHAPTER];
 
 async function ApplyLoader() {
   const supabase = await createClient();
@@ -62,7 +60,7 @@ async function ApplyLoader() {
       supabase.from("profiles").select("first_name, last_name, email, phone").eq("id", userId).maybeSingle(),
       supabase
         .from("volunteer_interest_areas")
-        .select("id, label, description")
+        .select("id, kind, label, description")
         .eq("active", true)
         .order("sort_order", { ascending: true }),
       supabase
@@ -83,9 +81,19 @@ async function ApplyLoader() {
   const totalAttended = typeof total === "number" ? total : attended.length;
   const beforePortal = Math.max(totalAttended - attended.length, 0);
   const minimum = (settings?.min_events_before_screening as number | undefined) ?? 2;
+  const contact = {
+    fullName: [profile?.first_name, profile?.last_name].filter(Boolean).join(" "),
+    email: (profile?.email as string | null) ?? (data.claims.email as string | undefined) ?? "",
+    phone: formatPhoneNumber((profile?.phone as string | null) ?? ""),
+  };
 
   return (
     <div className="flex flex-col gap-6">
+      {mine[0]?.status === "withdrawn" && (
+        <p className="text-sm text-muted-foreground">
+          You withdrew your last application — you&apos;re welcome to apply again.
+        </p>
+      )}
       <Card>
         <CardHeader>
           <CardTitle>Events you&apos;ve attended</CardTitle>
@@ -114,13 +122,13 @@ async function ApplyLoader() {
       </Card>
 
       <VolunteerApplicationForm
-        chapterOptions={CHAPTER_OPTIONS}
-        interestAreas={(interestAreas ?? []) as { id: number; label: string; description: string | null }[]}
-        contact={{
-          fullName: [profile?.first_name, profile?.last_name].filter(Boolean).join(" "),
-          email: (profile?.email as string | null) ?? (data.claims.email as string | undefined) ?? "",
-          phone: formatPhoneNumber((profile?.phone as string | null) ?? ""),
-        }}
+        // The App Router keeps a visited page's form state alive; keyed on
+        // the profile values so a name or phone saved on the profile since
+        // (e.g. after first opening this page) prefills instead of the stale
+        // empty field.
+        key={`${contact.fullName}|${contact.email}|${contact.phone}`}
+        interestAreas={(interestAreas ?? []) as Pick<InterestArea, "id" | "kind" | "label" | "description">[]}
+        contact={contact}
       />
     </div>
   );

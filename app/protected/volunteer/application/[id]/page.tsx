@@ -6,7 +6,7 @@ import { createClient } from "@/lib/supabase/server";
 import { formatDateInZone } from "@/lib/format-date";
 import {
   APPLICATION_STATUS_FOR_APPLICANT,
-  interestAreaLabel,
+  interestAreaNames,
   type ApplicationStatus,
 } from "@/lib/volunteer-applications";
 import { ApplicationAnswers, type ApplicationAnswersData } from "@/components/application-answers";
@@ -31,9 +31,11 @@ async function OwnApplicationLoader({ params }: { params: Promise<{ id: string }
   const app = ((rows ?? []) as (ApplicationAnswersData & { status: ApplicationStatus })[])[0];
   if (!app) notFound();
 
-  const interestAreaNames = ((areas ?? []) as { id: number; label: string; description: string | null }[])
-    .filter((a) => app.interest_area_ids.includes(a.id))
-    .map(interestAreaLabel);
+  const interestNames = interestAreaNames(
+    (areas ?? []) as { id: number; label: string; description: string | null }[],
+    app.interest_area_ids,
+    app.interest_other ?? null,
+  );
 
   return (
     <>
@@ -47,7 +49,7 @@ async function OwnApplicationLoader({ params }: { params: Promise<{ id: string }
           changed, just tell us when we talk.
         </p>
       </div>
-      <ApplicationAnswers app={app} interestAreaNames={interestAreaNames} />
+      <ApplicationAnswers app={app} interestAreaNames={interestNames} />
     </>
   );
 }

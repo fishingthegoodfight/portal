@@ -5,6 +5,7 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/supabase/server";
 import { loadEventAdminAccess } from "@/lib/admin/require-admin";
 import { emptyScreening, SCREENABLE_STATUSES } from "@/lib/volunteer-screenings";
+import { todayInZone } from "@/lib/format-date";
 import { ScreeningForm } from "@/components/admin/screening-form";
 import { loadScreeningReference } from "@/lib/admin/screening-reference";
 
@@ -46,7 +47,7 @@ async function NewScreeningLoader({ params }: { params: Promise<{ id: string }> 
       <ScreeningForm
         applicationId={applicationId}
         screeningId={null}
-        initial={emptyScreening(myName, new Date().toISOString().slice(0, 10))}
+        initial={emptyScreening(myName, todayInZone("America/Denver"))}
         retreatTrack={loaded.reference.interestedInRetreats}
         canDecline={access?.isAdmin ?? false}
         reference={loaded.reference}

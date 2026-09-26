@@ -10,6 +10,7 @@ import {
   rosterAnswerSections,
   rosterSectionAnswer,
 } from "@/lib/registration-sections";
+import { personDisplayName } from "@/lib/person-name";
 
 /** Restrictions text, "No restrictions", or a bold marker for no answer. */
 function DietaryCell({ note, collected }: { note: string | null; collected: boolean }) {
@@ -98,7 +99,7 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
             return (
               <tr key={person.rsvpId} className="border-b border-neutral-300">
                 <td className="py-2 pr-3">
-                  {person.firstName} {person.lastName}
+                  {personDisplayName(person)}
                 </td>
                 <td className="py-2 pr-3">{person.phone || "—"}</td>
                 <td className="py-2 pr-3">
@@ -155,7 +156,7 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
                 {people.map((person) => (
                   <tr key={person.signupId} className="border-b border-neutral-300">
                     <td className="py-2 pr-3">
-                      {person.firstName} {person.lastName}
+                      {personDisplayName(person)}
                     </td>
                     <td className="py-2 pr-3">{person.phone || "—"}</td>
                     <td className="py-2 pr-3">
