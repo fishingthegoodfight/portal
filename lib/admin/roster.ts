@@ -115,6 +115,10 @@ export type VolunteerRosterPerson = {
    * per-signup copy like rsvps.dietary_notes. */
   profileFields: Record<string, string>;
   checkedInAt: string | null;
+  /** General volunteer notes (volunteer_notes) — "" when none, or when the
+   * viewer can't read them: RLS allows admins and chapter leads for the
+   * volunteer's home chapter only. */
+  notes: string;
 };
 
 /** One volunteer role's fill status — every opportunity at the event, even
@@ -379,8 +383,19 @@ export async function loadEventRoster(
         ...emergencyOf(s.profile),
         profileFields,
         checkedInAt: s.checked_in_at,
+        notes: "",
       };
     });
+
+    const volunteerIds = [...new Set(volunteerRoster.map((v) => v.userId).filter(Boolean))];
+    if (volunteerIds.length > 0) {
+      const { data: noteRows } = await supabase
+        .from("volunteer_notes")
+        .select("volunteer_id, notes")
+        .in("volunteer_id", volunteerIds);
+      const notesById = new Map((noteRows ?? []).map((n) => [n.volunteer_id as string, (n.notes as string) ?? ""]));
+      for (const v of volunteerRoster) v.notes = notesById.get(v.userId) ?? "";
+    }
 
     volunteerRoster.sort(
       (a, b) =>

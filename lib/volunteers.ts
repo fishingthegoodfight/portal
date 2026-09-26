@@ -21,6 +21,32 @@ export const VOLUNTEER_STATUS_LABELS: Record<VolunteerStatus, string> = {
   declined: "Declined",
 };
 
+/** Most "Send portal invite" emails one batch can send
+ * (sendPortalInvitesAction) — so a mis-click can't email the whole roster. */
+export const PORTAL_INVITE_BATCH_LIMIT = 25;
+
+/**
+ * Whether a volunteer can sign in yet — the Volunteers list's account column.
+ * "none": never signed in and never sent a portal invite (a backfilled or
+ * imported volunteer). "invited": never signed in, last sent an invite on
+ * invitedAt. "active": has signed in at least once. From auth.users
+ * last_sign_in_at (admin_volunteer_account_states) and volunteers.invited_at.
+ */
+export type AccountState =
+  | { kind: "none" }
+  | { kind: "invited"; invitedAt: string }
+  | { kind: "active" };
+
+export function accountStateOf(lastSignInAt: string | null | undefined, invitedAt: string | null | undefined): AccountState {
+  if (lastSignInAt) return { kind: "active" };
+  if (invitedAt) return { kind: "invited", invitedAt };
+  return { kind: "none" };
+}
+
+/** Help text under every general-notes field (import and detail page). */
+export const VOLUNTEER_NOTES_HELP =
+  "Operational notes only — how they help, what they're good at, availability. Health, personal or screening information goes elsewhere.";
+
 export type VolunteerRoleType = {
   id: number;
   key: string;

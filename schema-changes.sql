@@ -8841,3 +8841,233 @@ revoke all on function public.my_volunteer_application(bigint) from public, anon
 grant execute on function public.my_volunteer_application(bigint) to authenticated;
 
 commit;
+
+-- =============================================================================
+-- 2026-09-26 — Volunteer roster import, portal invites, general volunteer notes
+-- =============================================================================
+-- Backs the "Import volunteers" screen (/protected/admin/volunteers/import)
+-- and the account-state column + "Send portal invite" on the Volunteers list.
+--
+-- An imported volunteer still has an auth user — volunteers.user_id
+-- references auth.users, so a volunteer record can't exist without one. The
+-- import creates it with no password, unconfirmed, and sends nothing
+-- (auth.admin.createUser never emails). "No account" in the app means "has
+-- never signed in": auth.users.last_sign_in_at is null. Until they accept a
+-- portal invite they can't sign in, so they can't sign up for events, sign a
+-- waiver, fill in the health form or register themselves. Admins can still
+-- approve roles, add them to rosters, and they count for the reference-1
+-- check.
+--
+-- 1. volunteers.joined_on: "date joined" from the roster. Not approved_at,
+--    which is rewritten every time status is set back to Approved.
+--
+-- 2. volunteer_notes: general operational notes, one row per volunteer.
+--    Separate from volunteer_screening_notes (screening-only, unchanged).
+--    A table rather than a volunteers column because chapter leads read these
+--    for volunteers whose home chapter (profiles.chapter) they lead, and
+--    chapter leads can't — and shouldn't — read volunteers rows (status,
+--    is_18_plus, health_history_outstanding). Admins read and write; chapter
+--    leads read only. No delete policy or grant: clearing the notes saves an
+--    empty string.
+--
+-- 3. complete_volunteer_registration accepts an APPROVED volunteer (a
+--    backfilled or imported one, invited to the portal afterwards) and keeps
+--    them approved. Previously it only accepted invited/registered and raised
+--    "No volunteer invitation found for this account" at the very end of the
+--    form. Otherwise identical to the 2026-09-23 version — KEEP IN SYNC with
+--    submitVolunteerRegistrationAction.
+--
+-- 4. refresh_ref1_matches(): re-computes volunteer_applications.
+--    ref1_matched_volunteer for applications still in progress (not approved,
+--    declined or withdrawn), with the same rule as the before-insert trigger.
+--    Called at the end of each import. Admin-only. Returns rows changed.
+--
+-- 5. admin_volunteer_account_states(uuid[]): each user's last_sign_in_at from
+--    auth.users, for the list's account-state column and the invite action.
+--    Admin-only.
+--
+-- Safe to re-run. One transaction.
+
+begin;
+
+-- ---- 1. Date joined -------------------------------------------------------------------
+alter table public.volunteers
+  add column if not exists joined_on date;
+
+-- ---- 2. General volunteer notes -------------------------------------------------------
+create table if not exists public.volunteer_notes (
+  volunteer_id uuid primary key references public.volunteers(user_id) on delete cascade,
+  notes text not null default '',
+  updated_by uuid references auth.users(id),
+  updated_at timestamptz not null default now()
+);
+
+-- Admin, or a chapter lead for the volunteer's home chapter
+-- (can_manage_chapter is true for any admin). SECURITY DEFINER so the
+-- profile lookup isn't itself filtered by the caller's profiles RLS.
+create or replace function public.can_read_volunteer_notes(p_volunteer_id uuid)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce(
+    (select public.can_manage_chapter(p.chapter) from public.profiles p where p.id = p_volunteer_id),
+    false
+  ) or public.is_admin();
+$function$;
+
+revoke all on function public.can_read_volunteer_notes(uuid) from public, anon;
+grant execute on function public.can_read_volunteer_notes(uuid) to authenticated;
+
+alter table public.volunteer_notes enable row level security;
+
+drop policy if exists volunteer_notes_select on public.volunteer_notes;
+create policy volunteer_notes_select on public.volunteer_notes
+  for select to authenticated
+  using (public.can_read_volunteer_notes(volunteer_id));
+
+drop policy if exists volunteer_notes_insert_admin on public.volunteer_notes;
+create policy volunteer_notes_insert_admin on public.volunteer_notes
+  for insert to authenticated
+  with check (public.is_admin());
+
+drop policy if exists volunteer_notes_update_admin on public.volunteer_notes;
+create policy volunteer_notes_update_admin on public.volunteer_notes
+  for update to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+revoke all on public.volunteer_notes from anon;
+revoke all on public.volunteer_notes from authenticated;
+grant select, insert, update on public.volunteer_notes to authenticated;
+grant all on public.volunteer_notes to service_role;
+
+-- ---- 3. Registration accepts an approved volunteer ------------------------------------
+create or replace function public.complete_volunteer_registration(p_is_18_plus boolean)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  p public.profiles%rowtype;
+  blank constant text := '';
+  v_state text;
+  v_zone text;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+  if not p_is_18_plus then
+    raise exception 'Must confirm 18 years of age or older';
+  end if;
+
+  select * into p from public.profiles where id = v_uid;
+  if not found
+     or coalesce(btrim(p.first_name), blank) = blank
+     or coalesce(btrim(p.last_name), blank) = blank
+     or coalesce(btrim(p.phone), blank) = blank
+     or coalesce(btrim(p.email), blank) = blank
+     or coalesce(btrim(p.address_line1), blank) = blank
+     or coalesce(btrim(p.city), blank) = blank
+     or coalesce(btrim(p.state), blank) = blank
+     or coalesce(btrim(p.postal_code), blank) = blank
+     or coalesce(btrim(p.emergency_contact), blank) = blank
+     or coalesce(btrim(p.emergency_phone), blank) = blank
+     or coalesce(btrim(p.tshirt_size), blank) = blank
+     or coalesce(btrim(p.favorite_snack), blank) = blank
+     or coalesce(btrim(p.favorite_na_beverage), blank) = blank then
+    raise exception 'Complete every required registration answer first';
+  end if;
+
+  if p.chapter not in ('Atlanta', 'CO Springs', 'Denver', 'Rome', 'No local chapter') then
+    raise exception 'Choose a home chapter';
+  end if;
+  v_state := public.event_waiver_state(null, p.chapter);
+  v_zone := case when v_state = 'GA' then 'America/New_York' else 'America/Denver' end;
+  if not public.has_signed_active_waiver(
+       v_uid, v_state, extract(year from (now() at time zone v_zone))::int, 'volunteer'
+     ) then
+    raise exception 'Sign the volunteer waiver first';
+  end if;
+
+  -- An approved volunteer stays approved; invited/registered become registered.
+  update public.volunteers
+     set status = case when status = 'approved' then 'approved' else 'registered' end,
+         registered_at = coalesce(registered_at, now()),
+         is_18_plus = true,
+         health_history_outstanding = true,
+         updated_at = now()
+   where user_id = v_uid
+     and status in ('invited', 'registered', 'approved');
+
+  if not found then
+    raise exception 'No volunteer invitation found for this account';
+  end if;
+end $function$;
+
+revoke all on function public.complete_volunteer_registration(boolean) from public, anon;
+grant execute on function public.complete_volunteer_registration(boolean) to authenticated;
+
+-- ---- 4. Re-check reference 1 against the (now imported) roster ------------------------
+-- Same rule as volunteer_applications_before_insert.
+create or replace function public.refresh_ref1_matches()
+returns integer
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_count integer;
+begin
+  if not public.is_admin() then
+    raise exception 'Admins only' using errcode = '42501';
+  end if;
+
+  update public.volunteer_applications a
+     set ref1_matched_volunteer = m.matched
+    from (
+      select a2.id,
+             exists (
+               select 1 from public.volunteers v
+                 join public.profiles p on p.id = v.user_id
+                where v.status = 'approved' and lower(p.email) = lower(btrim(a2.ref1_email))
+             ) as matched
+        from public.volunteer_applications a2
+       where a2.status not in ('approved', 'declined', 'withdrawn')
+    ) m
+   where a.id = m.id
+     and a.ref1_matched_volunteer is distinct from m.matched;
+
+  get diagnostics v_count = row_count;
+  return v_count;
+end $function$;
+
+revoke all on function public.refresh_ref1_matches() from public, anon;
+grant execute on function public.refresh_ref1_matches() to authenticated;
+
+-- ---- 5. Account state for the Volunteers list ----------------------------------------
+create or replace function public.admin_volunteer_account_states(p_user_ids uuid[])
+returns table (user_id uuid, last_sign_in_at timestamptz)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+begin
+  if not public.is_admin() then
+    raise exception 'Admins only' using errcode = '42501';
+  end if;
+  return query
+    select u.id, u.last_sign_in_at
+      from auth.users u
+     where u.id = any(p_user_ids);
+end $function$;
+
+revoke all on function public.admin_volunteer_account_states(uuid[]) from public, anon;
+grant execute on function public.admin_volunteer_account_states(uuid[]) to authenticated;
+
+commit;

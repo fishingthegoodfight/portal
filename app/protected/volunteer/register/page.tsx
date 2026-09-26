@@ -14,7 +14,7 @@ async function RegisterLoader() {
   const userId = data.claims.sub as string;
 
   const [{ data: volunteer }, { data: profile }] = await Promise.all([
-    supabase.from("volunteers").select("status").eq("user_id", userId).maybeSingle(),
+    supabase.from("volunteers").select("status, registered_at").eq("user_id", userId).maybeSingle(),
     supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
   ]);
 
@@ -47,7 +47,9 @@ async function RegisterLoader() {
       </div>
       <VolunteerRegistrationForm
         userId={userId}
-        alreadyRegistered={volunteer.status !== "invited"}
+        // Not status: a backfilled or imported volunteer is already
+        // 'approved' but has never been through this form.
+        alreadyRegistered={volunteer.registered_at != null}
         initialProfile={{
           first_name: profile?.first_name ?? "",
           last_name: profile?.last_name ?? "",

@@ -4,13 +4,18 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/supabase/server";
 import { InviteVolunteerForm } from "@/components/admin/invite-volunteer-form";
 import { VolunteerFilters } from "@/components/admin/volunteer-filters";
-import { Badge } from "@/components/ui/badge";
+import { VolunteersList } from "@/components/admin/volunteers-list";
 import { Button } from "@/components/ui/button";
-import { VOLUNTEER_STATUS_LABELS, type VolunteerStatus } from "@/lib/volunteers";
+import { accountStateOf, type VolunteerStatus } from "@/lib/volunteers";
+
+// "Send portal invite" runs on this page — a batch of up to
+// PORTAL_INVITE_BATCH_LIMIT emails, spaced out, can take a while.
+export const maxDuration = 120;
 
 type VolunteerRow = {
   user_id: string;
   status: VolunteerStatus;
+  invited_at: string | null;
 };
 
 type RoleApprovalRow = {
@@ -29,7 +34,7 @@ async function VolunteersListLoader({
 
   let volunteersQuery = supabase
     .from("volunteers")
-    .select("user_id, status");
+    .select("user_id, status, invited_at");
   if (status) volunteersQuery = volunteersQuery.eq("status", status);
   const [{ data: volunteers, error }, { data: roleTypes }] = await Promise.all([
     volunteersQuery,
@@ -43,7 +48,7 @@ async function VolunteersListLoader({
   const rows = (volunteers ?? []) as VolunteerRow[];
   const ids = rows.map((r) => r.user_id);
 
-  const [{ data: profiles }, { data: approvals }, { data: certs }] = await Promise.all([
+  const [{ data: profiles }, { data: approvals }, { data: certs }, accountStates] = await Promise.all([
     ids.length > 0
       ? supabase.from("profiles").select("id, first_name, last_name, email, chapter").in("id", ids)
       : Promise.resolve({ data: [] }),
@@ -61,7 +66,16 @@ async function VolunteersListLoader({
           .in("volunteer_id", ids)
           .eq("kind", "first_aid_cpr_aed")
       : Promise.resolve({ data: [] }),
+    ids.length > 0
+      ? supabase.rpc("admin_volunteer_account_states", { p_user_ids: ids })
+      : Promise.resolve({ data: [], error: null }),
   ]);
+  const lastSignInById = new Map(
+    ((accountStates.data ?? []) as { user_id: string; last_sign_in_at: string | null }[]).map((a) => [
+      a.user_id,
+      a.last_sign_in_at,
+    ]),
+  );
 
   const profileById = new Map((profiles ?? []).map((p) => [p.id as string, p]));
   const approvalsByVolunteer = new Map<string, RoleApprovalRow[]>();
@@ -97,6 +111,7 @@ async function VolunteersListLoader({
       roles: roleApprovals.map((a) => a.role_type?.name).filter(Boolean) as string[],
       roleTypeIds: roleApprovals.map((a) => a.role_type_id),
       certMissingOrExpired: needsCert && !hasCurrentCert,
+      account: accountStates.error ? null : accountStateOf(lastSignInById.get(r.user_id), r.invited_at),
     };
   });
 
@@ -119,36 +134,13 @@ async function VolunteersListLoader({
         roleTypes={roleTypes ?? []}
       />
 
+      {accountStates.error && (
+        <p className="text-sm text-red-500">Couldn&apos;t load account states: {accountStates.error.message}</p>
+      )}
       {combined.length === 0 ? (
         <p className="text-sm text-muted-foreground">No volunteers match these filters.</p>
       ) : (
-        <div className="flex flex-col divide-y rounded-md border">
-          {combined.map((v) => (
-            <Link
-              key={v.userId}
-              href={`/protected/admin/volunteers/${v.userId}`}
-              className="flex flex-col gap-1 p-3 text-sm hover:bg-accent sm:flex-row sm:items-center sm:justify-between"
-            >
-              <div className="flex flex-col">
-                <span className="font-medium">
-                  {[v.firstName, v.lastName].filter(Boolean).join(" ") || v.email || v.userId}
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  {v.chapter || "No chapter"} · {v.email}
-                </span>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge variant="outline">{VOLUNTEER_STATUS_LABELS[v.status]}</Badge>
-                {v.roles.map((name) => (
-                  <Badge key={name} variant="secondary">
-                    {name}
-                  </Badge>
-                ))}
-                {v.certMissingOrExpired && <Badge variant="destructive">Cert missing/expired</Badge>}
-              </div>
-            </Link>
-          ))}
-        </div>
+        <VolunteersList volunteers={combined} />
       )}
     </div>
   );
@@ -166,9 +158,14 @@ export default function AdminVolunteersPage({
           <h1 className="font-bold text-2xl mb-1">Volunteers</h1>
           <p className="text-sm text-muted-foreground">The volunteer registry: invites, roles, and approvals.</p>
         </div>
-        <Button asChild variant="outline">
-          <Link href="/protected/admin/volunteers/roles">Role types</Link>
-        </Button>
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button asChild variant="outline">
+            <Link href="/protected/admin/volunteers/import">Import volunteers</Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link href="/protected/admin/volunteers/roles">Role types</Link>
+          </Button>
+        </div>
       </div>
       <InviteVolunteerForm />
       <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>

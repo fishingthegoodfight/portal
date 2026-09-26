@@ -49,8 +49,9 @@ export function VolunteerRegistrationForm({
   initialProfile,
 }: {
   userId: string;
-  /** True once status has moved past 'invited' — the form still works (a
-   * resubmit just updates answers), but the framing changes slightly. */
+  /** True once they've submitted this form before (registered_at is set) —
+   * the form still works (a resubmit just updates answers), but the framing
+   * changes slightly. */
   alreadyRegistered: boolean;
   initialProfile: ProfileData;
 }) {

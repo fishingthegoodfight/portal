@@ -1430,6 +1430,9 @@ function VolunteerRosterRow({
           }
           collectsDietary={answerSections.some((section) => section.id === "dietary")}
         />
+        {person.notes && (
+          <span className="whitespace-pre-line text-sm text-muted-foreground">Notes: {person.notes}</span>
+        )}
         {practicalCheck && (
           <Link
             href={`/protected/admin/practical-checks/${person.userId}`}

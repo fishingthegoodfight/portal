@@ -254,3 +254,27 @@ export async function createApprovedVolunteerAction(input: {
 
   return { ok: true, volunteerId: userId };
 }
+
+/**
+ * General operational notes (volunteer_notes) — any admin writes, chapter
+ * leads for the volunteer's home chapter read (RLS). Separate from the
+ * screening-only notes above. An empty string clears them; there's no
+ * delete.
+ */
+export async function saveVolunteerNotesAction(volunteerId: string, notes: string): Promise<ActionResult> {
+  const supabase = await createClient();
+  const adminCheck = await requireAdmin(supabase);
+  if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
+
+  const { error } = await supabase.from("volunteer_notes").upsert(
+    {
+      volunteer_id: volunteerId,
+      notes: notes.trim(),
+      updated_by: adminCheck.actor.userId,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "volunteer_id" },
+  );
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}

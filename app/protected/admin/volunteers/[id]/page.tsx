@@ -5,11 +5,14 @@ import { createClient } from "@/lib/supabase/server";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { formatDateInZone } from "@/lib/format-date";
 import { timezoneForChapter } from "@/lib/chapters";
-import { certIsCurrent, VOLUNTEER_STATUS_LABELS, type VolunteerStatus } from "@/lib/volunteers";
+import { accountStateOf, certIsCurrent, VOLUNTEER_STATUS_LABELS, type VolunteerStatus } from "@/lib/volunteers";
 import { VolunteerStatusSelect } from "@/components/admin/volunteer-status-select";
 import { VolunteerRoleApprovals, type RoleTypeForApproval } from "@/components/admin/volunteer-role-approvals";
 import { VolunteerAdminNotes } from "@/components/admin/volunteer-admin-notes";
 import { ResendInviteButton } from "@/components/admin/resend-invite-button";
+import { SendPortalInviteButton } from "@/components/admin/send-portal-invite-button";
+import { AccountStateLabel } from "@/components/admin/volunteers-list";
+import { VolunteerNotes } from "@/components/admin/volunteer-notes";
 import { Badge } from "@/components/ui/badge";
 import { PracticalChecksPanel } from "@/components/admin/practical-checks-panel";
 import { loadPracticalChecks } from "@/lib/admin/practical-checks";
@@ -41,10 +44,18 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
   const latestHealthYear =
     ((healthYears ?? []) as { latest_year: number }[])[0]?.latest_year ?? null;
 
-  const [practical, { data: me }] = await Promise.all([
+  const [practical, { data: me }, { data: generalNotes }, accountStates] = await Promise.all([
     loadPracticalChecks(supabase, volunteerId),
     supabase.from("profiles").select("first_name, last_name").eq("id", adminCheck.actor.userId).maybeSingle(),
+    supabase.from("volunteer_notes").select("notes").eq("volunteer_id", volunteerId).maybeSingle(),
+    supabase.rpc("admin_volunteer_account_states", { p_user_ids: [volunteerId] }),
   ]);
+  const account = accountStates.error
+    ? null
+    : accountStateOf(
+        ((accountStates.data ?? []) as { last_sign_in_at: string | null }[])[0]?.last_sign_in_at,
+        volunteer.invited_at as string | null,
+      );
 
   const [{ data: allRoleTypes }, { data: activeApprovals }, { data: certs }, { data: signatures }, screeningResult] =
     await Promise.all([
@@ -115,8 +126,14 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
         </div>
         <div className="flex flex-col items-end gap-2">
           <VolunteerStatusSelect volunteerId={volunteerId} status={volunteer.status} />
-          {volunteer.status === "invited" && profile?.email && (
-            <ResendInviteButton email={profile.email as string} />
+          <span className="text-xs">
+            <AccountStateLabel account={account} chapter={(profile?.chapter as string | null) ?? ""} />
+          </span>
+          {account && account.kind !== "active" && profile?.email ? (
+            <SendPortalInviteButton volunteerId={volunteerId} resend={account.kind === "invited"} />
+          ) : (
+            // Signed in but never registered: a reminder pointing at the form.
+            volunteer.status === "invited" && profile?.email && <ResendInviteButton email={profile.email as string} />
           )}
         </div>
       </div>
@@ -128,6 +145,7 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
         <CardContent className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
           <DetailRow label="Phone" value={profile?.phone} />
           <DetailRow label="Home chapter" value={profile?.chapter} />
+          <DetailRow label="Date joined" value={volunteer.joined_on as string | null} />
           <DetailRow
             label="Address"
             value={[profile?.address_line1, profile?.address_line2, profile?.city, profile?.state, profile?.postal_code]
@@ -231,10 +249,19 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader>
+          <CardTitle>Notes</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <VolunteerNotes volunteerId={volunteerId} initialNotes={(generalNotes?.notes as string | undefined) ?? ""} />
+        </CardContent>
+      </Card>
+
       {canViewScreening && (
         <Card>
           <CardHeader>
-            <CardTitle>Admin notes</CardTitle>
+            <CardTitle>Screening notes</CardTitle>
           </CardHeader>
           <CardContent>
             <VolunteerAdminNotes
