@@ -8050,11 +8050,9 @@ commit;
 -- 2026-09-25 — Screening call form v2, retreat commitments on the
 --              application, practical instruction checks
 -- =============================================================================
--- NOT RUN YET (as of 2026-09-25): this entry has not been applied to the
--- database. It ships on the volunteer-phase-2 branch, untested.
--- LIVE APPLY FORM IS BROKEN: the phase 2 SQL (the entry above) was run, but
--- its code was never deployed, so the live application form still writes the
--- renamed role_type_ids column and fails. Merging volunteer-phase-2 fixes it.
+-- Run 2026-09-26, together with the two 2026-09-26 entries below, the same
+-- day volunteer-phase-2 was merged to main (which also fixed the live apply
+-- form, broken while the phase 2 SQL above was run but its code not deployed).
 --
 -- Runs on top of "interest areas, the applicant's own view, and phase 2".
 -- Access rules, statuses, digest sections and permissions for screening
@@ -8585,9 +8583,8 @@ commit;
 -- =============================================================================
 -- 2026-09-26 — Screening call: revisit date for "Pause", no call length
 -- =============================================================================
--- NOT RUN YET (as of 2026-09-26). Runs AFTER the 2026-09-25 "Screening call
--- form v2 …" entry above (it alters the table that entry rebuilds). Ships on
--- the volunteer-phase-2 branch.
+-- Run 2026-09-26, after the 2026-09-25 "Screening call form v2 …" entry
+-- above (it alters the table that entry rebuilds).
 --
 -- - volunteer_screenings.revisit_on: required when the outcome is "Pause,
 --   revisit later" (hold), after the call date; null otherwise.
@@ -8658,9 +8655,8 @@ commit;
 -- 2026-09-26 — Application form: one chapter, registration's skills and
 --              programs lists, new availability, no reference 1 chapter
 -- =============================================================================
--- NOT RUN YET (as of 2026-09-26). Runs AFTER the 2026-09-25 "Screening call
--- form v2 …" entry (it recreates my_volunteer_application, which that entry
--- also recreates). Ships on the volunteer-phase-2 branch.
+-- Run 2026-09-26, after the 2026-09-25 "Screening call form v2 …" entry (it
+-- recreates my_volunteer_application, which that entry also recreates).
 --
 -- 1. Interest areas become the volunteer registration form's two lists
 --    (lib/volunteers.ts): volunteer_interest_areas.kind 'skill' (SKILL_INTERESTS)
