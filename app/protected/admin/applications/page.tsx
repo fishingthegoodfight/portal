@@ -34,6 +34,8 @@ type Row = {
   status: ApplicationStatus;
   ref1_matched_volunteer: boolean;
   attendance_target: number | null;
+  /** Phase 3: set once an admin marks both references reviewed. */
+  references_reviewed_at: string | null;
   /** Live, unanswered reference requests that have gone quiet (phase 3). */
   volunteer_reference_requests: { gave_up_at: string | null; submitted_at: string | null; replaced_at: string | null }[];
 };
@@ -60,7 +62,7 @@ async function ApplicationsLoader({ searchParams }: { searchParams: Promise<Sear
     supabase
       .from("volunteer_applications")
       .select(
-        "id, full_name, chapters, submitted_at, status, ref1_matched_volunteer, attendance_target, volunteer_reference_requests(gave_up_at, submitted_at, replaced_at)",
+        "id, full_name, chapters, submitted_at, status, ref1_matched_volunteer, attendance_target, references_reviewed_at, volunteer_reference_requests(gave_up_at, submitted_at, replaced_at)",
       )
       .order("submitted_at", { ascending: false }),
     supabase.from("app_settings").select("min_events_before_screening").maybeSingle(),
@@ -131,6 +133,9 @@ async function ApplicationsLoader({ searchParams }: { searchParams: Promise<Sear
                       </Badge>
                     )}
                     {needsReplacement && <Badge variant="destructive">Reference needs replacing</Badge>}
+                    {r.status === "references_in" && r.references_reviewed_at && (
+                      <Badge variant="outline">Waiting on approval</Badge>
+                    )}
                     <Badge variant={CLOSED_STATUSES.includes(r.status) ? "secondary" : "default"}>
                       {APPLICATION_STATUS_LABELS[r.status]}
                     </Badge>

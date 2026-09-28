@@ -9912,3 +9912,355 @@ begin
   return new;
 end;
 $$;
+
+-- =============================================================================
+-- 2026-09-28 — Volunteer applications, phase 4: approval and registration
+-- =============================================================================
+-- After both references are in and an admin has marked them reviewed, an
+-- ADMIN approves the application (chapter leads recommend, through the
+-- screening call's recommended roles, but can't approve). Approving, in one
+-- transaction (volunteer_application_approve):
+--   - creates or updates their volunteers row as Approved, recording who
+--     approved it (new volunteers.approved_by) and when (approved_at); a
+--     first approval also sets joined_on (Denver date) if it's blank;
+--   - adds a role approval for each chosen role (skipping any already
+--     active), approved_by the same admin;
+--   - sets the application to Approved, with an 'approved' history entry
+--     naming the roles.
+-- The server then emails them the registration form and records that with
+-- application_record_registration_email ('registration_emailed' in the
+-- history). If the email fails, the approval stands and the review screen
+-- offers "Resend registration email".
+--
+-- First-time volunteers: among retreat roles, only Fishing Instructor
+-- (key fishing_instructor). "First time" = no role approval on record
+-- (revoked ones count) and no approved_at on a volunteers row. Enforced here
+-- as well as on the screen. Later additions go through the existing role
+-- approvals screen, which this doesn't touch.
+--
+-- Registration gains a "Fly fishing, certifications and availability"
+-- section, the application's own questions and options, stored in a new
+-- table: volunteer_registration_details, one row per volunteer. It's where
+-- those answers are confirmed at registration rather than carried forward
+-- from an application that may be months old. The volunteer reads and
+-- writes their own row; admins read every row. Nobody else. Registration
+-- now requires the row (complete_volunteer_registration, below).
+--
+-- Declining at references_in is unchanged: admins only, internal reason, no
+-- email (volunteer_application_act).
+--
+-- Safe to re-run. One transaction.
+
+begin;
+
+-- ---- 1. Who approved a volunteer ------------------------------------------------
+alter table public.volunteers
+  add column if not exists approved_by uuid references auth.users(id) on delete set null;
+
+-- ---- 2. History actions ------------------------------------------------------------
+alter table public.volunteer_application_events drop constraint if exists volunteer_application_events_action_check;
+alter table public.volunteer_application_events
+  add constraint volunteer_application_events_action_check check (action in (
+    'submitted', 'attendance_reached', 'invited_to_schedule', 'asked_to_attend_more',
+    'screening_recorded', 'screened', 'declined', 'reapplication_allowed', 'withdrawn',
+    'references_requested', 'reference_replaced', 'reference_reminder_sent',
+    'reference_received', 'references_received', 'references_reviewed',
+    'approved', 'registration_emailed'
+  ));
+
+-- ---- 3. Registration: fly fishing, certifications, availability ----------------
+-- Same questions and options as the application (lib/volunteer-applications.ts
+-- — the form and the application form share one component). The dropdown
+-- answers are stored as the chosen wording, as on the application.
+create table if not exists public.volunteer_registration_details (
+  volunteer_id uuid primary key references public.volunteers(user_id) on delete cascade,
+  years_fly_fishing text not null check (btrim(years_fly_fishing) <> ''),
+  fishing_frequency text not null check (btrim(fishing_frequency) <> ''),
+  water_fished text not null check (btrim(water_fished) <> ''),
+  has_taught_or_guided boolean not null,
+  taught_details text,
+  beginner_comfort smallint not null check (beginner_comfort between 1 and 5),
+  cert_first_aid_cpr boolean not null,
+  cert_first_aid_cpr_expires date,
+  cert_wfa_wfr boolean not null,
+  cert_ffi_casting boolean not null,
+  cert_guide_license boolean not null,
+  cert_other text,
+  availability text[] not null,
+  frequency text not null check (btrim(frequency) <> ''),
+  -- When they last saved (confirmed) these answers. Set by the trigger below.
+  confirmed_at timestamptz not null default now(),
+
+  constraint volunteer_registration_details_availability_check check (
+    cardinality(availability) > 0
+    and availability <@ array[
+      'weekday_evenings', 'weekday_daytime', 'weekend_mornings',
+      'weekend_afternoons_evenings', 'weekend_days', 'multi_day_retreats'
+    ]
+  ),
+  constraint volunteer_registration_details_first_aid check (
+    cert_first_aid_cpr = (cert_first_aid_cpr_expires is not null)
+  ),
+  constraint volunteer_registration_details_taught check (
+    has_taught_or_guided or taught_details is null
+  )
+);
+
+create or replace function public.volunteer_registration_details_stamp()
+returns trigger
+language plpgsql
+as $function$
+begin
+  new.confirmed_at := now();
+  return new;
+end $function$;
+
+drop trigger if exists volunteer_registration_details_stamp on public.volunteer_registration_details;
+create trigger volunteer_registration_details_stamp
+  before insert or update on public.volunteer_registration_details
+  for each row execute function public.volunteer_registration_details_stamp();
+
+revoke all on function public.volunteer_registration_details_stamp() from public, anon, authenticated;
+
+alter table public.volunteer_registration_details enable row level security;
+
+drop policy if exists volunteer_registration_details_select_own on public.volunteer_registration_details;
+create policy volunteer_registration_details_select_own on public.volunteer_registration_details
+  for select to authenticated
+  using (volunteer_id = auth.uid());
+
+drop policy if exists volunteer_registration_details_select_admin on public.volunteer_registration_details;
+create policy volunteer_registration_details_select_admin on public.volunteer_registration_details
+  for select to authenticated
+  using (public.is_admin());
+
+-- Own row only, and only with a volunteers row (the foreign key).
+drop policy if exists volunteer_registration_details_insert_own on public.volunteer_registration_details;
+create policy volunteer_registration_details_insert_own on public.volunteer_registration_details
+  for insert to authenticated
+  with check (volunteer_id = auth.uid());
+
+drop policy if exists volunteer_registration_details_update_own on public.volunteer_registration_details;
+create policy volunteer_registration_details_update_own on public.volunteer_registration_details
+  for update to authenticated
+  using (volunteer_id = auth.uid())
+  with check (volunteer_id = auth.uid());
+-- No delete policy: answers are updated, never removed.
+
+revoke all on public.volunteer_registration_details from anon;
+revoke all on public.volunteer_registration_details from authenticated;
+grant select, insert, update on public.volunteer_registration_details to authenticated;
+grant all on public.volunteer_registration_details to service_role;
+-- No sequence: the key is the volunteer's user id.
+
+-- ---- 4. Registration requires those answers ---------------------------------------
+-- As the 2026-09-26 version, plus the volunteer_registration_details check.
+-- KEEP IN SYNC with submitVolunteerRegistrationAction.
+create or replace function public.complete_volunteer_registration(p_is_18_plus boolean)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  p public.profiles%rowtype;
+  blank constant text := '';
+  v_state text;
+  v_zone text;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+  if not p_is_18_plus then
+    raise exception 'Must confirm 18 years of age or older';
+  end if;
+
+  select * into p from public.profiles where id = v_uid;
+  if not found
+     or coalesce(btrim(p.first_name), blank) = blank
+     or coalesce(btrim(p.last_name), blank) = blank
+     or coalesce(btrim(p.phone), blank) = blank
+     or coalesce(btrim(p.email), blank) = blank
+     or coalesce(btrim(p.address_line1), blank) = blank
+     or coalesce(btrim(p.city), blank) = blank
+     or coalesce(btrim(p.state), blank) = blank
+     or coalesce(btrim(p.postal_code), blank) = blank
+     or coalesce(btrim(p.emergency_contact), blank) = blank
+     or coalesce(btrim(p.emergency_phone), blank) = blank
+     or coalesce(btrim(p.tshirt_size), blank) = blank
+     or coalesce(btrim(p.favorite_snack), blank) = blank
+     or coalesce(btrim(p.favorite_na_beverage), blank) = blank then
+    raise exception 'Complete every required registration answer first';
+  end if;
+
+  if not exists (select 1 from public.volunteer_registration_details d where d.volunteer_id = v_uid) then
+    raise exception 'Answer the fly fishing, certification and availability questions first';
+  end if;
+
+  if p.chapter not in ('Atlanta', 'CO Springs', 'Denver', 'Rome', 'No local chapter') then
+    raise exception 'Choose a home chapter';
+  end if;
+  v_state := public.event_waiver_state(null, p.chapter);
+  v_zone := case when v_state = 'GA' then 'America/New_York' else 'America/Denver' end;
+  if not public.has_signed_active_waiver(
+       v_uid, v_state, extract(year from (now() at time zone v_zone))::int, 'volunteer'
+     ) then
+    raise exception 'Sign the volunteer waiver first';
+  end if;
+
+  -- An approved volunteer stays approved; invited/registered become registered.
+  update public.volunteers
+     set status = case when status = 'approved' then 'approved' else 'registered' end,
+         registered_at = coalesce(registered_at, now()),
+         is_18_plus = true,
+         health_history_outstanding = true,
+         updated_at = now()
+   where user_id = v_uid
+     and status in ('invited', 'registered', 'approved');
+
+  if not found then
+    raise exception 'No volunteer invitation found for this account';
+  end if;
+end $function$;
+
+revoke all on function public.complete_volunteer_registration(boolean) from public, anon;
+grant execute on function public.complete_volunteer_registration(boolean) to authenticated;
+
+-- ---- 5. First-time volunteers -----------------------------------------------------
+-- Never approved for anything: no role approval on record (revoked ones
+-- count) and no approved_at. Internal; the approval function uses it.
+create or replace function public.volunteer_is_first_timer(p_user_id uuid)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select not exists (select 1 from public.volunteer_role_approvals a where a.volunteer_id = p_user_id)
+     and not exists (select 1 from public.volunteers v where v.user_id = p_user_id and v.approved_at is not null);
+$function$;
+
+-- For the review screen: admins get the answer, anyone else null.
+create or replace function public.application_applicant_is_first_timer(p_application_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select case when public.is_admin() then
+    (select public.volunteer_is_first_timer(a.user_id) from public.volunteer_applications a where a.id = p_application_id)
+  end;
+$function$;
+
+-- ---- 6. Approving -----------------------------------------------------------------
+-- Admins only. Returns the approved roles' names, in role-type order, for
+-- the registration email.
+create or replace function public.volunteer_application_approve(p_application_id bigint, p_role_type_ids bigint[])
+returns text[]
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  v_app public.volunteer_applications%rowtype;
+  v_ids bigint[];
+  v_not_allowed text;
+  v_names text[];
+begin
+  if not public.is_admin() then
+    raise exception 'Only an admin can approve a volunteer application' using errcode = '42501';
+  end if;
+  select * into v_app from public.volunteer_applications where id = p_application_id for update;
+  if not found then
+    raise exception 'Application not found';
+  end if;
+  if v_app.status <> 'references_in' or v_app.references_reviewed_at is null then
+    raise exception 'An application can be approved once both references are in and marked reviewed'
+      using errcode = 'P0001';
+  end if;
+
+  v_ids := array(select distinct i from unnest(coalesce(p_role_type_ids, '{}'::bigint[])) i where i is not null);
+  if cardinality(v_ids) = 0 then
+    raise exception 'Choose at least one role' using errcode = 'P0001';
+  end if;
+  if exists (
+    select 1 from unnest(v_ids) i
+     where not exists (select 1 from public.volunteer_role_types rt where rt.id = i and rt.active)
+  ) then
+    raise exception 'One of those roles no longer exists or is turned off — reload and choose again'
+      using errcode = 'P0001';
+  end if;
+
+  if public.volunteer_is_first_timer(v_app.user_id) then
+    select string_agg(rt.name, ', ' order by rt.sort_order, rt.name) into v_not_allowed
+      from public.volunteer_role_types rt
+     where rt.id = any(v_ids) and rt.for_retreats and rt.key <> 'fishing_instructor';
+    if v_not_allowed is not null then
+      raise exception 'First-time volunteers can only be approved for Fishing Instructor among retreat roles, not %', v_not_allowed
+        using errcode = 'P0001';
+    end if;
+  end if;
+
+  insert into public.volunteers (user_id, status, approved_at, approved_by, joined_on)
+  values (v_app.user_id, 'approved', now(), v_uid, (now() at time zone 'America/Denver')::date)
+  on conflict (user_id) do update
+     set status = 'approved',
+         approved_at = now(),
+         approved_by = v_uid,
+         joined_on = coalesce(public.volunteers.joined_on, excluded.joined_on),
+         updated_at = now();
+
+  insert into public.volunteer_role_approvals (volunteer_id, role_type_id, approved_by)
+  select v_app.user_id, i, v_uid
+    from unnest(v_ids) i
+   where not exists (
+     select 1 from public.volunteer_role_approvals a
+      where a.volunteer_id = v_app.user_id and a.role_type_id = i and a.revoked_at is null
+   );
+
+  select array_agg(rt.name order by rt.sort_order, rt.name) into v_names
+    from public.volunteer_role_types rt
+   where rt.id = any(v_ids);
+
+  update public.volunteer_applications
+     set status = 'approved', status_changed_at = now()
+   where id = p_application_id;
+  insert into public.volunteer_application_events (application_id, action, from_status, to_status, note, actor)
+  values (p_application_id, 'approved', 'references_in', 'approved',
+          'Roles: ' || array_to_string(v_names, ', '), v_uid);
+
+  return v_names;
+end $function$;
+
+-- After the registration email goes out (first send or a resend). Admins only.
+create or replace function public.application_record_registration_email(p_application_id bigint, p_email text)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if not public.is_admin() then
+    raise exception 'Admins only' using errcode = '42501';
+  end if;
+  if not exists (select 1 from public.volunteer_applications a where a.id = p_application_id and a.status = 'approved') then
+    raise exception 'The application isn''t approved' using errcode = 'P0001';
+  end if;
+  insert into public.volunteer_application_events (application_id, action, note, actor, emailed)
+  values (p_application_id, 'registration_emailed', 'Emailed ' || p_email, auth.uid(), true);
+end $function$;
+
+-- ---- Function grants --------------------------------------------------------------
+revoke all on function public.volunteer_is_first_timer(uuid) from public, anon, authenticated;
+grant execute on function public.volunteer_is_first_timer(uuid) to service_role;
+revoke all on function public.application_applicant_is_first_timer(bigint) from public, anon;
+grant execute on function public.application_applicant_is_first_timer(bigint) to authenticated;
+revoke all on function public.volunteer_application_approve(bigint, bigint[]) from public, anon;
+grant execute on function public.volunteer_application_approve(bigint, bigint[]) to authenticated;
+revoke all on function public.application_record_registration_email(bigint, text) from public, anon;
+grant execute on function public.application_record_registration_email(bigint, text) to authenticated;
+
+commit;

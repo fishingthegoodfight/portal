@@ -24,6 +24,9 @@ import { ApplicationAnswers } from "@/components/application-answers";
 import { ScreeningView } from "@/components/admin/screening-view";
 import { PracticalChecksPanel } from "@/components/admin/practical-checks-panel";
 import { loadPracticalChecks } from "@/lib/admin/practical-checks";
+import { formatCheckDate, practicalCheckSummary } from "@/lib/practical-checks";
+import { approvalPrefill, type ApprovalRoleType } from "@/lib/volunteer-approval";
+import { ApprovalPanel, ResendRegistrationEmailButton } from "@/components/admin/approval-panel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -46,6 +49,8 @@ const ACTION_LABELS: Record<string, string> = {
   reference_received: "Reference received",
   references_received: "Both references in",
   references_reviewed: "References reviewed",
+  approved: "Approved",
+  registration_emailed: "Registration form emailed",
 };
 
 async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }) {
@@ -159,6 +164,73 @@ async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }
 
   const now = new Date();
   const on = (iso: string | null) => (iso ? formatDateInZone(iso, ZONE) : null);
+
+  // ---- Approval (phase 4): admins decide; everyone who can see the
+  // application sees that it's waiting, or who approved it.
+  const approvalStage = app.status === "references_in" || app.status === "approved";
+  const loadApproval = isAdmin && approvalStage;
+  const [{ data: activeRoleRows }, { data: firstTimerAnswer }, { data: volunteerRow }, { data: activeApprovalRows }] =
+    await Promise.all([
+      loadApproval
+        ? supabase
+            .from("volunteer_role_types")
+            .select("id, key, name, for_retreats, for_chapter_events")
+            .eq("active", true)
+            .order("sort_order")
+        : Promise.resolve({ data: [] }),
+      loadApproval
+        ? supabase.rpc("application_applicant_is_first_timer", { p_application_id: applicationId })
+        : Promise.resolve({ data: null }),
+      loadApproval
+        ? supabase.from("volunteers").select("registered_at").eq("user_id", app.user_id).maybeSingle()
+        : Promise.resolve({ data: null }),
+      loadApproval
+        ? supabase.from("volunteer_role_approvals").select("role_type_id").eq("volunteer_id", app.user_id).is("revoked_at", null)
+        : Promise.resolve({ data: [] }),
+    ]);
+  const historyRows = (history ?? []) as { action: string; actor: string | null; note: string | null; created_at: string }[];
+  const lastEvent = (action: string) => historyRows.filter((h) => h.action === action).at(-1) ?? null;
+  const approvedEvent = lastEvent("approved");
+  const registrationEmailed = lastEvent("registration_emailed");
+  const firstTimer = firstTimerAnswer !== false;
+  const approvalRoles = (activeRoleRows ?? []) as ApprovalRoleType[];
+  const latestScreening = screenings[0] ?? null;
+  const prefill = approvalPrefill(
+    canScreen ? (latestScreening?.recommended_role_type_ids ?? []) : [],
+    approvalRoles,
+    firstTimer,
+    roleNameById,
+  );
+  const prefillNote: string[] = [];
+  if (!canScreen) {
+    prefillNote.push(
+      "The screening call's recommended roles are only shown to people with volunteer-screening access, so nothing is ticked to start with.",
+    );
+  } else if (!latestScreening || (latestScreening.recommended_role_type_ids ?? []).length === 0) {
+    prefillNote.push("The screening call didn't recommend any roles.");
+  } else {
+    prefillNote.push(
+      `Ticked from the roles the screening call on ${formatCheckDate(latestScreening.call_date)} recommended. That's a recommendation, not a decision — change any of them.`,
+    );
+  }
+  if (prefill.notForFirstTimers.length > 0) {
+    prefillNote.push(
+      `Recommended on the call but not available to first-time volunteers: ${prefill.notForFirstTimers.join(", ")}.`,
+    );
+  }
+  if (prefill.turnedOff.length > 0) {
+    prefillNote.push(`Recommended on the call but no longer offered: ${prefill.turnedOff.join(", ")}.`);
+  }
+  if (!firstTimer) {
+    prefillNote.push("They've been an approved volunteer before, so every role is available.");
+  }
+  const latestCheck = practical.checks[0] ?? null;
+  const currentRoleNames = roleNamesFor(
+    ((activeApprovalRows ?? []) as { role_type_id: number }[]).map((a) => a.role_type_id),
+  );
+  const registeredAt = (volunteerRow as { registered_at: string | null } | null)?.registered_at ?? null;
+  const registeredSinceApproval =
+    registeredAt != null && approvedEvent != null && Date.parse(registeredAt) >= Date.parse(approvedEvent.created_at);
   // From Screened on, or wherever requests exist (a closed application keeps them).
   const showReferences = references.length > 0 || app.status === "screened";
 
@@ -199,6 +271,80 @@ async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }
           )}
         </CardContent>
       </Card>
+
+      {approvalStage && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Approval</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              Admins approve. Chapter leads recommend roles through the screening call.
+            </p>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3 text-sm">
+            {app.status === "approved" ? (
+              <>
+                <p>
+                  Approved
+                  {approvedEvent && (
+                    <>
+                      {" "}
+                      by {nameOf(approvedEvent.actor)} on {on(approvedEvent.created_at)}
+                      {approvedEvent.note ? ` — ${approvedEvent.note}` : ""}
+                    </>
+                  )}
+                  .
+                </p>
+                {isAdmin && (
+                  <>
+                    {currentRoleNames.length > 0 && (
+                      <p className="text-muted-foreground">Approved roles now: {currentRoleNames.join(", ")}.</p>
+                    )}
+                    <p>
+                      {registeredSinceApproval
+                        ? `Registered ${on(registeredAt)}.`
+                        : "They haven't completed their volunteer registration yet."}
+                    </p>
+                    {registrationEmailed ? (
+                      <p className="text-muted-foreground">
+                        Registration form emailed {on(registrationEmailed.created_at)}.
+                      </p>
+                    ) : (
+                      <p className="rounded-md border border-amber-500/50 bg-amber-500/10 p-2">
+                        The registration email hasn&apos;t gone out. Send it below.
+                      </p>
+                    )}
+                    {!registeredSinceApproval && (
+                      <ResendRegistrationEmailButton
+                        applicationId={app.id}
+                        label={registrationEmailed ? "Resend registration email" : "Send registration email"}
+                      />
+                    )}
+                  </>
+                )}
+              </>
+            ) : !app.references_reviewed_at ? (
+              <p className="text-muted-foreground">
+                {isAdmin
+                  ? "Read both references and mark them reviewed (under References) to approve."
+                  : "Waiting on an admin to review the references and decide."}
+              </p>
+            ) : !isAdmin ? (
+              <p className="text-muted-foreground">References reviewed — waiting on an admin&apos;s approval.</p>
+            ) : (
+              <ApprovalPanel
+                applicationId={app.id}
+                applicantName={app.full_name}
+                roleTypes={approvalRoles}
+                firstTimer={firstTimer}
+                initialSelected={prefill.selected}
+                prefillNote={prefillNote}
+                practicalSummary={practicalCheckSummary(latestCheck)}
+                practicalPassed={latestCheck?.outcome === "passed"}
+              />
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {showReferences && (
         <Card>

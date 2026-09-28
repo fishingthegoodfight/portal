@@ -230,12 +230,40 @@ const referencesToReview: DigestSource = async (admin) => {
   };
 };
 
+/** References reviewed, waiting on an admin's approval (phase 4). Listed
+ * every day until approved or declined. Once references are marked reviewed
+ * an application leaves "References in, ready to review", so it's never in
+ * both. */
+const awaitingApproval: DigestSource = async (admin) => {
+  const { data, error } = await admin
+    .from("volunteer_applications")
+    .select("id, full_name, chapters, references_reviewed_at")
+    .eq("status", "references_in")
+    .not("references_reviewed_at", "is", null)
+    .order("references_reviewed_at");
+  if (error) throw new Error(`loading applications awaiting approval: ${error.message}`);
+  const rows = (data ?? []) as { id: number; full_name: string; chapters: string[]; references_reviewed_at: string }[];
+  return {
+    section: {
+      title: "Waiting on your approval",
+      intro: "References are reviewed. Choose their roles and approve, or decline.",
+      items: rows.map((row) => ({
+        label: row.full_name,
+        detail: `${row.chapters.join(", ")} · waiting ${daysSince(row.references_reviewed_at)}`,
+        url: `${getSiteUrl()}/protected/admin/applications/${row.id}`,
+      })),
+    },
+    markSent: async () => {},
+  };
+};
+
 /** In the order the sections appear — most pressing first. */
 export const DIGEST_SOURCES: DigestSource[] = [
   readyApplications,
   screeningDecisions,
   referencesNeedingReplacement,
   referencesToReview,
+  awaitingApproval,
   pausedToRevisit,
   screenedAwaitingReferences,
   outstandingReferences,

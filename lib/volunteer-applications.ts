@@ -319,6 +319,79 @@ export function applicationErrors(input: ApplicationInput): string[] {
     errors.push("Tick each retreat commitment to apply for retreat volunteering");
   }
 
+  errors.push(...experienceErrors(input));
+
+  if (
+    blank(input.ref1Name) || blank(input.ref1Phone) || blank(input.ref1HowKnow) ||
+    !EMAIL_PATTERN.test(input.ref1Email.trim())
+  ) {
+    errors.push("Reference 1 needs a name, valid email, phone, and how they know you");
+  }
+  if (
+    blank(input.ref2Name) || blank(input.ref2Phone) || blank(input.ref2Relationship) || blank(input.ref2KnownFor) ||
+    !EMAIL_PATTERN.test(input.ref2Email.trim())
+  ) {
+    errors.push("Reference 2 needs a name, valid email, phone, relationship, and how long they've known you");
+  }
+  const own = input.email.trim().toLowerCase();
+  const r1 = input.ref1Email.trim().toLowerCase();
+  const r2 = input.ref2Email.trim().toLowerCase();
+  if (own && (r1 === own || r2 === own)) errors.push("A reference can't be you — give someone else's email");
+  if (r1 && r1 === r2) errors.push("Your two references need to be different people");
+  if (!input.referencesAcknowledged) errors.push("Tick the box to confirm we can contact both references");
+  return errors;
+}
+
+/**
+ * The fly fishing, certification and availability questions. Asked on the
+ * application, and asked again at registration (volunteer_registration_details,
+ * prefilled from the application) because availability and certifications
+ * go stale. Both forms render ExperienceFields
+ * (components/volunteer-experience-fields.tsx) and validate with
+ * experienceErrors, so the two can't drift apart.
+ */
+export const EXPERIENCE_KEYS = [
+  "yearsFlyFishing",
+  "fishingFrequency",
+  "waterFished",
+  "hasTaughtOrGuided",
+  "taughtDetails",
+  "beginnerComfort",
+  "certFirstAidCpr",
+  "certFirstAidCprExpires",
+  "certWfaWfr",
+  "certFfiCasting",
+  "certGuideLicense",
+  "certOther",
+  "availability",
+  "frequency",
+] as const;
+export type ExperienceInput = Pick<ApplicationInput, (typeof EXPERIENCE_KEYS)[number]>;
+
+export const EMPTY_EXPERIENCE: ExperienceInput = {
+  yearsFlyFishing: "",
+  fishingFrequency: "",
+  waterFished: "",
+  hasTaughtOrGuided: "",
+  taughtDetails: "",
+  beginnerComfort: "",
+  certFirstAidCpr: "",
+  certFirstAidCprExpires: "",
+  certWfaWfr: "",
+  certFfiCasting: "",
+  certGuideLicense: "",
+  certOther: "",
+  availability: [],
+  frequency: "",
+};
+
+/** Every problem with those answers, in form order. */
+export function experienceErrors(input: ExperienceInput): string[] {
+  const errors: string[] = [];
+  const blank = (v: string) => !v.trim();
+  const unanswered = (v: string) => v === "";
+  const notOneOf = (v: string, options: readonly string[]) => !options.includes(v);
+
   if (notOneOf(input.yearsFlyFishing, YEARS_FLY_FISHING_OPTIONS)) {
     errors.push("Tell us how many years you've been fly fishing");
   }
@@ -346,26 +419,72 @@ export function applicationErrors(input: ApplicationInput): string[] {
     errors.push("Unknown availability option");
   }
   if (notOneOf(input.frequency, HELP_FREQUENCY_OPTIONS)) errors.push("Tell us roughly how often you could help");
-
-  if (
-    blank(input.ref1Name) || blank(input.ref1Phone) || blank(input.ref1HowKnow) ||
-    !EMAIL_PATTERN.test(input.ref1Email.trim())
-  ) {
-    errors.push("Reference 1 needs a name, valid email, phone, and how they know you");
-  }
-  if (
-    blank(input.ref2Name) || blank(input.ref2Phone) || blank(input.ref2Relationship) || blank(input.ref2KnownFor) ||
-    !EMAIL_PATTERN.test(input.ref2Email.trim())
-  ) {
-    errors.push("Reference 2 needs a name, valid email, phone, relationship, and how long they've known you");
-  }
-  const own = input.email.trim().toLowerCase();
-  const r1 = input.ref1Email.trim().toLowerCase();
-  const r2 = input.ref2Email.trim().toLowerCase();
-  if (own && (r1 === own || r2 === own)) errors.push("A reference can't be you — give someone else's email");
-  if (r1 && r1 === r2) errors.push("Your two references need to be different people");
-  if (!input.referencesAcknowledged) errors.push("Tick the box to confirm we can contact both references");
   return errors;
+}
+
+/** The stored columns (the same names on volunteer_applications and
+ * volunteer_registration_details), as a row. */
+export type ExperienceRow = {
+  years_fly_fishing: string;
+  fishing_frequency: string | null;
+  water_fished: string;
+  has_taught_or_guided: boolean;
+  taught_details: string | null;
+  beginner_comfort: number;
+  cert_first_aid_cpr: boolean;
+  cert_first_aid_cpr_expires: string | null;
+  cert_wfa_wfr: boolean;
+  cert_ffi_casting: boolean;
+  cert_guide_license: boolean;
+  cert_other: string | null;
+  availability: string[];
+  frequency: string;
+};
+
+const yesNo = (v: boolean | null | undefined): YesNo => (v == null ? "" : v ? "true" : "false");
+
+/** A stored row back into form answers. A dropdown answer that's no longer
+ * one of the options (older free text) comes back blank, to be chosen again. */
+export function experienceFromRow(row: ExperienceRow): ExperienceInput {
+  const option = (v: string | null, options: readonly string[]) => (v && options.includes(v) ? v : "");
+  return {
+    yearsFlyFishing: option(row.years_fly_fishing, YEARS_FLY_FISHING_OPTIONS),
+    fishingFrequency: option(row.fishing_frequency, FISHING_FREQUENCY_OPTIONS),
+    waterFished: row.water_fished ?? "",
+    hasTaughtOrGuided: yesNo(row.has_taught_or_guided),
+    taughtDetails: row.taught_details ?? "",
+    beginnerComfort: row.beginner_comfort ? String(row.beginner_comfort) : "",
+    certFirstAidCpr: yesNo(row.cert_first_aid_cpr),
+    certFirstAidCprExpires: row.cert_first_aid_cpr_expires ?? "",
+    certWfaWfr: yesNo(row.cert_wfa_wfr),
+    certFfiCasting: yesNo(row.cert_ffi_casting),
+    certGuideLicense: yesNo(row.cert_guide_license),
+    certOther: row.cert_other ?? "",
+    availability: (row.availability ?? []).filter((a) => AVAILABILITY_OPTIONS.some((o) => o.value === a)),
+    frequency: option(row.frequency, HELP_FREQUENCY_OPTIONS),
+  };
+}
+
+/** Validated answers as the stored columns. */
+export function experienceToRow(input: ExperienceInput): ExperienceRow {
+  const yes = (v: YesNo) => v === "true";
+  const text = (v: string) => v.trim() || null;
+  return {
+    years_fly_fishing: input.yearsFlyFishing.trim(),
+    fishing_frequency: input.fishingFrequency.trim(),
+    water_fished: input.waterFished.trim(),
+    has_taught_or_guided: yes(input.hasTaughtOrGuided),
+    taught_details: yes(input.hasTaughtOrGuided) ? text(input.taughtDetails) : null,
+    beginner_comfort: Number(input.beginnerComfort),
+    cert_first_aid_cpr: yes(input.certFirstAidCpr),
+    cert_first_aid_cpr_expires: yes(input.certFirstAidCpr) ? input.certFirstAidCprExpires : null,
+    cert_wfa_wfr: yes(input.certWfaWfr),
+    cert_ffi_casting: yes(input.certFfiCasting),
+    cert_guide_license: yes(input.certGuideLicense),
+    cert_other: text(input.certOther),
+    availability: [...new Set(input.availability)],
+    frequency: input.frequency.trim(),
+  };
 }
 
 /** A stored application, as the volunteer_applications row. */

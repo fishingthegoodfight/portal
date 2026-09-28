@@ -1327,6 +1327,61 @@ export function applicationAttendMoreEventsEmail({
 }
 
 /**
+ * To a volunteer applicant, on approval (phase 4): welcome, the roles
+ * they're approved for, and the registration form — prefilled from their
+ * application, to check and update.
+ */
+export function volunteerApprovedEmail({
+  recipientName,
+  roleNames,
+  registerUrl,
+}: {
+  recipientName: string | null;
+  roleNames: string[];
+  registerUrl: string;
+}): RenderedEmail {
+  const subject = "Welcome to the Fishing the Good Fight volunteer team";
+  const greeting = recipientName ? `Hi ${escapeHtml(recipientName)},` : "Hi,";
+  const greetingText = recipientName ? `Hi ${recipientName},` : "Hi,";
+  const intro =
+    "Thank you for everything you've shared with us through your application, your call and your references. We're glad to say you've been approved to volunteer with Fishing the Good Fight.";
+  const rolesIntro = roleNames.length === 1 ? "You're approved as:" : "You're approved for these roles:";
+  const next =
+    "The last step is your volunteer registration: a few details, the volunteer waiver, and a quick check of your availability and certifications. We've filled in what you told us on your application, so it's mostly confirming what's changed.";
+  const buttonLabel = "Complete your registration";
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">Welcome to the team</p>`,
+      `<p style="margin:0 0 16px;">${greeting}</p>`,
+      `<p style="margin:0 0 16px;">${escapeHtml(intro)}</p>`,
+      `<p style="margin:0 0 8px;">${rolesIntro}</p>`,
+      `<ul style="margin:0 0 16px;padding-left:20px;">${roleNames.map((n) => `<li>${escapeHtml(n)}</li>`).join("")}</ul>`,
+      `<p style="margin:0 0 16px;">${escapeHtml(next)}</p>`,
+      `<p style="margin:16px 0 8px;"><a href="${escapeHtml(registerUrl)}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Questions? Just reply to this email.</p>`,
+    ].join("\n"),
+  );
+  const text = [
+    "Welcome to the team",
+    "",
+    greetingText,
+    "",
+    intro,
+    "",
+    rolesIntro,
+    ...roleNames.map((n) => `- ${n}`),
+    "",
+    next,
+    "",
+    `${buttonLabel}: ${registerUrl}`,
+    "",
+    "Questions? Just reply to this email.",
+  ].join("\n");
+  return { subject, html, text };
+}
+
+/**
  * To a volunteer applicant's reference: the request, or a reminder of it.
  * Names the applicant and says they gave us this person's name; about three
  * minutes; roughly when we need it. The link is theirs alone (a one-use

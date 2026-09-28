@@ -185,6 +185,23 @@ async function VolunteerHomeLoader({
         <Badge variant="secondary">{VOLUNTEER_STATUS_LABELS[status] ?? status}</Badge>
       </div>
 
+      {/* Approved from an application (or imported) but never through the
+        * registration form yet. */}
+      {!volunteer.registered_at && (
+        <div className="flex flex-col gap-3 rounded-md border border-amber-500/50 bg-amber-500/10 p-4 text-sm">
+          <p>
+            {status === "approved"
+              ? "You've been approved — welcome to the volunteer team. The last step is your volunteer registration: a few details, a waiver to sign, and a check of your availability and certifications."
+              : "Please complete your volunteer registration."}
+          </p>
+          <div>
+            <Button asChild size="sm">
+              <Link href="/protected/volunteer/register">Complete your registration</Link>
+            </Button>
+          </div>
+        </div>
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>Your shifts</CardTitle>

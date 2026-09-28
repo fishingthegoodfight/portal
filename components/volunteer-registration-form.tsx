@@ -15,6 +15,8 @@ import { EmergencyContactFields } from "@/components/emergency-contact-fields";
 import { US_STATES } from "@/lib/us-states";
 import { formatPhoneNumber, formatPostalCode } from "@/lib/phone";
 import { PROGRAM_INTERESTS, SKILL_INTERESTS, TSHIRT_SIZES } from "@/lib/volunteers";
+import { experienceErrors, type ExperienceInput } from "@/lib/volunteer-applications";
+import { ExperienceFields } from "@/components/volunteer-experience-fields";
 import { WaiverSigning, EMPTY_WAIVER_SIGN, waiverNeedsInput, type WaiverSignState } from "@/components/waiver-signing";
 import type { WaiverInfo } from "@/lib/waivers";
 import { Button } from "@/components/ui/button";
@@ -52,6 +54,8 @@ export function VolunteerRegistrationForm({
   userId,
   alreadyRegistered,
   initialProfile,
+  initialExperience,
+  prefilledFrom,
 }: {
   userId: string;
   /** True once they've submitted this form before (registered_at is set) —
@@ -59,9 +63,14 @@ export function VolunteerRegistrationForm({
    * changes slightly. */
   alreadyRegistered: boolean;
   initialProfile: ProfileData;
+  /** Their saved answers, or their approved application's (prefilledFrom). */
+  initialExperience: ExperienceInput;
+  /** Set when skills, programs and experience came from their application. */
+  prefilledFrom: { appliedOn: string } | null;
 }) {
   const router = useRouter();
   const [profile, setProfile] = useState<ProfileData>(initialProfile);
+  const [experience, setExperience] = useState<ExperienceInput>(initialExperience);
   const [is18Plus, setIs18Plus] = useState(false);
   const [waiverSign, setWaiverSign] = useState<WaiverSignState>(EMPTY_WAIVER_SIGN);
   const [waiverInfo, setWaiverInfo] = useState<WaiverInfo | null>(null);
@@ -69,7 +78,8 @@ export function VolunteerRegistrationForm({
 
   const [certFile, setCertFile] = useState<File | null>(null);
   const [certIssuedOn, setCertIssuedOn] = useState("");
-  const [certExpiresOn, setCertExpiresOn] = useState("");
+  // The First Aid/CPR expiry they gave below, as a starting point.
+  const [certExpiresOn, setCertExpiresOn] = useState(initialExperience.certFirstAidCprExpires);
   const [certUploading, setCertUploading] = useState(false);
   const [certError, setCertError] = useState<string | null>(null);
 
@@ -128,6 +138,11 @@ export function VolunteerRegistrationForm({
     setError(null);
     setCertError(null);
 
+    const experienceProblems = experienceErrors(experience);
+    if (experienceProblems.length > 0) {
+      setError(experienceProblems[0]);
+      return;
+    }
     if (waiverNeedsInput(waiverInfo, waiverSign)) {
       setError("You must agree to and sign the volunteer waiver.");
       return;
@@ -180,6 +195,7 @@ export function VolunteerRegistrationForm({
       skillInterests: profile.skill_interests,
       skillInterestsOther: profile.skill_interests_other,
       programInterests: profile.program_interests,
+      experience,
       waiverAgreed: waiverSign.agreed || waiverInfo?.status === "signed",
       waiverSignedName: waiverSign.name,
       certification,
@@ -199,6 +215,13 @@ export function VolunteerRegistrationForm({
 
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-6">
+      {prefilledFrom && (
+        <p className="rounded-md border bg-accent/50 p-3 text-sm">
+          We&apos;ve filled in your skills and interests, fly fishing answers, certifications and
+          availability from your application of {prefilledFrom.appliedOn}. Things may have changed
+          since then, so check each one and update anything that&apos;s different now.
+        </p>
+      )}
       <Card>
         <CardHeader>
           <CardTitle>Your info</CardTitle>
@@ -405,6 +428,12 @@ export function VolunteerRegistrationForm({
           ))}
         </CardContent>
       </Card>
+
+      <ExperienceFields
+        value={experience}
+        onChange={(patch) => setExperience((prev) => ({ ...prev, ...patch }))}
+        idPrefix="v_exp"
+      />
 
       <Card>
         <CardHeader>

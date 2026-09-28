@@ -2,6 +2,8 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
+import { ExperienceAnswers } from "@/components/application-answers";
+import type { ExperienceRow } from "@/lib/volunteer-applications";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { formatDateInZone } from "@/lib/format-date";
 import { timezoneForChapter } from "@/lib/chapters";
@@ -57,8 +59,14 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
         volunteer.invited_at as string | null,
       );
 
-  const [{ data: allRoleTypes }, { data: activeApprovals }, { data: certs }, { data: signatures }, screeningResult] =
-    await Promise.all([
+  const [
+    { data: allRoleTypes },
+    { data: activeApprovals },
+    { data: certs },
+    { data: signatures },
+    screeningResult,
+    { data: registrationDetails },
+  ] = await Promise.all([
       supabase.from("volunteer_role_types").select("id, name, requires_cert").order("sort_order", { ascending: true }),
       supabase
         .from("volunteer_role_approvals")
@@ -81,6 +89,7 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
             .eq("volunteer_id", volunteerId)
             .maybeSingle()
         : Promise.resolve({ data: null }),
+      supabase.from("volunteer_registration_details").select("*").eq("volunteer_id", volunteerId).maybeSingle(),
     ]);
 
   const approvalByRoleType = new Map((activeApprovals ?? []).map((a) => [a.role_type_id, a.id as number]));
@@ -200,6 +209,16 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
           )}
         </CardContent>
       </Card>
+
+      <div>
+        <h2 className="text-lg font-semibold">Fly fishing, certifications and availability</h2>
+        <p className="text-xs text-muted-foreground">
+          {registrationDetails
+            ? `As confirmed at registration, ${formatDateInZone(registrationDetails.confirmed_at as string, timeZone)}.`
+            : "Asked on the registration form — not answered yet."}
+        </p>
+      </div>
+      {registrationDetails && <ExperienceAnswers row={registrationDetails as ExperienceRow} />}
 
       <Card>
         <CardHeader>

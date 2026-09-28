@@ -4,6 +4,14 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/supabase/server";
 import { VolunteerRegistrationForm } from "@/components/volunteer-registration-form";
 import { formatPhoneNumber } from "@/lib/phone";
+import { formatDateInZone } from "@/lib/format-date";
+import {
+  EMPTY_EXPERIENCE,
+  experienceFromRow,
+  type ExperienceRow,
+  type InterestArea,
+} from "@/lib/volunteer-applications";
+import { prefillFromApplication, type RegistrationPrefill } from "@/lib/registration-prefill";
 
 async function RegisterLoader() {
   const supabase = await createClient();
@@ -13,9 +21,10 @@ async function RegisterLoader() {
   }
   const userId = data.claims.sub as string;
 
-  const [{ data: volunteer }, { data: profile }] = await Promise.all([
+  const [{ data: volunteer }, { data: profile }, { data: details }] = await Promise.all([
     supabase.from("volunteers").select("status, registered_at").eq("user_id", userId).maybeSingle(),
     supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
+    supabase.from("volunteer_registration_details").select("*").eq("volunteer_id", userId).maybeSingle(),
   ]);
 
   // Only reachable by someone with a volunteers row — anyone else (a
@@ -36,6 +45,8 @@ async function RegisterLoader() {
       </div>
     );
   }
+
+  const prefill = await loadPrefill(supabase, volunteer.registered_at as string | null);
 
   return (
     <>
@@ -70,13 +81,46 @@ async function RegisterLoader() {
           tshirt_size: profile?.tshirt_size ?? "",
           favorite_snack: profile?.favorite_snack ?? "",
           favorite_na_beverage: profile?.favorite_na_beverage ?? "",
-          skill_interests: profile?.skill_interests ?? [],
-          skill_interests_other: profile?.skill_interests_other ?? "",
-          program_interests: profile?.program_interests ?? [],
+          skill_interests: prefill?.skillInterests ?? profile?.skill_interests ?? [],
+          skill_interests_other: prefill?.skillInterestsOther ?? profile?.skill_interests_other ?? "",
+          program_interests: prefill?.programInterests ?? profile?.program_interests ?? [],
         }}
+        initialExperience={
+          prefill?.experience ?? (details ? experienceFromRow(details as ExperienceRow) : EMPTY_EXPERIENCE)
+        }
+        prefilledFrom={prefill ? { appliedOn: prefill.appliedOn } : null}
       />
     </>
   );
+}
+
+/**
+ * Their approved application's answers, when they haven't registered since
+ * it was approved (never, or only before — a former volunteer approved
+ * again). Otherwise null: the form starts from what they saved last time.
+ */
+async function loadPrefill(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  registeredAt: string | null,
+): Promise<RegistrationPrefill | null> {
+  const { data: applications } = await supabase.rpc("my_volunteer_applications");
+  const approved = ((applications ?? []) as { id: number; status: string; status_changed_at: string }[])
+    .filter((a) => a.status === "approved")
+    .sort((a, b) => Date.parse(b.status_changed_at) - Date.parse(a.status_changed_at))[0];
+  if (!approved) return null;
+  if (registeredAt && Date.parse(registeredAt) >= Date.parse(approved.status_changed_at)) return null;
+
+  const [{ data: rows }, { data: areas }] = await Promise.all([
+    supabase.rpc("my_volunteer_application", { p_id: approved.id }),
+    // Turned-off areas too: the application keeps what it picked.
+    supabase.from("volunteer_interest_areas").select("id, kind, label"),
+  ]);
+  const app = ((rows ?? []) as Parameters<typeof prefillFromApplication>[0][])[0];
+  if (!app) return null;
+  return {
+    ...prefillFromApplication(app, (areas ?? []) as Pick<InterestArea, "id" | "kind" | "label">[]),
+    appliedOn: formatDateInZone(app.submitted_at, "America/Denver"),
+  };
 }
 
 export default function VolunteerRegisterPage() {

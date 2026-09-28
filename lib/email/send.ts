@@ -23,6 +23,7 @@ import {
   personInviteEmail,
   adminDigestEmail,
   applicationAttendMoreEventsEmail,
+  volunteerApprovedEmail,
   applicationInviteToScheduleEmail,
   type AdminDigestSection,
   volunteerInviteEmail,
@@ -856,6 +857,21 @@ export async function sendApplicationAttendMoreEventsEmail(params: {
   const { subject, html, text } = applicationAttendMoreEventsEmail({
     recipientName: params.recipientName,
     eventsUrl: `${getSiteUrl()}/protected/events`,
+  });
+  await deliverEmail({ to: params.toEmail, subject, html, text });
+}
+
+/** Volunteer applicant, on approval: welcome, their roles, and the
+ * registration form (they already have an account — they applied with it). */
+export async function sendVolunteerApprovedEmail(params: {
+  toEmail: string;
+  recipientName: string | null;
+  roleNames: string[];
+}): Promise<void> {
+  const { subject, html, text } = volunteerApprovedEmail({
+    recipientName: params.recipientName,
+    roleNames: params.roleNames,
+    registerUrl: `${getSiteUrl()}/protected/volunteer/register`,
   });
   await deliverEmail({ to: params.toEmail, subject, html, text });
 }

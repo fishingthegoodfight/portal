@@ -5,6 +5,7 @@ import {
   RETREAT_COMMITMENTS,
   RETREAT_QUESTION,
   type ApplicationRecord,
+  type ExperienceRow,
 } from "@/lib/volunteer-applications";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -76,29 +77,7 @@ export function ApplicationAnswers({
         )}
       </Section>
 
-      <Section title="Fly fishing">
-        <Row label="Years fly fishing" value={app.years_fly_fishing} />
-        <Row label="How often you fish now" value={app.fishing_frequency ?? "Not asked (applied before this was added)"} />
-        <Row label="Water fished most" value={app.water_fished} />
-        <Row label="Taught or guided" value={app.has_taught_or_guided ? `Yes — ${app.taught_details ?? ""}` : "No"} />
-        <Row label="Teaching a beginner" value={BEGINNER_COMFORT_LABELS[app.beginner_comfort] ?? String(app.beginner_comfort)} />
-      </Section>
-
-      <Section title="Certifications">
-        <Row
-          label="First Aid/CPR"
-          value={app.cert_first_aid_cpr ? `Yes, expires ${app.cert_first_aid_cpr_expires ?? "—"}` : "No"}
-        />
-        <Row label="WFA / WFR" value={app.cert_wfa_wfr ? "Yes" : "No"} />
-        <Row label="FFI casting instructor" value={app.cert_ffi_casting ? "Yes" : "No"} />
-        <Row label="Guide license" value={app.cert_guide_license ? "Yes" : "No"} />
-        <Row label="Other" value={app.cert_other ?? "—"} />
-      </Section>
-
-      <Section title="Availability">
-        <Row label="When" value={app.availability.map(availabilityLabel).join(", ")} />
-        <Row label="How often" value={app.frequency} />
-      </Section>
+      <ExperienceAnswers row={app} />
 
       <Section title="References">
         <div className="flex flex-col gap-1">
@@ -131,6 +110,38 @@ export function ApplicationAnswers({
 
       <Section title="Anything else">
         <p className="whitespace-pre-line">{app.anything_else ?? "—"}</p>
+      </Section>
+    </>
+  );
+}
+
+/** The fly fishing, certification and availability answers — from an
+ * application, or confirmed at registration (the same columns). */
+export function ExperienceAnswers({ row }: { row: ExperienceRow }) {
+  return (
+    <>
+      <Section title="Fly fishing">
+        <Row label="Years fly fishing" value={row.years_fly_fishing} />
+        <Row label="How often you fish now" value={row.fishing_frequency ?? "Not asked (answered before this was added)"} />
+        <Row label="Water fished most" value={row.water_fished} />
+        <Row label="Taught or guided" value={row.has_taught_or_guided ? `Yes — ${row.taught_details ?? ""}` : "No"} />
+        <Row label="Teaching a beginner" value={BEGINNER_COMFORT_LABELS[row.beginner_comfort] ?? String(row.beginner_comfort)} />
+      </Section>
+
+      <Section title="Certifications">
+        <Row
+          label="First Aid/CPR"
+          value={row.cert_first_aid_cpr ? `Yes, expires ${row.cert_first_aid_cpr_expires ?? "—"}` : "No"}
+        />
+        <Row label="WFA / WFR" value={row.cert_wfa_wfr ? "Yes" : "No"} />
+        <Row label="FFI casting instructor" value={row.cert_ffi_casting ? "Yes" : "No"} />
+        <Row label="Guide license" value={row.cert_guide_license ? "Yes" : "No"} />
+        <Row label="Other" value={row.cert_other ?? "—"} />
+      </Section>
+
+      <Section title="Availability">
+        <Row label="When" value={row.availability.map(availabilityLabel).join(", ")} />
+        <Row label="How often" value={row.frequency} />
       </Section>
     </>
   );

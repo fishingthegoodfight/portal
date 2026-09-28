@@ -9,6 +9,7 @@ import {
   type WaiverInfo,
 } from "@/lib/waivers";
 import { PROGRAM_INTERESTS, SKILL_INTERESTS, TSHIRT_SIZES } from "@/lib/volunteers";
+import { experienceErrors, experienceToRow, type ExperienceInput } from "@/lib/volunteer-applications";
 
 export type WaiverLookupResult = { ok: true; info: WaiverInfo } | { ok: false; error: string };
 
@@ -50,6 +51,8 @@ export type SubmitVolunteerRegistrationInput = {
   skillInterests: string[];
   skillInterestsOther: string;
   programInterests: string[];
+  /** Fly fishing, certifications, availability — the application's questions. */
+  experience: ExperienceInput;
   waiverAgreed: boolean;
   waiverSignedName: string;
   /** Set only when interested in Retreats and a file was uploaded — the
@@ -124,6 +127,8 @@ export async function submitVolunteerRegistrationAction(
   if (!input.is18Plus) {
     return { ok: false, error: "You must confirm you are 18 years of age or older" };
   }
+  const experienceProblems = experienceErrors(input.experience);
+  if (experienceProblems.length > 0) return { ok: false, error: experienceProblems[0] };
 
   // "Other" isn't in SKILL_INTERESTS (it's the form's extra box), so it's
   // allowed through explicitly — filtering it out lost the description.
@@ -191,6 +196,13 @@ export async function submitVolunteerRegistrationAction(
     })
     .eq("id", userId);
   if (profileError) return { ok: false, error: profileError.message };
+
+  // Confirmed afresh at each registration (confirmed_at is stamped by the
+  // database) — availability and certifications go stale.
+  const { error: detailsError } = await supabase
+    .from("volunteer_registration_details")
+    .upsert({ volunteer_id: userId, ...experienceToRow(input.experience) }, { onConflict: "volunteer_id" });
+  if (detailsError) return { ok: false, error: detailsError.message };
 
   if (!existingSignature) {
     const { error: signError } = await supabase.from("waiver_signatures").insert({
