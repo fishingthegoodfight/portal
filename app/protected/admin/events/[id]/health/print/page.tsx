@@ -49,20 +49,25 @@ async function HealthPrintLoader({ params }: { params: Promise<{ id: string }> }
   const { event } = roster;
   const formByUser = new Map(forms.data.map((f) => [f.user_id, f]));
 
-  const emergencyOf = (contact: string, phone: string) =>
-    [contact, phone].filter(Boolean).join(" · ") || "none on file";
+  const emergencyOf = (person: { emergencyContact: string; emergencyPhone: string; emergencySecondary: string }) =>
+    [
+      [person.emergencyContact, person.emergencyPhone].filter(Boolean).join(" · "),
+      person.emergencySecondary && `2nd: ${person.emergencySecondary}`,
+    ]
+      .filter(Boolean)
+      .join("; ") || "none on file";
   const people: Person[] = [
     ...roster.roster.map((p) => ({
       userId: p.userId,
       name: personDisplayName(p),
       role: "Participant",
-      emergency: emergencyOf(p.emergencyContact, p.emergencyPhone),
+      emergency: emergencyOf(p),
     })),
     ...roster.volunteerRoster.map((v) => ({
       userId: v.userId,
       name: personDisplayName(v),
       role: `Volunteer — ${v.role}`,
-      emergency: emergencyOf(v.emergencyContact, v.emergencyPhone),
+      emergency: emergencyOf(v),
     })),
   ];
   // A volunteer with two shifts gets one page.

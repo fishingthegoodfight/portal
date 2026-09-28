@@ -21,6 +21,7 @@ import {
   collectSectionUpdates,
   columnValuesFromProfile,
   firstIncompleteSection,
+  incompleteSectionMessage,
   isSectionComplete,
   profileValueFromColumn,
   REGISTRATION_SECTIONS,
@@ -170,7 +171,7 @@ export async function signUpForVolunteerShiftAction(
     }
   }
   const incomplete = firstIncompleteSection(eventSections, values);
-  if (incomplete) return { ok: false, error: `Complete "${incomplete.title}" first.` };
+  if (incomplete) return { ok: false, error: incompleteSectionMessage(incomplete, values, " first.") };
   const updates = collectSectionUpdates(eventSections, onFile, values);
   if (Object.keys(updates).length > 0) {
     const { error: profileError } = await supabase

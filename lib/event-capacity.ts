@@ -27,3 +27,18 @@ export function capacityError(raw: string): string | null {
 export function spotsLeft(capacity: number | null, taken: number | null): number | null {
   return capacity == null ? null : capacity - (taken ?? 0);
 }
+
+/** At or below this many spots left, participant-facing pages show the count. */
+export const SCARCITY_THRESHOLD = 5;
+
+/**
+ * Spots left as participants and the public see it: "3 spots left" only once
+ * there are SCARCITY_THRESHOLD or fewer, so an empty event never reads
+ * "20 spots left" and puts off the first person to sign up. null above that
+ * (and for unlimited). Full is the caller's to say — it comes with the
+ * waitlist. Admin views show the real numbers and don't use this.
+ */
+export function scarcitySpotsLabel(spotsLeft: number | null): string | null {
+  if (spotsLeft == null || spotsLeft <= 0 || spotsLeft > SCARCITY_THRESHOLD) return null;
+  return `${spotsLeft} ${spotsLeft === 1 ? "spot" : "spots"} left`;
+}

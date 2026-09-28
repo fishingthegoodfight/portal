@@ -154,7 +154,11 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
           />
           <DetailRow
             label="Emergency contact"
-            value={[profile?.emergency_contact, profile?.emergency_phone].filter(Boolean).join(" · ")}
+            value={emergencyContactLine(profile?.emergency_contact, profile?.emergency_contact_relationship, profile?.emergency_phone)}
+          />
+          <DetailRow
+            label="Second emergency contact"
+            value={emergencyContactLine(profile?.emergency_contact_2, profile?.emergency_contact_2_relationship, profile?.emergency_phone_2)}
           />
           <DetailRow label="T-shirt size" value={profile?.tshirt_size} />
           <DetailRow label="Favorite snack" value={profile?.favorite_snack} />
@@ -297,4 +301,11 @@ export default async function AdminVolunteerDetailPage({
       </Suspense>
     </div>
   );
+}
+
+/** "Jane Doe (Spouse) · (303) 555-0100", as the roster shows a contact. */
+function emergencyContactLine(name: unknown, relationship: unknown, phone: unknown): string {
+  const text = (value: unknown) => ((value as string | null | undefined) ?? "").trim();
+  const who = text(relationship) && text(name) ? `${text(name)} (${text(relationship)})` : text(name);
+  return [who, text(phone)].filter(Boolean).join(" · ");
 }

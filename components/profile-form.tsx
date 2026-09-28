@@ -197,10 +197,17 @@ export function ProfileForm({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const supabase = createClient();
-    setIsSaving(true);
     setError(null);
     setSuccess(false);
+    // The catalog's cross-field rules (a second emergency contact needs both
+    // a name and a phone), same as the RSVP form.
+    const problem = REGISTRATION_SECTIONS.map((section) => section.problem?.(registrationFields)).find(Boolean);
+    if (problem) {
+      setError(problem);
+      return;
+    }
+    const supabase = createClient();
+    setIsSaving(true);
 
     try {
       // Plain UPDATE, not upsert: the profiles row is created for each user

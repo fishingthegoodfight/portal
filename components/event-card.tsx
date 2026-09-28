@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/card";
 import { ChapterTag } from "@/components/chapter-tag";
 import { cn } from "@/lib/utils";
-import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
+import { spotsLeft as computeSpotsLeft, scarcitySpotsLabel } from "@/lib/event-capacity";
 
 export type EventCardEvent = {
   id: number;
@@ -53,6 +53,7 @@ export function EventCard({
   event,
   rsvpStatus,
   action,
+  exactSpots = false,
 }: {
   event: EventCardEvent;
   /** The caller's own RSVP status for this event, if any. */
@@ -61,6 +62,9 @@ export function EventCard({
    * on the RSVP page itself, where a link back to the page you're on would
    * be redundant. */
   action?: ReactNode;
+  /** Admin views: always show the real spots-left count. Everywhere else it
+   * shows only once few are left (see scarcitySpotsLabel). */
+  exactSpots?: boolean;
 }) {
   const hasActiveRsvp = rsvpStatus != null && rsvpStatus !== "cancelled";
   const waitlisted = rsvpStatus === "waitlisted";
@@ -80,13 +84,16 @@ export function EventCard({
         ? { label: "Full", tone: "bg-muted text-muted-foreground" }
         : null;
 
-  // Shown whenever there's genuine capacity left — including when you're
-  // already "Going" (handy for nudging others). Hidden for waitlisted, since
+  // Shown when there's genuine capacity left — including when you're
+  // already "Going" (handy for nudging others) — and, outside admin views,
+  // only once few spots are left. Hidden for waitlisted, since
   // spots_taken >= capacity there would read "0 spots left".
   const spotsLeftLabel =
-    !waitlisted && !offered && spotsLeft != null && spotsLeft > 0
-      ? `${spotsLeft} spot${spotsLeft === 1 ? "" : "s"} left`
-      : null;
+    waitlisted || offered || spotsLeft == null || spotsLeft <= 0
+      ? null
+      : exactSpots
+        ? `${spotsLeft} spot${spotsLeft === 1 ? "" : "s"} left`
+        : scarcitySpotsLabel(spotsLeft);
 
   return (
     <Card

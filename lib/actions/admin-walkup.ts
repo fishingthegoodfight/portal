@@ -12,6 +12,8 @@ import {
   columnValuesFromProfile,
   dietaryNoteForRsvp,
   firstIncompleteSection,
+  incompleteSectionMessage,
+  secondContactProblem,
   isSectionComplete,
   profileValueFromColumn,
   REGISTRATION_SECTIONS,
@@ -52,6 +54,11 @@ export async function addWalkupRsvpAction(input: {
   phone: string;
   emergencyContactName: string;
   emergencyContactPhone: string;
+  /** Optional, as on the RSVP form — as is the whole second contact. */
+  emergencyContactRelationship?: string;
+  emergencyContact2Name?: string;
+  emergencyContact2Phone?: string;
+  emergencyContact2Relationship?: string;
   directoryOptIn: boolean;
   /** Their home chapter, or "" if not given at the desk — optional, same as
    * on the profile page. Only ever filled in when the profile doesn't
@@ -91,6 +98,12 @@ export async function addWalkupRsvpAction(input: {
   const phone = input.phone.trim();
   const emergencyContactName = input.emergencyContactName.trim();
   const emergencyContactPhone = input.emergencyContactPhone.trim();
+  const emergencyContactRelationship = input.emergencyContactRelationship?.trim() ?? "";
+  const secondContact = {
+    name: input.emergencyContact2Name?.trim() ?? "",
+    phone: input.emergencyContact2Phone?.trim() ?? "",
+    relationship: input.emergencyContact2Relationship?.trim() ?? "",
+  };
   // Optional and picked from a closed dropdown — a value outside that set
   // (a hand-rolled request) is silently dropped rather than rejected, same
   // as leaving the field blank.
@@ -105,6 +118,8 @@ export async function addWalkupRsvpAction(input: {
   if (!emergencyContactName || !emergencyContactPhone) {
     return { ok: false, error: "Emergency contact name and phone are required" };
   }
+  const secondContactError = secondContactProblem(secondContact.name, secondContact.phone);
+  if (secondContactError) return { ok: false, error: secondContactError };
 
   const { data: existingProfile } = await lookup
     .from("profiles")
@@ -183,7 +198,7 @@ export async function addWalkupRsvpAction(input: {
   }
   const incompleteSection = firstIncompleteSection(eventSections, sectionValues);
   if (incompleteSection) {
-    return { ok: false, error: `Complete "${incompleteSection.title}" for the walk-up.` };
+    return { ok: false, error: incompleteSectionMessage(incompleteSection, sectionValues, " for the walk-up.") };
   }
   const sectionUpdates = collectSectionUpdates(eventSections, onFile, sectionValues);
 
@@ -196,15 +211,22 @@ export async function addWalkupRsvpAction(input: {
 
     // Same rule the RSVP form follows: an already-complete field is left
     // alone rather than overwritten with what was typed at the walk-up desk.
-    const hasEmergencyContactOnFile = Boolean(
-      (existingProfile.emergency_contact as string | null)?.trim() &&
-      (existingProfile.emergency_phone as string | null)?.trim(),
-    );
-    const hasChapterOnFile = Boolean((existingProfile.chapter as string | null)?.trim());
-    const fillIn: Record<string, string> = {};
+    // Each contact is filled as a whole or not at all, so a relationship
+    // typed at the desk never gets attached to a different person on file.
+    const onFileText = (column: string) => ((existingProfile[column] as string | null) ?? "").trim();
+    const hasEmergencyContactOnFile = Boolean(onFileText("emergency_contact") && onFileText("emergency_phone"));
+    const hasSecondContactOnFile = Boolean(onFileText("emergency_contact_2") || onFileText("emergency_phone_2"));
+    const hasChapterOnFile = Boolean(onFileText("chapter"));
+    const fillIn: Record<string, string | null> = {};
     if (!hasEmergencyContactOnFile) {
       fillIn.emergency_contact = emergencyContactName;
       fillIn.emergency_phone = emergencyContactPhone;
+      fillIn.emergency_contact_relationship = emergencyContactRelationship || null;
+    }
+    if (!hasSecondContactOnFile && secondContact.name) {
+      fillIn.emergency_contact_2 = secondContact.name;
+      fillIn.emergency_phone_2 = secondContact.phone;
+      fillIn.emergency_contact_2_relationship = secondContact.relationship || null;
     }
     if (!hasChapterOnFile && chapter) fillIn.chapter = chapter;
 
@@ -265,6 +287,10 @@ export async function addWalkupRsvpAction(input: {
         phone,
         emergency_contact: emergencyContactName,
         emergency_phone: emergencyContactPhone,
+        emergency_contact_relationship: emergencyContactRelationship || null,
+        emergency_contact_2: secondContact.name || null,
+        emergency_phone_2: secondContact.phone || null,
+        emergency_contact_2_relationship: (secondContact.name && secondContact.relationship) || null,
         chapter,
         directory_opt_in: input.directoryOptIn,
         ...columnValuesFromProfile(sectionUpdates),

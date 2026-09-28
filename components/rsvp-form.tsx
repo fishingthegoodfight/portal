@@ -36,6 +36,7 @@ import {
   columnValuesFromProfile,
   dietaryNoteForRsvp,
   firstIncompleteSection,
+  incompleteSectionMessage,
   isSectionComplete,
   sectionsForEvent,
   type RegistrationSection,
@@ -215,7 +216,7 @@ export function RsvpForm({
     setError(null);
     setUpdateMessage(null);
     if (incompleteRequiredSection) {
-      setError(`Complete "${incompleteRequiredSection.title}" first.`);
+      setError(incompleteSectionMessage(incompleteRequiredSection, fieldValues, " first."));
       return;
     }
     setIsUpdating(true);
@@ -274,9 +275,7 @@ export function RsvpForm({
       // Belt-and-suspenders: the submit button is disabled for this case
       // too, but guard here in case the form is ever submitted some other
       // way (e.g. pressing Enter before React re-renders the disabled state).
-      setError(
-        `Complete "${incompleteRequiredSection.title}" before RSVPing.`,
-      );
+      setError(incompleteSectionMessage(incompleteRequiredSection, fieldValues, " before RSVPing."));
       return;
     }
     setIsSubmitting(true);
@@ -535,6 +534,12 @@ export function RsvpForm({
               </RevealPanel>
             )}
             {updateMessage && <p className="text-sm text-green-600">{updateMessage}</p>}
+            {/* The buttons are disabled meanwhile — say why, since a
+                half-filled optional field isn't marked the way a missing
+                required one is. */}
+            {!error && incompleteRequiredSection?.problem?.(fieldValues) && (
+              <p className="text-sm text-red-500">{incompleteRequiredSection.problem(fieldValues)}</p>
+            )}
             {error && (
               <RevealPanel role="alert" revealKey={error} className="text-sm text-red-500">
                 {error}

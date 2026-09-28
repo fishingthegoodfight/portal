@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { CHAPTERS, NOT_LOCAL_CHAPTER, timezoneForChapter } from "@/lib/chapters";
-import { formatPostalCode } from "@/lib/phone";
+import { formatPhoneNumber, formatPostalCode } from "@/lib/phone";
 import {
   resolveVolunteerWaiver,
   waiverInfoForVolunteer,
@@ -38,6 +38,10 @@ export type SubmitVolunteerRegistrationInput = {
   postalCode: string;
   emergencyContactName: string;
   emergencyContactPhone: string;
+  emergencyContactRelationship: string;
+  emergencyContact2Name: string;
+  emergencyContact2Phone: string;
+  emergencyContact2Relationship: string;
   homeChapter: string;
   tshirtSize: string;
   favoriteSnack: string;
@@ -82,8 +86,16 @@ export async function submitVolunteerRegistrationAction(
   const city = input.city.trim();
   const state = input.state.trim();
   const postalCode = formatPostalCode(input.postalCode);
-  const emergencyContactName = input.emergencyContactName.trim();
-  const emergencyContactPhone = input.emergencyContactPhone.trim();
+  // The profile's two emergency contacts, required in full here as on the
+  // health form (which saves to the same columns).
+  const contacts = {
+    name: input.emergencyContactName.trim(),
+    phone: formatPhoneNumber(input.emergencyContactPhone),
+    relationship: input.emergencyContactRelationship.trim(),
+    name2: input.emergencyContact2Name.trim(),
+    phone2: formatPhoneNumber(input.emergencyContact2Phone),
+    relationship2: input.emergencyContact2Relationship.trim(),
+  };
   const homeChapter = input.homeChapter.trim();
   const tshirtSize = input.tshirtSize.trim();
   const favoriteSnack = input.favoriteSnack.trim();
@@ -95,8 +107,11 @@ export async function submitVolunteerRegistrationAction(
   if (!addressLine1 || !city || !state || !postalCode) {
     return { ok: false, error: "Full address is required" };
   }
-  if (!emergencyContactName || !emergencyContactPhone) {
-    return { ok: false, error: "Emergency contact name and phone are required" };
+  if (!contacts.name || !contacts.phone || !contacts.relationship) {
+    return { ok: false, error: "Emergency contact needs a name, phone and relationship" };
+  }
+  if (!contacts.name2 || !contacts.phone2 || !contacts.relationship2) {
+    return { ok: false, error: "Second emergency contact needs a name, phone and relationship" };
   }
   if (!CHAPTERS.some((c) => c.name === homeChapter) && homeChapter !== NOT_LOCAL_CHAPTER) {
     return { ok: false, error: "Choose a home chapter" };
@@ -160,8 +175,12 @@ export async function submitVolunteerRegistrationAction(
       city,
       state,
       postal_code: postalCode,
-      emergency_contact: emergencyContactName,
-      emergency_phone: emergencyContactPhone,
+      emergency_contact: contacts.name,
+      emergency_phone: contacts.phone,
+      emergency_contact_relationship: contacts.relationship,
+      emergency_contact_2: contacts.name2,
+      emergency_phone_2: contacts.phone2,
+      emergency_contact_2_relationship: contacts.relationship2,
       chapter: homeChapter,
       tshirt_size: tshirtSize,
       favorite_snack: favoriteSnack,

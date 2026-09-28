@@ -11,6 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { formatEventDateRange } from "@/lib/format-date";
 import { isVirtualChapter } from "@/lib/chapters";
 import { publicEventPath } from "@/lib/event-slug";
+import { scarcitySpotsLabel } from "@/lib/event-capacity";
 import { rsvpPath, withNext } from "@/lib/safe-next";
 import {
   hasHappened,
@@ -64,6 +65,7 @@ async function PublicEventLoader({ params }: { params: Params }) {
   if (lookup.kind === "redirect") permanentRedirect(publicEventPath(lookup.slug));
 
   const { event, spotsLeft } = lookup;
+  const spotsLabel = spotsLeft === 0 ? "Full — you can join the waitlist" : scarcitySpotsLabel(spotsLeft);
   await connection(); // "has it happened yet" is about now, not build time
   const cancelled = event.status === "cancelled";
   const past = !cancelled && hasHappened(event, new Date());
@@ -124,16 +126,12 @@ async function PublicEventLoader({ params }: { params: Params }) {
             )}
           </dd>
 
-          {!cancelled && !past && (
+          {/* Nothing about numbers unless it's nearly full or full — an
+              empty "20 spots left" puts off the first person to sign up. */}
+          {!cancelled && !past && spotsLabel && (
             <>
               <dt className="font-medium text-muted-foreground">Spots</dt>
-              <dd>
-                {spotsLeft == null
-                  ? "Open — no limit"
-                  : spotsLeft > 0
-                    ? `${spotsLeft} ${spotsLeft === 1 ? "spot" : "spots"} left`
-                    : "Full — you can join the waitlist"}
-              </dd>
+              <dd>{spotsLabel}</dd>
             </>
           )}
         </dl>

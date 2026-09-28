@@ -998,10 +998,15 @@ export async function updateEventAction(
 
   const newSequence = dateTimeOrLocationChanged ? before.ics_sequence + 1 : before.ics_sequence;
 
-  const { error: updateError } = await supabase
+  const { data: updated, error: updateError } = await supabase
     .from("events")
     .update(eventUpdateColumns(after, newSequence))
-    .eq("id", eventId);
+    .eq("id", eventId)
+    .select("slug")
+    .maybeSingle();
+  // Moving to another day re-dates a generated slug (events_slug_guard), so
+  // the change email reports the link the database actually kept.
+  if (updated?.slug) after.slug = updated.slug as string;
   if (updateError) {
     // 23505: the slug was taken between the check above and this write.
     if (updateError.code === "23505") {

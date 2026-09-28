@@ -829,7 +829,7 @@ function PublicLinkField({
         {problem ??
           (value !== original
             ? `The old link (/events/${original}) will keep working and send people here.`
-            : "Printed and shared links use this. Changing it keeps the old link working.")}
+            : "Printed and shared links use this. Changing it, or moving the event to another day (which updates the date in it), keeps the old link working.")}
       </p>
     </div>
   );

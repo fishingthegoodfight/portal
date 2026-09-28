@@ -9071,3 +9071,186 @@ revoke all on function public.admin_volunteer_account_states(uuid[]) from public
 grant execute on function public.admin_volunteer_account_states(uuid[]) to authenticated;
 
 commit;
+
+-- =============================================================================
+-- 2026-09-28 — Event slugs follow the date
+-- =============================================================================
+-- A generated slug carries the event's local date ("knot-just-fly-tying-
+-- oct-5-cb72"). Until now a slug never changed on its own, so a rescheduled
+-- event kept saying "oct-5". Now, when an event moves to a different local
+-- day, events_slug_guard swaps the date in its slug for the new one:
+--
+--   knot-just-fly-tying-oct-5-cb72  ->  knot-just-fly-tying-oct-12-cb72
+--
+-- The old slug goes into event_slug_aliases, as it already does when an admin
+-- edits the link, so /events/knot-just-fly-tying-oct-5-cb72 (a flyer, a QR
+-- code, an email) keeps redirecting to the new one.
+--
+-- What changes and what doesn't:
+--   * Only the date part is replaced. The title part and the 4-character
+--     suffix stay, so moving the event back to its original day gives back
+--     exactly its original slug (the trigger already treats taking back one
+--     of its own old slugs as "current again, not an alias").
+--   * Only slugs in the generated shape "...-<mon>-<day>-<4 chars>" are
+--     re-dated. A link an admin typed by hand ("spring-retreat") is left
+--     alone.
+--   * Only a change of local DAY counts. A new start time on the same day, or
+--     a time zone change that keeps the same local date, changes nothing.
+--   * If an admin changes the link by hand in the same save as the date,
+--     their link wins.
+--   * A rename doesn't touch the slug, same as before.
+--   * If the re-dated slug is taken by another event (or another event's old
+--     slug), it gets a fresh suffix.
+--   * Every path that moves an event goes through the trigger: the edit form,
+--     "this and later occurrences" series edits, anything added later.
+--
+-- No new tables, so no new grants.
+--
+-- STEP 1 is the change. STEP 2 (optional) fixes upcoming events that were
+-- already rescheduled before this and still carry their old date. Run the
+-- STEP 2 preview first and check what it lists.
+
+-- ---- STEP 1 -----------------------------------------------------------------
+
+begin;
+
+-- "oct-5": the date part of a generated slug, in the event's own time zone.
+-- Same format as generate_event_slug.
+create or replace function public.event_slug_date(p_starts_at timestamptz, p_timezone text)
+returns text
+language sql
+stable
+set search_path to 'public'
+as $function$
+  select lower(to_char(p_starts_at at time zone coalesce(p_timezone, 'America/Denver'), 'Mon-FMDD'));
+$function$;
+
+-- The slug with its date replaced by the event's current one, or the slug
+-- unchanged when it isn't in the generated shape (a hand-typed link) or the
+-- result would be too long.
+create or replace function public.redate_event_slug(
+  p_slug text,
+  p_event_id bigint,
+  p_starts_at timestamptz,
+  p_timezone text
+)
+returns text
+language plpgsql
+volatile
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_shape constant text :=
+    '(^|-)(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)-([1-9]|[12][0-9]|3[01])-([a-z0-9]{4})$';
+  v_match text[] := regexp_match(p_slug, v_shape);
+  v_prefix text;
+  v_date text := public.event_slug_date(p_starts_at, p_timezone);
+  v_candidate text;
+begin
+  if v_match is null then
+    return p_slug;
+  end if;
+  v_prefix := nullif(regexp_replace(p_slug, v_shape, ''), '');
+  v_candidate := concat_ws('-', v_prefix, v_date, v_match[4]);
+  while exists (select 1 from public.events where slug = v_candidate and id <> p_event_id)
+     or exists (select 1 from public.event_slug_aliases where slug = v_candidate and event_id <> p_event_id)
+  loop
+    v_candidate := concat_ws(
+      '-',
+      v_prefix,
+      v_date,
+      chr(97 + floor(random() * 26)::int) || substr(md5(random()::text || clock_timestamp()::text), 1, 3)
+    );
+  end loop;
+  if length(v_candidate) > 80 then
+    return p_slug;
+  end if;
+  return v_candidate;
+end $function$;
+
+-- Same as the 2026-09-23 version, plus the re-dating on UPDATE.
+create or replace function public.events_slug_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if tg_op = 'INSERT' then
+    if new.slug is null or btrim(new.slug) = '' then
+      new.slug := public.generate_event_slug(new.name, new.starts_at, new.timezone);
+    end if;
+  else
+    if new.slug is null or btrim(new.slug) = '' then
+      new.slug := old.slug;
+    end if;
+    -- Moved to another local day, and the link wasn't changed by hand in the
+    -- same update: move the date in the link too.
+    if new.slug = old.slug
+       and public.event_slug_date(new.starts_at, new.timezone)
+           is distinct from public.event_slug_date(old.starts_at, old.timezone) then
+      new.slug := public.redate_event_slug(old.slug, new.id, new.starts_at, new.timezone);
+    end if;
+  end if;
+
+  if tg_op = 'UPDATE' and new.slug is not distinct from old.slug then
+    return new;
+  end if;
+
+  if exists (
+    select 1 from public.event_slug_aliases
+     where slug = new.slug and event_id is distinct from new.id
+  ) then
+    raise exception 'That link was used by another event' using errcode = '23505';
+  end if;
+
+  if tg_op = 'UPDATE' then
+    -- Taking back one of its own old slugs: it's current again, not an alias.
+    delete from public.event_slug_aliases where slug = new.slug and event_id = new.id;
+    if old.slug is not null then
+      insert into public.event_slug_aliases (slug, event_id)
+      values (old.slug, new.id)
+      on conflict (slug) do nothing;
+    end if;
+  end if;
+  return new;
+end $function$;
+
+-- Now also fires when the date or time zone is written.
+drop trigger if exists events_slug_guard on public.events;
+create trigger events_slug_guard
+  before insert or update of slug, starts_at, timezone on public.events
+  for each row execute function public.events_slug_guard();
+
+revoke all on function public.event_slug_date(timestamptz, text) from public, anon, authenticated;
+revoke all on function public.redate_event_slug(text, bigint, timestamptz, text) from public, anon, authenticated;
+revoke all on function public.events_slug_guard() from public, anon, authenticated;
+grant execute on function public.event_slug_date(timestamptz, text) to service_role;
+grant execute on function public.redate_event_slug(text, bigint, timestamptz, text) to service_role;
+
+commit;
+
+-- ---- STEP 2 (optional): upcoming events whose slug has an old date -----------
+-- Preview. Lists upcoming events whose generated slug names a different day
+-- from the one they're on now, and the slug each would get:
+
+select id,
+       name,
+       (starts_at at time zone timezone)::date as local_date,
+       slug as current_slug,
+       public.redate_event_slug(slug, id, starts_at, timezone) as new_slug
+  from public.events
+ where starts_at >= now()
+   and slug ~ '(^|-)(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)-([1-9]|[12][0-9]|3[01])-[a-z0-9]{4}$'
+   and slug !~ ('(^|-)' || public.event_slug_date(starts_at, timezone) || '-[a-z0-9]{4}$')
+ order by starts_at;
+
+-- Then, to re-date them (each old slug becomes a redirecting alias), remove
+-- the leading "-- " from these lines and run them:
+
+-- update public.events
+--    set slug = public.redate_event_slug(slug, id, starts_at, timezone)
+--  where starts_at >= now()
+--    and slug ~ '(^|-)(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)-([1-9]|[12][0-9]|3[01])-[a-z0-9]{4}$'
+--    and slug !~ ('(^|-)' || public.event_slug_date(starts_at, timezone) || '-[a-z0-9]{4}$');

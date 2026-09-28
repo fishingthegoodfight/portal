@@ -11,6 +11,7 @@ import {
   type SubmitVolunteerRegistrationInput,
 } from "@/lib/actions/volunteer-register";
 import { HomeChapterField } from "@/components/chapter-select";
+import { EmergencyContactFields } from "@/components/emergency-contact-fields";
 import { US_STATES } from "@/lib/us-states";
 import { formatPhoneNumber, formatPostalCode } from "@/lib/phone";
 import { PROGRAM_INTERESTS, SKILL_INTERESTS, TSHIRT_SIZES } from "@/lib/volunteers";
@@ -34,6 +35,10 @@ type ProfileData = {
   postal_code: string;
   emergency_contact: string;
   emergency_phone: string;
+  emergency_contact_relationship: string;
+  emergency_contact_2: string;
+  emergency_phone_2: string;
+  emergency_contact_2_relationship: string;
   chapter: string;
   tshirt_size: string;
   favorite_snack: string;
@@ -95,6 +100,10 @@ export function VolunteerRegistrationForm({
   const updateField = <K extends keyof ProfileData>(field: K) =>
     (e: React.ChangeEvent<HTMLInputElement>) =>
       setProfile((prev) => ({ ...prev, [field]: e.target.value }));
+
+  const updatePhone = (field: "emergency_phone" | "emergency_phone_2") =>
+    (e: React.ChangeEvent<HTMLInputElement>) =>
+      setProfile((prev) => ({ ...prev, [field]: formatPhoneNumber(e.target.value) }));
 
   const toggleSkill = (skill: string, checked: boolean) =>
     setProfile((prev) => ({
@@ -159,6 +168,10 @@ export function VolunteerRegistrationForm({
       postalCode: profile.postal_code,
       emergencyContactName: profile.emergency_contact,
       emergencyContactPhone: profile.emergency_phone,
+      emergencyContactRelationship: profile.emergency_contact_relationship,
+      emergencyContact2Name: profile.emergency_contact_2,
+      emergencyContact2Phone: profile.emergency_phone_2,
+      emergencyContact2Relationship: profile.emergency_contact_2_relationship,
       homeChapter: profile.chapter,
       tshirtSize: profile.tshirt_size,
       favoriteSnack: profile.favorite_snack,
@@ -266,26 +279,32 @@ export function VolunteerRegistrationForm({
               />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="v_ec_name">Emergency contact name</Label>
-              <Input id="v_ec_name" required value={profile.emergency_contact} onChange={updateField("emergency_contact")} />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="v_ec_phone">Emergency contact phone</Label>
-              <Input
-                id="v_ec_phone"
-                type="tel"
-                inputMode="numeric"
-                required
-                maxLength={14}
-                value={profile.emergency_phone}
-                onChange={(e) =>
-                  setProfile((prev) => ({ ...prev, emergency_phone: formatPhoneNumber(e.target.value) }))
-                }
-              />
-            </div>
-          </div>
+          <EmergencyContactFields
+            title="Emergency contact"
+            idPrefix="v_ec1"
+            required
+            name={profile.emergency_contact}
+            phone={profile.emergency_phone}
+            relationship={profile.emergency_contact_relationship}
+            onName={updateField("emergency_contact")}
+            onPhone={updatePhone("emergency_phone")}
+            onRelationship={updateField("emergency_contact_relationship")}
+          />
+          <EmergencyContactFields
+            title="Second emergency contact"
+            idPrefix="v_ec2"
+            required
+            name={profile.emergency_contact_2}
+            phone={profile.emergency_phone_2}
+            relationship={profile.emergency_contact_2_relationship}
+            onName={updateField("emergency_contact_2")}
+            onPhone={updatePhone("emergency_phone_2")}
+            onRelationship={updateField("emergency_contact_2_relationship")}
+          />
+          <p className="-mt-2 text-xs text-muted-foreground">
+            These are the emergency contacts on your profile, which event staff see at check-in —
+            changing them here updates your profile.
+          </p>
           <HomeChapterField
             idPrefix="v"
             value={profile.chapter}

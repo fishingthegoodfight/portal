@@ -1,8 +1,10 @@
 /**
  * Public event URLs: /events/<slug>, e.g. /events/knot-just-fly-tying-night-oct-2-a1b2.
- * The database generates a slug for every new event and never changes it on
- * its own (see the 2026-09-23 "Public event pages" schema-changes.sql entry);
- * an admin can change it on the edit form, and the old one keeps redirecting.
+ * The database generates a slug for every new event (see the 2026-09-23
+ * "Public event pages" schema-changes.sql entry). It changes it on its own in
+ * one case: moving the event to another day swaps the date in a generated
+ * slug (the 2026-09-28 "Event slugs follow the date" entry). An admin can also
+ * change it on the edit form. Either way the old one keeps redirecting.
  * These rules mirror the events_slug_format constraint — keep them in sync.
  */
 

@@ -21,6 +21,7 @@ import { RegistrationSectionField } from "@/components/registration-section-fiel
 import { RevealPanel } from "@/components/reveal-panel";
 import {
   firstIncompleteSection,
+  incompleteSectionMessage,
   isSectionComplete,
   sectionsForEvent,
 } from "@/lib/registration-sections";
@@ -164,7 +165,7 @@ export function VolunteerSignupSection({
 
   const submitSignUp = async (opportunityId: number, switchFrom: string | null) => {
     if (incompleteSection) {
-      setError(`Complete "${incompleteSection.title}" first.`, opportunityId);
+      setError(incompleteSectionMessage(incompleteSection, fieldValues, " first."), opportunityId);
       return;
     }
     setBusyId(opportunityId);
@@ -327,6 +328,9 @@ export function VolunteerSignupSection({
                         You&apos;ll be signed up as {role.role} instead, and we&apos;ll email you
                         the details.
                       </p>
+                    )}
+                    {incompleteSection?.problem?.(fieldValues) && (
+                      <p className="text-sm text-red-500">{incompleteSection.problem(fieldValues)}</p>
                     )}
                     <div className="flex gap-2">
                       <Button

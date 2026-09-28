@@ -16,6 +16,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { CollapsibleTags } from "@/components/admin/collapsible-tags";
 
 export type VolunteerListItem = {
   userId: string;
@@ -143,32 +144,35 @@ export function VolunteersList({ volunteers }: { volunteers: VolunteerListItem[]
           const invitable = canInvite(v);
           const isSelected = selection.includes(v.userId);
           return (
-            <div key={v.userId} className="flex items-start gap-3 p-3 text-sm">
+            // Four fixed tracks from md up — checkbox, name/email, tags,
+            // account — so nothing can spill into the name, however many
+            // roles someone has. Narrower, the last three stack beside the
+            // checkbox.
+            <div
+              key={v.userId}
+              className="grid grid-cols-[1.25rem_minmax(0,1fr)] items-start gap-x-3 gap-y-2 p-3 text-sm md:grid-cols-[1.25rem_14rem_minmax(0,1fr)_10rem] md:gap-x-4"
+            >
               <Checkbox
-                className="mt-1"
+                className="row-span-3 mt-0.5 md:row-span-1"
                 aria-label={`Select ${displayName(v)}`}
                 checked={isSelected}
                 disabled={!invitable || sending || (atLimit && !isSelected)}
                 onCheckedChange={(checked) => toggle(v.userId, checked === true)}
               />
-              <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <Link href={`/protected/admin/volunteers/${v.userId}`} className="flex min-w-0 flex-col hover:underline">
-                  <span className="font-medium">{displayName(v)}</span>
-                  <span className="text-xs text-muted-foreground">
-                    {v.chapter || "No chapter"} · {v.email}
-                  </span>
-                </Link>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="outline">{VOLUNTEER_STATUS_LABELS[v.status]}</Badge>
-                  {v.roles.map((name) => (
-                    <Badge key={name} variant="secondary">
-                      {name}
-                    </Badge>
-                  ))}
-                  {v.certMissingOrExpired && <Badge variant="destructive">Cert missing/expired</Badge>}
-                </div>
-              </div>
-              <div className="flex shrink-0 flex-col items-end gap-1 text-xs">
+              <Link
+                href={`/protected/admin/volunteers/${v.userId}`}
+                className="flex min-w-0 flex-col [overflow-wrap:anywhere] hover:underline"
+              >
+                <span className="font-medium">{displayName(v)}</span>
+                <span className="text-xs text-muted-foreground">{v.email || "No email"}</span>
+                <span className="text-xs text-muted-foreground">{v.chapter || "No chapter"}</span>
+              </Link>
+              <CollapsibleTags
+                tags={v.roles}
+                leading={<Badge variant="outline">{VOLUNTEER_STATUS_LABELS[v.status]}</Badge>}
+                trailing={v.certMissingOrExpired && <Badge variant="destructive">Cert missing/expired</Badge>}
+              />
+              <div className="flex flex-wrap items-center gap-2 text-xs md:flex-col md:items-end md:gap-1">
                 <AccountStateLabel account={v.account} chapter={v.chapter} />
                 {invitable && (
                   <Button

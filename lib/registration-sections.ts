@@ -93,6 +93,10 @@ export type RegistrationSection = {
    */
   profileOnly?: boolean;
   fields: RegistrationField[];
+  /** A rule across fields that `required` can't express, e.g. "both or
+   * neither". Returns what's wrong, or null. A section with a problem isn't
+   * complete, so the forms reopen it. */
+  problem?: (values: Record<string, string>) => string | null;
   /** One-line "On file" summary shown once the section is already complete. */
   summary: (profileFields: Record<string, string>) => string;
 };
@@ -107,6 +111,18 @@ export const BOOT_SIZES: string[] = Array.from({ length: 19 }, (_, i) =>
 function truncate(value: string, max = 60): string {
   const trimmed = value.trim();
   return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
+}
+
+/**
+ * The second emergency contact is optional, but half of one is no use: a
+ * name needs a phone and a phone needs a name. One rule for the RSVP form
+ * (via the emergency_contact section), walk-up, and the profile page;
+ * volunteer registration and the health form require the whole contact.
+ */
+export function secondContactProblem(name: string | undefined, phone: string | undefined): string | null {
+  return Boolean(name?.trim()) !== Boolean(phone?.trim())
+    ? "Second emergency contact needs both a name and a phone, or leave it blank"
+    : null;
 }
 
 export const REGISTRATION_SECTIONS: RegistrationSection[] = [
@@ -137,6 +153,7 @@ export const REGISTRATION_SECTIONS: RegistrationSection[] = [
       },
       { key: "emergency_contact_2_relationship", label: "Second contact relationship", type: "text" },
     ],
+    problem: (values) => secondContactProblem(values.emergency_contact_2, values.emergency_phone_2),
     summary: (profileFields) =>
       [
         profileFields.emergency_contact_relationship
@@ -352,18 +369,33 @@ export function isSectionAnswered(
 
 /**
  * A section is complete once every field the catalog marks `required` has a
- * value on file. Optional fields never block completeness.
+ * value on file and its cross-field rule (`problem`) is satisfied. Optional
+ * fields never block completeness on their own.
  */
 export function isSectionComplete(
   section: RegistrationSection,
   profileFields: Record<string, string>,
 ): boolean {
-  return section.fields.every(
-    (field) =>
-      !field.required ||
-      !isFieldVisible(field, profileFields) ||
-      Boolean(profileFields[field.key]?.trim()),
+  return (
+    !section.problem?.(profileFields) &&
+    section.fields.every(
+      (field) =>
+        !field.required ||
+        !isFieldVisible(field, profileFields) ||
+        Boolean(profileFields[field.key]?.trim()),
+    )
   );
+}
+
+/** Why `section` can't be saved as it stands: its cross-field rule's message,
+ * or `Complete "<title>"` plus `suffix` for a missing required answer. For
+ * the forms' error lines. */
+export function incompleteSectionMessage(
+  section: RegistrationSection,
+  values: Record<string, string>,
+  suffix: string,
+): string {
+  return section.problem?.(values) ?? `Complete "${section.title}"${suffix}`;
 }
 
 /**
@@ -434,6 +466,7 @@ export function firstIncompleteSection(
   return sections.find((section) => {
     if (section.kind === "waiver") return false;
     if (isSectionComplete(section, values)) return false;
+    if (section.problem?.(values)) return true;
     return visibleFields(section, values).some(
       (field) => field.required && !(values[field.key] ?? "").trim(),
     );

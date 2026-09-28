@@ -96,10 +96,12 @@ async function ApplicationsLoader({ searchParams }: { searchParams: Promise<Sear
               <li key={r.id}>
                 <Link
                   href={`${BASE_PATH}/${r.id}`}
-                  className="flex flex-col gap-2 rounded-md border p-3 hover:bg-accent sm:flex-row sm:items-center sm:justify-between"
+                  className="grid gap-2 rounded-md border p-3 hover:bg-accent sm:grid-cols-[minmax(0,1fr)_minmax(0,17rem)] sm:items-center sm:gap-4"
                 >
+                  {/* Two tracks, so the badges wrap inside their own column
+                      rather than squeezing the name to nothing. */}
                   <div className="flex min-w-0 flex-col gap-1">
-                    <span className="font-medium">{r.full_name}</span>
+                    <span className="font-medium [overflow-wrap:anywhere]">{r.full_name}</span>
                     <div className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
                       {r.chapters.map((c) => (
                         <ChapterTag key={c} chapter={c} />
@@ -107,7 +109,7 @@ async function ApplicationsLoader({ searchParams }: { searchParams: Promise<Sear
                       <span>Applied {formatDateInZone(r.submitted_at, "America/Denver")}</span>
                     </div>
                   </div>
-                  <div className="flex shrink-0 flex-wrap items-center gap-2 text-sm">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm sm:justify-end">
                     <span
                       className={cn("tabular-nums", attended < target && "text-amber-700 dark:text-amber-400")}
                       title={`Events attended, against the ${target} this application needs`}

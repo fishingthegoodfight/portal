@@ -21,6 +21,7 @@ import {
   type YesNo,
 } from "@/lib/health-history";
 import { formatPhoneNumber } from "@/lib/phone";
+import { EmergencyContactFields } from "@/components/emergency-contact-fields";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -114,7 +115,7 @@ export function HealthHistoryForm({
             <Label htmlFor="hh_dob">Date of birth</Label>
             <Input id="hh_dob" type="date" value={form.dateOfBirth} onChange={onText("dateOfBirth")} />
           </div>
-          <ContactFields
+          <EmergencyContactFields
             title="Emergency contact"
             idPrefix="hh_ec1"
             name={form.emergencyContactName}
@@ -124,7 +125,7 @@ export function HealthHistoryForm({
             onPhone={onPhone("emergencyContactPhone")}
             onRelationship={onText("emergencyContactRelationship")}
           />
-          <ContactFields
+          <EmergencyContactFields
             title="Second emergency contact"
             idPrefix="hh_ec2"
             name={form.emergencyContact2Name}
@@ -439,46 +440,6 @@ export function HealthHistoryForm({
         </Button>
       </div>
     </form>
-  );
-}
-
-function ContactFields({
-  title,
-  idPrefix,
-  name,
-  phone,
-  relationship,
-  onName,
-  onPhone,
-  onRelationship,
-}: {
-  title: string;
-  idPrefix: string;
-  name: string;
-  phone: string;
-  relationship: string;
-  onName: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  onPhone: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  onRelationship: (e: React.ChangeEvent<HTMLInputElement>) => void;
-}) {
-  return (
-    <fieldset className="grid gap-2">
-      <legend className="mb-1 text-sm font-semibold">{title}</legend>
-      <div className="grid gap-3 sm:grid-cols-3">
-        <div className="grid gap-1">
-          <Label htmlFor={`${idPrefix}_name`} className="text-xs">Name</Label>
-          <Input id={`${idPrefix}_name`} value={name} onChange={onName} />
-        </div>
-        <div className="grid gap-1">
-          <Label htmlFor={`${idPrefix}_phone`} className="text-xs">Phone</Label>
-          <Input id={`${idPrefix}_phone`} type="tel" value={phone} onChange={onPhone} placeholder="(303) 555-0100" />
-        </div>
-        <div className="grid gap-1">
-          <Label htmlFor={`${idPrefix}_rel`} className="text-xs">Relationship</Label>
-          <Input id={`${idPrefix}_rel`} value={relationship} onChange={onRelationship} placeholder="e.g. Spouse" />
-        </div>
-      </div>
-    </fieldset>
   );
 }
 

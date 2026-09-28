@@ -21,6 +21,7 @@ import { CancelEventDialog } from "@/components/admin/cancel-event-dialog";
 import { RestoreEventDialog } from "@/components/admin/restore-event-dialog";
 import { SaveAsTemplateButton } from "@/components/admin/save-as-template-button";
 import { EventCard, type EventCardEvent } from "@/components/event-card";
+import { EmergencyContactFields } from "@/components/emergency-contact-fields";
 import { Button } from "@/components/ui/button";
 import { RevealPanel } from "@/components/reveal-panel";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -34,6 +35,8 @@ import { formatPhoneNumber } from "@/lib/phone";
 import {
   dietaryDisplay,
   firstIncompleteSection,
+  incompleteSectionMessage,
+  secondContactProblem,
   REGISTRATION_SECTIONS,
   rosterAnswerSections,
   rosterSectionAnswer,
@@ -65,6 +68,10 @@ type WalkupFormState = {
   phone: string;
   emergencyContactName: string;
   emergencyContactPhone: string;
+  emergencyContactRelationship: string;
+  emergencyContact2Name: string;
+  emergencyContact2Phone: string;
+  emergencyContact2Relationship: string;
   directoryOptIn: boolean;
   chapter: string;
 };
@@ -76,6 +83,10 @@ const EMPTY_WALKUP_FORM: WalkupFormState = {
   phone: "",
   emergencyContactName: "",
   emergencyContactPhone: "",
+  emergencyContactRelationship: "",
+  emergencyContact2Name: "",
+  emergencyContact2Phone: "",
+  emergencyContact2Relationship: "",
   directoryOptIn: false,
   chapter: "",
 };
@@ -429,7 +440,7 @@ export function EventRoster({
       setWalkupForm((prev) => ({ ...prev, [field]: e.target.value }));
 
   const updateWalkupPhoneField =
-    (field: "phone" | "emergencyContactPhone") => (e: React.ChangeEvent<HTMLInputElement>) =>
+    (field: "phone" | "emergencyContactPhone" | "emergencyContact2Phone") => (e: React.ChangeEvent<HTMLInputElement>) =>
       setWalkupForm((prev) => ({
         ...prev,
         [field]: formatPhoneNumber(e.target.value),
@@ -457,10 +468,16 @@ export function EventRoster({
       );
       return;
     }
+    const secondContactError = secondContactProblem(walkupForm.emergencyContact2Name, walkupForm.emergencyContact2Phone);
+    if (secondContactError) {
+      setIsSubmittingWalkup(false);
+      setWalkupError(secondContactError);
+      return;
+    }
     const incomplete = firstIncompleteSection(walkupSections, sectionValues);
     if (incomplete) {
       setIsSubmittingWalkup(false);
-      setWalkupError(`Complete "${incomplete.title}" below.`);
+      setWalkupError(incompleteSectionMessage(incomplete, sectionValues, " below."));
       return;
     }
 
@@ -472,6 +489,10 @@ export function EventRoster({
       phone: walkupForm.phone,
       emergencyContactName: walkupForm.emergencyContactName,
       emergencyContactPhone: walkupForm.emergencyContactPhone,
+      emergencyContactRelationship: walkupForm.emergencyContactRelationship,
+      emergencyContact2Name: walkupForm.emergencyContact2Name,
+      emergencyContact2Phone: walkupForm.emergencyContact2Phone,
+      emergencyContact2Relationship: walkupForm.emergencyContact2Relationship,
       directoryOptIn: walkupForm.directoryOptIn,
       chapter: walkupForm.chapter,
       waiverName: walkupSign.name,
@@ -600,7 +621,7 @@ export function EventRoster({
 
   return (
     <div className="flex flex-col gap-6">
-      <EventCard event={eventCard} rsvpStatus={null} />
+      <EventCard event={eventCard} rsvpStatus={null} exactSpots />
 
       {virtualLink && (
         <VirtualLinkCard link={virtualLink} accessNotes={virtualAccessNotes} />
@@ -1073,30 +1094,30 @@ export function EventRoster({
                     onChange={updateWalkupPhoneField("phone")}
                   />
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="grid gap-2">
-                    <Label htmlFor="walkup_emergency_name">Emergency contact</Label>
-                    <Input
-                      id="walkup_emergency_name"
-                      required
-                      value={walkupForm.emergencyContactName}
-                      onChange={updateWalkupField("emergencyContactName")}
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="walkup_emergency_phone">Emergency phone</Label>
-                    <Input
-                      id="walkup_emergency_phone"
-                      type="tel"
-                      inputMode="numeric"
-                      placeholder="(303) 555-0100"
-                      maxLength={14}
-                      required
-                      value={walkupForm.emergencyContactPhone}
-                      onChange={updateWalkupPhoneField("emergencyContactPhone")}
-                    />
-                  </div>
-                </div>
+                {/* Same shape as the RSVP form: one contact required
+                    (relationship optional), a second one optional. */}
+                <EmergencyContactFields
+                  title="Emergency contact"
+                  idPrefix="walkup_ec1"
+                  required
+                  relationshipOptional
+                  name={walkupForm.emergencyContactName}
+                  phone={walkupForm.emergencyContactPhone}
+                  relationship={walkupForm.emergencyContactRelationship}
+                  onName={updateWalkupField("emergencyContactName")}
+                  onPhone={updateWalkupPhoneField("emergencyContactPhone")}
+                  onRelationship={updateWalkupField("emergencyContactRelationship")}
+                />
+                <EmergencyContactFields
+                  title="Second emergency contact (optional)"
+                  idPrefix="walkup_ec2"
+                  name={walkupForm.emergencyContact2Name}
+                  phone={walkupForm.emergencyContact2Phone}
+                  relationship={walkupForm.emergencyContact2Relationship}
+                  onName={updateWalkupField("emergencyContact2Name")}
+                  onPhone={updateWalkupPhoneField("emergencyContact2Phone")}
+                  onRelationship={updateWalkupField("emergencyContact2Relationship")}
+                />
                 <HomeChapterField
                   idPrefix="walkup"
                   value={walkupForm.chapter}
@@ -1259,8 +1280,8 @@ function WaitlistRow({
   const canOfferThis = person.status !== "offered";
 
   return (
-    <li className="flex flex-col gap-3 border-b py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex flex-col gap-0.5">
+    <li className="flex flex-col gap-3 border-b py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5 [overflow-wrap:anywhere]">
         <span className="font-medium">
           {person.position != null ? `#${person.position} ` : ""}
           {personDisplayName(person)}
@@ -1336,8 +1357,8 @@ function RosterRow({
   const emergency = [person.emergencyContact, person.emergencyPhone].filter(Boolean).join(" · ");
 
   return (
-    <li className="flex flex-col gap-3 border-b py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex flex-col gap-0.5">
+    <li className="flex flex-col gap-3 border-b py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5 [overflow-wrap:anywhere]">
         <span className="font-medium">
           {personDisplayName(person)}
         </span>
@@ -1409,8 +1430,8 @@ function VolunteerRosterRow({
   const emergency = [person.emergencyContact, person.emergencyPhone].filter(Boolean).join(" · ");
 
   return (
-    <li className="flex flex-col gap-1 border-b py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between">
-      <div className="flex flex-col gap-0.5">
+    <li className="flex flex-col gap-1 border-b py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5 [overflow-wrap:anywhere]">
         <span className="font-medium">
           {personDisplayName(person)} · {person.role}
         </span>
