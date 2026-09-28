@@ -12,6 +12,13 @@ import {
   type ApplicationRecord,
 } from "@/lib/volunteer-applications";
 import { SCREENABLE_STATUSES, type ScreeningRecord } from "@/lib/volunteer-screenings";
+import {
+  daysBetween,
+  referenceAnswerRows,
+  referenceFishingAnswerRows,
+  type ReferenceRequest,
+} from "@/lib/volunteer-references";
+import { ReferencesPanel } from "@/components/admin/references-panel";
 import { ApplicationActions, AttendanceCreditEditor } from "@/components/admin/application-actions";
 import { ApplicationAnswers } from "@/components/application-answers";
 import { ScreeningView } from "@/components/admin/screening-view";
@@ -33,6 +40,12 @@ const ACTION_LABELS: Record<string, string> = {
   declined: "Declined",
   reapplication_allowed: "Allowed to apply again",
   withdrawn: "Withdrawn",
+  references_requested: "Reference requests sent",
+  reference_replaced: "Reference replaced",
+  reference_reminder_sent: "Reference reminder sent",
+  reference_received: "Reference received",
+  references_received: "Both references in",
+  references_reviewed: "References reviewed",
 };
 
 async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }) {
@@ -59,6 +72,8 @@ async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }
     { data: canScreen },
     { data: canRecordCheck },
     practical,
+    { data: referenceRows },
+    { data: canSendReferences },
   ] = await Promise.all([
       loadEventAdminAccess(supabase),
       supabase
@@ -80,7 +95,16 @@ async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }
       supabase.rpc("can_record_screening", { p_application_id: applicationId }),
       supabase.rpc("can_record_practical_check", { p_user_id: app.user_id }),
       loadPracticalChecks(supabase, app.user_id),
+      // RLS: anyone who can see the application sees its references.
+      supabase
+        .from("volunteer_reference_requests")
+        .select("*")
+        .eq("application_id", applicationId)
+        .order("slot")
+        .order("requested_at"),
+      supabase.rpc("can_send_reference_requests", { p_application_id: applicationId }),
     ]);
+  const references = (referenceRows ?? []) as ReferenceRequest[];
 
   const [{ data: screeningRows }, { data: declineRecommended }] = canScreen
     ? await Promise.all([
@@ -110,6 +134,7 @@ async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }
         ...((history ?? []) as { actor: string | null }[]).map((h) => h.actor),
         credit?.set_by as string | null,
         ...screenings.flatMap((s) => [s.recorded_by, s.updated_by]),
+        app.references_reviewed_by,
         access?.userId ?? null,
       ].filter((v): v is string => Boolean(v)),
     ),
@@ -131,6 +156,11 @@ async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }
     app.interest_area_ids,
     app.interest_other ?? null,
   );
+
+  const now = new Date();
+  const on = (iso: string | null) => (iso ? formatDateInZone(iso, ZONE) : null);
+  // From Screened on, or wherever requests exist (a closed application keeps them).
+  const showReferences = references.length > 0 || app.status === "screened";
 
   return (
     <div className="flex flex-col gap-6">
@@ -169,6 +199,61 @@ async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }
           )}
         </CardContent>
       </Card>
+
+      {showReferences && (
+        <Card>
+          <CardHeader>
+            <CardTitle>References</CardTitle>
+            <p className="text-xs text-muted-foreground">
+              Anyone who can see this application sees these answers. The applicant never does.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <ReferencesPanel
+              applicationId={app.id}
+              status={app.status}
+              canSend={canSendReferences === true}
+              isAdmin={isAdmin}
+              ref1Matched={app.ref1_matched_volunteer}
+              live={references
+                .filter((r) => !r.replaced_at)
+                .map((r) => ({
+                  id: r.id,
+                  slot: r.slot,
+                  name: r.name,
+                  email: r.email,
+                  relationship: r.relationship,
+                  matchedVolunteer: r.matched_volunteer,
+                  requestedOn: on(r.requested_at) as string,
+                  daysWaiting: daysBetween(new Date(r.requested_at), now),
+                  remindersSent: r.reminders_sent,
+                  lastReminderOn: on(r.last_reminder_at),
+                  manualReminders: r.manual_reminders_sent,
+                  lastManualReminderOn: on(r.last_manual_reminder_at),
+                  gaveUpOn: on(r.gave_up_at),
+                  receivedOn: on(r.submitted_at),
+                  answers: r.submitted_at ? referenceAnswerRows(r) : [],
+                  fishingAnswers: r.submitted_at ? referenceFishingAnswerRows(r) : [],
+                }))}
+              replaced={references
+                .filter((r) => r.replaced_at)
+                .map((r) => ({
+                  id: r.id,
+                  slot: r.slot,
+                  name: r.name,
+                  email: r.email,
+                  requestedOn: on(r.requested_at) as string,
+                  replacedOn: on(r.replaced_at) as string,
+                }))}
+              reviewed={
+                app.references_reviewed_at
+                  ? { by: nameOf(app.references_reviewed_by), on: on(app.references_reviewed_at) as string }
+                  : null
+              }
+            />
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

@@ -9254,3 +9254,624 @@ select id,
 --  where starts_at >= now()
 --    and slug ~ '(^|-)(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)-([1-9]|[12][0-9]|3[01])-[a-z0-9]{4}$'
 --    and slug !~ ('(^|-)' || public.event_slug_date(starts_at, timezone) || '-[a-z0-9]{4}$');
+
+-- =============================================================================
+-- 2026-09-28 — Volunteer applications, phase 3: reference checks
+-- =============================================================================
+-- After a screening call lands on "Move forward to references", a reviewer
+-- (an admin, or a chapter lead for the application's chapter) sends both
+-- references a request. Each gets a tokenised link to a short public form —
+-- no login. The application goes Screened -> References out, and to
+-- References in once both have answered; an admin then marks them reviewed
+-- (the step before approval, phase 4).
+--
+-- Reminders: weekly, up to three, on a fixed schedule counted from when that
+-- reference's request went out (days 7, 14, 21, Denver dates). A week after
+-- the third (day 28) with still no answer, the reference is flagged "gave up"
+-- — the admin chases the applicant for a replacement. "Replace this
+-- reference" retires it and starts a fresh request and schedule for the new
+-- person. "Send a reminder now" doesn't count toward the three or move the
+-- schedule. The job runs daily inside the admin-digest cron.
+--
+-- 1. volunteer_reference_requests: one row per request sent, answers on the
+--    same row once received. A replaced request is kept (replaced_at set) for
+--    the record; at most one live request per (application, reference slot).
+--    Reviewers (can_review_application) can read every column: the answers
+--    are for anyone who can see the application, not screening-flag
+--    material. Nobody but the service role writes.
+--
+-- 2. volunteer_reference_tokens: the link token for each live request, in a
+--    table of its own that ONLY the service role can read. Tokens never
+--    reach a reviewer's browser — otherwise a chapter lead could open a
+--    link and answer as the reference. They're minted and emailed by the
+--    server, and deleted when a request is replaced or its application
+--    closes. On submission the token is kept but marked used, so revisiting
+--    the link shows "thanks, already received" and nothing else.
+--
+-- 3. ANON CAN REACH NOTHING NEW. The reference form is for logged-out
+--    visitors, but it's served and submitted by the app's server with the
+--    service role, after checking the token (reference_form_lookup /
+--    reference_form_submit below, both service-role only). Anon gets no
+--    grant on either table and no execute on any function here, so the
+--    public API key can't read or write a reference, or even probe tokens.
+--    What a token holder sees is the applicant's name and their own name,
+--    nothing else about the applicant.
+--
+-- 4. Sending checks, in the database: status Screened AND the latest
+--    screening call's outcome is "Move forward to references" (not a pause,
+--    not a recommended decline). can_send_reference_requests answers that
+--    for the review screen without revealing the outcome itself — it only
+--    says whether Send applies.
+--
+-- 5. A replacement for reference 1 must be a current FTGF volunteer
+--    (approved, matched by email — the same rule as on the application).
+--    refresh_ref1_matches now checks the current reference 1 (a replacement,
+--    if any) rather than the one on the original application.
+--
+-- 6. volunteer_applications gets references_reviewed_at / _by (admin's
+--    "Mark references reviewed"); status stays References in until phase 4.
+--
+-- Nothing here satisfies the practical instruction check: reference answers
+-- are stored only in these tables, and nothing reads them for that.
+--
+-- Safe to re-run. One transaction.
+
+begin;
+
+-- ---- 1. Requests and answers -----------------------------------------------------
+
+create table if not exists public.volunteer_reference_requests (
+  id bigserial primary key,
+  application_id bigint not null references public.volunteer_applications(id) on delete cascade,
+  -- 1 = the current-volunteer reference, 2 = anyone.
+  slot smallint not null check (slot in (1, 2)),
+  name text not null check (btrim(name) <> ''),
+  email text not null check (btrim(email) <> ''),
+  -- How the applicant said they know them (application), or what the admin
+  -- entered for a replacement. Optional for a replacement.
+  relationship text,
+  -- Slot 1: an approved volunteer's email when requested.
+  matched_volunteer boolean not null default false,
+
+  requested_at timestamptz not null default now(),
+  requested_by uuid references auth.users(id) on delete set null,
+  -- Automatic weekly reminders sent (0–3) and when the last went.
+  reminders_sent smallint not null default 0 check (reminders_sent between 0 and 3),
+  last_reminder_at timestamptz,
+  -- "Send a reminder now" — counted separately, never toward the three.
+  manual_reminders_sent integer not null default 0,
+  last_manual_reminder_at timestamptz,
+  -- A week after the third reminder with no answer: needs a replacement.
+  gave_up_at timestamptz,
+  replaced_at timestamptz,
+  replaced_by uuid references auth.users(id) on delete set null,
+
+  -- The answers.
+  submitted_at timestamptz,
+  answer_name text,
+  answer_how_know text,
+  answer_known_for text,
+  -- Slot 1 only.
+  answer_chapter text,
+  answer_seen_at_events text,
+  rating_hard_time smallint check (rating_hard_time between 1 and 5),
+  rating_reliable smallint check (rating_reliable between 1 and 5),
+  rating_judgment smallint check (rating_judgment between 1 and 5),
+  answer_gives_pause text,
+  answer_recommend text check (answer_recommend in ('yes', 'yes_with_reservations', 'no')),
+  answer_anything_else text,
+  answer_not_immediate_family boolean,
+  -- Slot 1, retreat applicants only. Reference signal — never a practical check.
+  fished_with text check (fished_with in ('yes', 'no', 'briefly')),
+  fishing_ability text check (fishing_ability in ('beginner', 'competent', 'strong', 'expert')),
+  answer_seen_teaching text,
+  comfortable_two_participants text check (comfortable_two_participants in ('yes', 'not_sure', 'no')),
+  comfortable_two_participants_why text,
+
+  constraint volunteer_reference_requests_answered check (
+    submitted_at is null or (
+      btrim(coalesce(answer_name, '')) <> ''
+      and btrim(coalesce(answer_how_know, '')) <> ''
+      and btrim(coalesce(answer_known_for, '')) <> ''
+      and rating_hard_time is not null and rating_reliable is not null and rating_judgment is not null
+      and answer_recommend is not null
+      and answer_not_immediate_family is true
+    )
+  ),
+  constraint volunteer_reference_requests_fishing check (
+    (fished_with is null or slot = 1)
+    and (coalesce(fished_with in ('yes', 'briefly'), false) or (fishing_ability is null and answer_seen_teaching is null
+         and comfortable_two_participants is null and comfortable_two_participants_why is null))
+  )
+);
+
+-- One live request per reference slot.
+create unique index if not exists volunteer_reference_requests_live
+  on public.volunteer_reference_requests (application_id, slot)
+  where replaced_at is null;
+create index if not exists volunteer_reference_requests_app_idx
+  on public.volunteer_reference_requests (application_id);
+
+alter table public.volunteer_reference_requests enable row level security;
+
+drop policy if exists volunteer_reference_requests_select_reviewer on public.volunteer_reference_requests;
+create policy volunteer_reference_requests_select_reviewer on public.volunteer_reference_requests
+  for select to authenticated
+  using (public.can_review_application(application_id));
+-- No insert/update/delete policies: written only by the service role
+-- (server actions, after checking the caller, and the functions below).
+
+revoke all on public.volunteer_reference_requests from anon;
+revoke all on public.volunteer_reference_requests from authenticated;
+grant select on public.volunteer_reference_requests to authenticated;
+grant all on public.volunteer_reference_requests to service_role;
+revoke all on sequence public.volunteer_reference_requests_id_seq from anon, authenticated;
+grant usage, select on sequence public.volunteer_reference_requests_id_seq to service_role;
+
+-- ---- 2. Link tokens (service role only) ------------------------------------------
+
+create table if not exists public.volunteer_reference_tokens (
+  token text primary key check (length(token) >= 40),
+  request_id bigint not null unique references public.volunteer_reference_requests(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  -- Set on submission: the link then only says "already received".
+  used_at timestamptz
+);
+
+-- RLS on with no policies, and no grants below service_role: nobody else
+-- can see that a token exists.
+alter table public.volunteer_reference_tokens enable row level security;
+revoke all on public.volunteer_reference_tokens from anon;
+revoke all on public.volunteer_reference_tokens from authenticated;
+grant all on public.volunteer_reference_tokens to service_role;
+
+-- 64 hex characters from two random UUIDs (gen_random_uuid is built in and
+-- uses a strong random source): about 244 random bits.
+create or replace function public.new_reference_token()
+returns text
+language sql
+volatile
+set search_path to 'public'
+as $function$
+  select replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '');
+$function$;
+
+-- ---- 3. Application columns and history actions ---------------------------------
+
+alter table public.volunteer_applications
+  add column if not exists references_reviewed_at timestamptz,
+  add column if not exists references_reviewed_by uuid references auth.users(id) on delete set null;
+
+alter table public.volunteer_application_events drop constraint if exists volunteer_application_events_action_check;
+alter table public.volunteer_application_events
+  add constraint volunteer_application_events_action_check check (action in (
+    'submitted', 'attendance_reached', 'invited_to_schedule', 'asked_to_attend_more',
+    'screening_recorded', 'screened', 'declined', 'reapplication_allowed', 'withdrawn',
+    'references_requested', 'reference_replaced', 'reference_reminder_sent',
+    'reference_received', 'references_received', 'references_reviewed'
+  ));
+
+-- An approved volunteer's email? The application's rule for reference 1.
+create or replace function public.is_current_volunteer_email(p_email text)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select exists (
+    select 1 from public.volunteers v
+      join public.profiles p on p.id = v.user_id
+     where v.status = 'approved' and lower(p.email) = lower(btrim(p_email))
+  );
+$function$;
+
+-- The latest screening call's outcome is "Move forward to references".
+create or replace function public.latest_screening_advances(p_application_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce((
+    select s.outcome = 'advance'
+      from public.volunteer_screenings s
+     where s.application_id = p_application_id
+     order by s.call_date desc, s.recorded_at desc
+     limit 1
+  ), false);
+$function$;
+
+-- For the review screen: may the caller send reference requests now? Only
+-- "yes"/"no" — never the screening outcome behind it.
+create or replace function public.can_send_reference_requests(p_application_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select public.can_review_application(p_application_id)
+     and exists (
+       select 1 from public.volunteer_applications a
+        where a.id = p_application_id and a.status = 'screened'
+     )
+     and public.latest_screening_advances(p_application_id)
+     and not exists (
+       select 1 from public.volunteer_reference_requests r
+        where r.application_id = p_application_id and r.replaced_at is null
+     );
+$function$;
+
+-- ---- 4. Sending, replacing, submitting (service role only) ---------------------
+-- The caller (a server action) has already checked the signed-in user may act
+-- on the application; these re-check the application's state and pass the
+-- user through as p_actor for the record.
+
+-- Both requests, their tokens, Screened -> References out. Returns what the
+-- server needs to email them.
+create or replace function public.reference_requests_send(p_application_id bigint, p_actor uuid)
+returns table (request_id bigint, slot smallint, name text, email text, token text)
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_app public.volunteer_applications%rowtype;
+  v_id1 bigint;
+  v_id2 bigint;
+begin
+  select * into v_app from public.volunteer_applications where id = p_application_id for update;
+  if not found then
+    raise exception 'Application not found';
+  end if;
+  if v_app.status <> 'screened' or not public.latest_screening_advances(p_application_id) then
+    raise exception 'References can be sent once the latest screening call moves this application forward to references'
+      using errcode = 'P0001';
+  end if;
+  if exists (select 1 from public.volunteer_reference_requests r
+              where r.application_id = p_application_id and r.replaced_at is null) then
+    raise exception 'Reference requests have already been sent' using errcode = 'P0001';
+  end if;
+
+  insert into public.volunteer_reference_requests
+    (application_id, slot, name, email, relationship, matched_volunteer, requested_by)
+  values (p_application_id, 1, btrim(v_app.ref1_name), lower(btrim(v_app.ref1_email)),
+          nullif(btrim(v_app.ref1_how_know), ''), v_app.ref1_matched_volunteer, p_actor)
+  returning id into v_id1;
+  insert into public.volunteer_reference_requests
+    (application_id, slot, name, email, relationship, requested_by)
+  values (p_application_id, 2, btrim(v_app.ref2_name), lower(btrim(v_app.ref2_email)),
+          -- "Friend · 10 years": relationship and how long, as they gave them.
+          nullif(concat_ws(' · ', nullif(btrim(v_app.ref2_relationship), ''), nullif(btrim(v_app.ref2_known_for), '')), ''),
+          p_actor)
+  returning id into v_id2;
+
+  insert into public.volunteer_reference_tokens (token, request_id)
+  values (public.new_reference_token(), v_id1), (public.new_reference_token(), v_id2);
+
+  update public.volunteer_applications
+     set status = 'references_out', status_changed_at = now()
+   where id = p_application_id;
+  insert into public.volunteer_application_events (application_id, action, from_status, to_status, actor)
+  values (p_application_id, 'references_requested', 'screened', 'references_out', p_actor);
+
+  return query
+    select r.id, r.slot, r.name, r.email, t.token
+      from public.volunteer_reference_requests r
+      join public.volunteer_reference_tokens t on t.request_id = r.id
+     where r.id in (v_id1, v_id2)
+     order by r.slot;
+end $function$;
+
+-- Retire one unanswered request and start a fresh one (new token, new
+-- schedule) for someone else in the same slot.
+create or replace function public.reference_request_replace(
+  p_request_id bigint,
+  p_name text,
+  p_email text,
+  p_relationship text,
+  p_actor uuid
+)
+returns table (request_id bigint, slot smallint, name text, email text, token text)
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_old public.volunteer_reference_requests%rowtype;
+  v_app public.volunteer_applications%rowtype;
+  v_email text := lower(btrim(coalesce(p_email, '')));
+  v_matched boolean;
+  v_new bigint;
+begin
+  select * into v_old from public.volunteer_reference_requests where id = p_request_id for update;
+  if not found or v_old.replaced_at is not null then
+    raise exception 'That reference request isn''t current' using errcode = 'P0001';
+  end if;
+  if v_old.submitted_at is not null then
+    raise exception 'That reference has already answered' using errcode = 'P0001';
+  end if;
+  select * into v_app from public.volunteer_applications where id = v_old.application_id for update;
+  if v_app.status <> 'references_out' then
+    raise exception 'References can only be replaced while they''re out' using errcode = 'P0001';
+  end if;
+  if btrim(coalesce(p_name, '')) = '' or v_email !~ '^[^\s@]+@[^\s@]+\.[^\s@]+$' then
+    raise exception 'Give the new reference''s name and a valid email' using errcode = 'P0001';
+  end if;
+  if v_email = lower(btrim(v_app.email))
+     or v_email = lower((select p.email from public.profiles p where p.id = v_app.user_id)) then
+    raise exception 'A reference can''t be the applicant' using errcode = 'P0001';
+  end if;
+  if exists (select 1 from public.volunteer_reference_requests r
+              where r.application_id = v_old.application_id and r.replaced_at is null
+                and r.id <> v_old.id and r.email = v_email) then
+    raise exception 'That''s already their other reference' using errcode = 'P0001';
+  end if;
+  v_matched := public.is_current_volunteer_email(v_email);
+  if v_old.slot = 1 and not v_matched then
+    raise exception 'Reference 1 must be a current FTGF volunteer — that email doesn''t match an approved volunteer'
+      using errcode = 'P0001';
+  end if;
+
+  update public.volunteer_reference_requests
+     set replaced_at = now(), replaced_by = p_actor
+   where id = v_old.id;
+  delete from public.volunteer_reference_tokens t where t.request_id = v_old.id;
+
+  insert into public.volunteer_reference_requests
+    (application_id, slot, name, email, relationship, matched_volunteer, requested_by)
+  values (v_old.application_id, v_old.slot, btrim(p_name), v_email,
+          nullif(btrim(coalesce(p_relationship, '')), ''), v_old.slot = 1 and v_matched, p_actor)
+  returning id into v_new;
+  insert into public.volunteer_reference_tokens (token, request_id) values (public.new_reference_token(), v_new);
+
+  if v_old.slot = 1 then
+    update public.volunteer_applications set ref1_matched_volunteer = true where id = v_old.application_id;
+  end if;
+  insert into public.volunteer_application_events (application_id, action, note, actor)
+  values (v_old.application_id, 'reference_replaced',
+          format('Reference %s: %s replaced by %s', v_old.slot, v_old.name, btrim(p_name)), p_actor);
+
+  return query
+    select r.id, r.slot, r.name, r.email, t.token
+      from public.volunteer_reference_requests r
+      join public.volunteer_reference_tokens t on t.request_id = r.id
+     where r.id = v_new;
+end $function$;
+
+-- What the public form may know about a token. 'open' comes with the two
+-- names and which questions apply; every other state comes with nothing.
+create or replace function public.reference_form_lookup(p_token text)
+returns table (
+  state text,
+  applicant_name text,
+  reference_name text,
+  slot smallint,
+  fishing_questions boolean,
+  requested_at timestamptz
+)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+declare
+  v_tok public.volunteer_reference_tokens%rowtype;
+  v_req public.volunteer_reference_requests%rowtype;
+  v_app public.volunteer_applications%rowtype;
+begin
+  select * into v_tok from public.volunteer_reference_tokens where token = p_token;
+  if not found then
+    return query select 'not_found'::text, null::text, null::text, null::smallint, null::boolean, null::timestamptz;
+    return;
+  end if;
+  if v_tok.used_at is not null then
+    return query select 'submitted'::text, null::text, null::text, null::smallint, null::boolean, null::timestamptz;
+    return;
+  end if;
+  select * into v_req from public.volunteer_reference_requests where id = v_tok.request_id;
+  select * into v_app from public.volunteer_applications where id = v_req.application_id;
+  if v_req.replaced_at is not null or v_app.status <> 'references_out' then
+    return query select 'closed'::text, null::text, null::text, null::smallint, null::boolean, null::timestamptz;
+    return;
+  end if;
+  return query select 'open'::text, v_app.full_name, v_req.name, v_req.slot,
+                      v_req.slot = 1 and v_app.interested_in_retreats, v_req.requested_at;
+end $function$;
+
+-- Save a reference's answers: once, through a live token, while the
+-- application is waiting on references. The last of the two moves it to
+-- References in. Fields that don't apply to this reference are dropped
+-- whatever was sent. Returns 'submitted', or the lookup's state when it
+-- can't be saved.
+create or replace function public.reference_form_submit(p_token text, p_answers jsonb)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_tok public.volunteer_reference_tokens%rowtype;
+  v_req public.volunteer_reference_requests%rowtype;
+  v_app public.volunteer_applications%rowtype;
+  v_fishing boolean;
+  v_fished text;
+  v_fished_yes boolean;
+  v_other_done boolean;
+begin
+  select * into v_tok from public.volunteer_reference_tokens where token = p_token for update;
+  if not found then
+    return 'not_found';
+  end if;
+  if v_tok.used_at is not null then
+    return 'submitted_already';
+  end if;
+  select * into v_req from public.volunteer_reference_requests where id = v_tok.request_id for update;
+  select * into v_app from public.volunteer_applications where id = v_req.application_id for update;
+  if v_req.replaced_at is not null or v_req.submitted_at is not null or v_app.status <> 'references_out' then
+    return 'closed';
+  end if;
+
+  v_fishing := v_req.slot = 1 and v_app.interested_in_retreats;
+  v_fished := case when v_fishing then nullif(p_answers->>'fished_with', '') end;
+  v_fished_yes := v_fished in ('yes', 'briefly');
+
+  update public.volunteer_reference_requests
+     set submitted_at = now(),
+         answer_name = nullif(btrim(p_answers->>'name'), ''),
+         answer_how_know = nullif(btrim(p_answers->>'how_know'), ''),
+         answer_known_for = nullif(btrim(p_answers->>'known_for'), ''),
+         answer_chapter = case when v_req.slot = 1 then nullif(btrim(p_answers->>'chapter'), '') end,
+         answer_seen_at_events = case when v_req.slot = 1 then nullif(btrim(p_answers->>'seen_at_events'), '') end,
+         rating_hard_time = (p_answers->>'rating_hard_time')::smallint,
+         rating_reliable = (p_answers->>'rating_reliable')::smallint,
+         rating_judgment = (p_answers->>'rating_judgment')::smallint,
+         answer_gives_pause = nullif(btrim(p_answers->>'gives_pause'), ''),
+         answer_recommend = nullif(p_answers->>'recommend', ''),
+         answer_anything_else = nullif(btrim(p_answers->>'anything_else'), ''),
+         answer_not_immediate_family = (p_answers->>'not_immediate_family')::boolean,
+         fished_with = v_fished,
+         fishing_ability = case when v_fished_yes then nullif(p_answers->>'fishing_ability', '') end,
+         answer_seen_teaching = case when v_fished_yes then nullif(btrim(p_answers->>'seen_teaching'), '') end,
+         comfortable_two_participants = case when v_fished_yes then nullif(p_answers->>'comfortable_two_participants', '') end,
+         comfortable_two_participants_why = case when v_fished_yes then nullif(btrim(p_answers->>'comfortable_two_participants_why'), '') end
+   where id = v_req.id;
+
+  update public.volunteer_reference_tokens set used_at = now() where token = p_token;
+
+  insert into public.volunteer_application_events (application_id, action, note)
+  values (v_app.id, 'reference_received', format('Reference %s: %s', v_req.slot, v_req.name));
+
+  select exists (
+    select 1 from public.volunteer_reference_requests r
+     where r.application_id = v_app.id and r.replaced_at is null and r.slot <> v_req.slot
+       and r.submitted_at is not null
+  ) into v_other_done;
+  if v_other_done then
+    update public.volunteer_applications
+       set status = 'references_in', status_changed_at = now()
+     where id = v_app.id;
+    insert into public.volunteer_application_events (application_id, action, from_status, to_status)
+    values (v_app.id, 'references_received', 'references_out', 'references_in');
+  end if;
+  return 'submitted';
+end $function$;
+
+-- ---- 5. Marking reviewed (admins, from the review screen) ------------------------
+
+create or replace function public.references_mark_reviewed(p_application_id bigint)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_app public.volunteer_applications%rowtype;
+begin
+  if not public.is_admin() then
+    raise exception 'Only an admin can mark references reviewed' using errcode = '42501';
+  end if;
+  select * into v_app from public.volunteer_applications where id = p_application_id for update;
+  if not found then
+    raise exception 'Application not found';
+  end if;
+  if v_app.status <> 'references_in' then
+    raise exception 'Both references need to be in first' using errcode = 'P0001';
+  end if;
+  if v_app.references_reviewed_at is not null then
+    return;
+  end if;
+  update public.volunteer_applications
+     set references_reviewed_at = now(), references_reviewed_by = auth.uid()
+   where id = p_application_id;
+  insert into public.volunteer_application_events (application_id, action, actor)
+  values (p_application_id, 'references_reviewed', auth.uid());
+end $function$;
+
+-- ---- 6. A closed application's links stop working --------------------------------
+
+create or replace function public.volunteer_applications_close_reference_links()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if new.status in ('approved', 'declined', 'withdrawn') and old.status is distinct from new.status then
+    delete from public.volunteer_reference_tokens t
+     using public.volunteer_reference_requests r
+     where t.request_id = r.id and r.application_id = new.id and t.used_at is null;
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists volunteer_applications_close_reference_links on public.volunteer_applications;
+create trigger volunteer_applications_close_reference_links
+  after update of status on public.volunteer_applications
+  for each row execute function public.volunteer_applications_close_reference_links();
+
+-- ---- 7. Reference 1 matching follows a replacement --------------------------------
+-- Same as the 2026-09-26 version, but against the current reference 1: a
+-- live replacement request's email if there is one, else the application's.
+create or replace function public.refresh_ref1_matches()
+returns integer
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_count integer;
+begin
+  if not public.is_admin() then
+    raise exception 'Admins only' using errcode = '42501';
+  end if;
+
+  update public.volunteer_applications a
+     set ref1_matched_volunteer = m.matched
+    from (
+      select a2.id,
+             public.is_current_volunteer_email(coalesce(
+               (select r.email from public.volunteer_reference_requests r
+                 where r.application_id = a2.id and r.slot = 1 and r.replaced_at is null),
+               a2.ref1_email
+             )) as matched
+        from public.volunteer_applications a2
+       where a2.status not in ('approved', 'declined', 'withdrawn')
+    ) m
+   where a.id = m.id
+     and a.ref1_matched_volunteer is distinct from m.matched;
+
+  get diagnostics v_count = row_count;
+  return v_count;
+end $function$;
+
+-- ---- Function grants --------------------------------------------------------------
+-- Service role only: everything that touches tokens, and the public form.
+revoke all on function public.new_reference_token() from public, anon, authenticated;
+revoke all on function public.reference_requests_send(bigint, uuid) from public, anon, authenticated;
+revoke all on function public.reference_request_replace(bigint, text, text, text, uuid) from public, anon, authenticated;
+revoke all on function public.reference_form_lookup(text) from public, anon, authenticated;
+revoke all on function public.reference_form_submit(text, jsonb) from public, anon, authenticated;
+revoke all on function public.volunteer_applications_close_reference_links() from public, anon, authenticated;
+grant execute on function public.new_reference_token() to service_role;
+grant execute on function public.reference_requests_send(bigint, uuid) to service_role;
+grant execute on function public.reference_request_replace(bigint, text, text, text, uuid) to service_role;
+grant execute on function public.reference_form_lookup(text) to service_role;
+grant execute on function public.reference_form_submit(text, jsonb) to service_role;
+
+-- Signed-in reviewers (each checks the caller itself).
+revoke all on function public.is_current_volunteer_email(text) from public, anon, authenticated;
+revoke all on function public.latest_screening_advances(bigint) from public, anon, authenticated;
+revoke all on function public.can_send_reference_requests(bigint) from public, anon;
+revoke all on function public.references_mark_reviewed(bigint) from public, anon;
+grant execute on function public.is_current_volunteer_email(text) to service_role;
+grant execute on function public.latest_screening_advances(bigint) to service_role;
+grant execute on function public.can_send_reference_requests(bigint) to authenticated, service_role;
+grant execute on function public.references_mark_reviewed(bigint) to authenticated;
+
+revoke all on function public.refresh_ref1_matches() from public, anon;
+grant execute on function public.refresh_ref1_matches() to authenticated;
+
+commit;

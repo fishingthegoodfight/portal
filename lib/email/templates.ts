@@ -1326,8 +1326,67 @@ export function applicationAttendMoreEventsEmail({
   return { subject, html, text };
 }
 
+/**
+ * To a volunteer applicant's reference: the request, or a reminder of it.
+ * Names the applicant and says they gave us this person's name; about three
+ * minutes; roughly when we need it. The link is theirs alone (a one-use
+ * token) — no account needed.
+ */
+export function referenceRequestEmail({
+  referenceName,
+  applicantName,
+  slot,
+  formUrl,
+  kind,
+  byDate,
+}: {
+  referenceName: string;
+  applicantName: string;
+  slot: 1 | 2;
+  formUrl: string;
+  kind: "request" | "reminder";
+  /** "Monday, October 5" — when we'd like it by. */
+  byDate: string;
+}): RenderedEmail {
+  const subject =
+    kind === "request"
+      ? `${applicantName} listed you as a reference`
+      : `Reminder: a reference for ${applicantName}`;
+  const heading = kind === "request" ? "Could you be a reference?" : "A quick reminder";
+  const paragraphs = [
+    kind === "request"
+      ? `${applicantName} is applying to volunteer with Fishing the Good Fight and told us you'd be a good reference${slot === 1 ? " — as a fellow FTGF volunteer, you've seen them with us" : ""}.`
+      : `A little while ago we asked if you'd be a reference for ${applicantName}, who's applying to volunteer with Fishing the Good Fight. We haven't heard back yet, and it would really help.`,
+    "It takes about three minutes: a few short questions, no account or login needed.",
+    `We'd be grateful to hear from you by ${byDate}.`,
+  ];
+  const buttonLabel = "Answer a few questions";
+  const privacy = `Your answers go to the FTGF volunteer team, not to ${applicantName}. The link is just for you, and works once.`;
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">${heading}</p>`,
+      `<p style="margin:0 0 16px;">Hi ${escapeHtml(referenceName)},</p>`,
+      ...paragraphs.map((p) => `<p style="margin:0 0 16px;">${escapeHtml(p)}</p>`),
+      `<p style="margin:16px 0 8px;"><a href="${escapeHtml(formUrl)}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">${escapeHtml(privacy)} Questions? Just reply to this email.</p>`,
+    ].join("\n"),
+  );
+  const text = [
+    heading,
+    "",
+    `Hi ${referenceName},`,
+    "",
+    ...paragraphs.flatMap((p) => [p, ""]),
+    `${buttonLabel}: ${formUrl}`,
+    "",
+    `${privacy} Questions? Just reply to this email.`,
+  ].join("\n");
+  return { subject, html, text };
+}
+
 /** One section of the daily admin digest — e.g. "Applications now ready to
- * screen"; phase 3 adds pending reference checks as another. */
+ * screen" or "Reference requests still out". */
 export type AdminDigestSection = {
   title: string;
   /** One line under the title, optional. */

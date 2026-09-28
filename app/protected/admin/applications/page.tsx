@@ -34,6 +34,8 @@ type Row = {
   status: ApplicationStatus;
   ref1_matched_volunteer: boolean;
   attendance_target: number | null;
+  /** Live, unanswered reference requests that have gone quiet (phase 3). */
+  volunteer_reference_requests: { gave_up_at: string | null; submitted_at: string | null; replaced_at: string | null }[];
 };
 
 type SearchParams = { status?: string; chapter?: string };
@@ -57,7 +59,9 @@ async function ApplicationsLoader({ searchParams }: { searchParams: Promise<Sear
   const [{ data, error }, { data: settings }] = await Promise.all([
     supabase
       .from("volunteer_applications")
-      .select("id, full_name, chapters, submitted_at, status, ref1_matched_volunteer, attendance_target")
+      .select(
+        "id, full_name, chapters, submitted_at, status, ref1_matched_volunteer, attendance_target, volunteer_reference_requests(gave_up_at, submitted_at, replaced_at)",
+      )
       .order("submitted_at", { ascending: false }),
     supabase.from("app_settings").select("min_events_before_screening").maybeSingle(),
   ]);
@@ -92,6 +96,9 @@ async function ApplicationsLoader({ searchParams }: { searchParams: Promise<Sear
           {rows.map((r) => {
             const attended = attendance.get(r.id) ?? 0;
             const target = r.attendance_target ?? minimum;
+            const needsReplacement =
+              r.status === "references_out" &&
+              (r.volunteer_reference_requests ?? []).some((q) => q.gave_up_at && !q.submitted_at && !q.replaced_at);
             return (
               <li key={r.id}>
                 <Link
@@ -123,6 +130,7 @@ async function ApplicationsLoader({ searchParams }: { searchParams: Promise<Sear
                         Ref 1 not matched
                       </Badge>
                     )}
+                    {needsReplacement && <Badge variant="destructive">Reference needs replacing</Badge>}
                     <Badge variant={CLOSED_STATUSES.includes(r.status) ? "secondary" : "default"}>
                       {APPLICATION_STATUS_LABELS[r.status]}
                     </Badge>

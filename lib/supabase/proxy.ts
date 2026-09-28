@@ -94,6 +94,9 @@ export async function updateSession(request: NextRequest) {
     // can read is limited by the database, not this check (see
     // lib/public-events.ts).
     !request.nextUrl.pathname.startsWith("/events/") &&
+    // Reference forms: the link's one-use token is the only key, checked
+    // server-side with the service role (lib/reference-form.ts).
+    !request.nextUrl.pathname.startsWith("/reference/") &&
     // Machine-called endpoints authenticate themselves (CRON_SECRET).
     !request.nextUrl.pathname.startsWith("/api/cron")
   ) {

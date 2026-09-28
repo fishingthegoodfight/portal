@@ -28,6 +28,7 @@ import {
   volunteerInviteEmail,
   volunteerReminderEmail,
   volunteerSignupConfirmationEmail,
+  referenceRequestEmail,
   waitlistOfferEmail,
   waitlistOfferExpiredEmail,
   type ReminderKind,
@@ -855,6 +856,23 @@ export async function sendApplicationAttendMoreEventsEmail(params: {
   const { subject, html, text } = applicationAttendMoreEventsEmail({
     recipientName: params.recipientName,
     eventsUrl: `${getSiteUrl()}/protected/events`,
+  });
+  await deliverEmail({ to: params.toEmail, subject, html, text });
+}
+
+/** A volunteer applicant's reference: the request, or a reminder. */
+export async function sendReferenceRequestEmail(params: {
+  toEmail: string;
+  referenceName: string;
+  applicantName: string;
+  slot: 1 | 2;
+  token: string;
+  kind: "request" | "reminder";
+  byDate: string;
+}): Promise<void> {
+  const { subject, html, text } = referenceRequestEmail({
+    ...params,
+    formUrl: `${getSiteUrl()}/reference/${params.token}`,
   });
   await deliverEmail({ to: params.toEmail, subject, html, text });
 }

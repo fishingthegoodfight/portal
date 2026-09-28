@@ -3,6 +3,7 @@ import type { AdminDigestSection } from "@/lib/email/templates";
 import { getSiteUrl } from "@/lib/site-url";
 import { formatDateInZone } from "@/lib/format-date";
 import { formatCheckDate } from "@/lib/practical-checks";
+import { daysBetween, REFERENCE_MAX_REMINDERS } from "@/lib/volunteer-references";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
@@ -12,8 +13,7 @@ type AdminClient = ReturnType<typeof createAdminClient>;
  * source returns its section plus how to mark its items as sent, so nothing
  * is listed twice and nothing is marked unless the email actually went out.
  *
- * To add a section (phase 3: pending reference checks), write another
- * DigestSource and add it to DIGEST_SOURCES in the order it should appear.
+ * To add a section, write another DigestSource and add it to DIGEST_SOURCES in the order it should appear.
  * A source whose items should be listed only once (a new arrival) marks them
  * in markSent; one that's a standing reminder (still waiting on someone)
  * leaves markSent empty and is listed every day until it's dealt with.
@@ -121,9 +121,9 @@ const pausedToRevisit: DigestSource = async (admin) => {
   };
 };
 
-/** Screened and waiting on references — so nothing stalls after the call.
- * Listed every day while it applies. Phase 3 (reference checks) extends
- * this same pattern. Paused ones aren't waiting on references. */
+/** Screened and waiting on references to be sent — so nothing stalls after
+ * the call. Listed every day while it applies. Paused ones aren't waiting
+ * on references. */
 const screenedAwaitingReferences: DigestSource = async (admin) => {
   const rows = (await loadScreened(admin)).filter((r) => !r.decline_recommended && r.revisit_on == null);
   return {
@@ -139,10 +139,104 @@ const screenedAwaitingReferences: DigestSource = async (admin) => {
   };
 };
 
+type OutstandingReferenceRow = {
+  application_id: number;
+  slot: number;
+  name: string;
+  requested_at: string;
+  reminders_sent: number;
+  manual_reminders_sent: number;
+  gave_up_at: string | null;
+  volunteer_applications: { full_name: string; chapters: string[] } | null;
+};
+
+/** Live, unanswered reference requests on applications still waiting on
+ * references, oldest first. */
+async function loadOutstandingReferences(admin: AdminClient): Promise<OutstandingReferenceRow[]> {
+  const { data, error } = await admin
+    .from("volunteer_reference_requests")
+    .select(
+      "application_id, slot, name, requested_at, reminders_sent, manual_reminders_sent, gave_up_at, volunteer_applications!inner(full_name, chapters, status)",
+    )
+    .is("replaced_at", null)
+    .is("submitted_at", null)
+    .eq("volunteer_applications.status", "references_out")
+    .order("requested_at");
+  if (error) throw new Error(`loading outstanding references: ${error.message}`);
+  return (data ?? []) as unknown as OutstandingReferenceRow[];
+}
+
+function referenceItem(row: OutstandingReferenceRow, extra: string) {
+  const waiting = daysBetween(new Date(row.requested_at), new Date());
+  const manual = row.manual_reminders_sent > 0 ? ` (+${row.manual_reminders_sent} by hand)` : "";
+  return {
+    label: `${row.volunteer_applications?.full_name ?? "An applicant"} — reference ${row.slot} (${row.name})`,
+    detail: `waiting ${waiting} ${waiting === 1 ? "day" : "days"} · ${row.reminders_sent} of ${REFERENCE_MAX_REMINDERS} reminders${manual}${extra}`,
+    url: `${getSiteUrl()}/protected/admin/applications/${row.application_id}`,
+  };
+}
+
+/** Reference requests still out, reminders still going. Listed every day
+ * until answered, replaced, or given up — this is the one that gets
+ * forgotten. */
+const outstandingReferences: DigestSource = async (admin) => {
+  const rows = (await loadOutstandingReferences(admin)).filter((r) => r.gave_up_at == null);
+  return {
+    section: {
+      title: "Reference requests still out",
+      intro: "Reminders go out weekly, up to three. Nothing to do yet unless you want to nudge someone yourself.",
+      items: rows.map((row) => referenceItem(row, "")),
+    },
+    markSent: async () => {},
+  };
+};
+
+/** Gone quiet a week after the third reminder: needs a replacement from the
+ * applicant. Listed every day until replaced (or answered after all). */
+const referencesNeedingReplacement: DigestSource = async (admin) => {
+  const rows = (await loadOutstandingReferences(admin)).filter((r) => r.gave_up_at != null);
+  return {
+    section: {
+      title: "References that need a replacement",
+      intro: `No answer after ${REFERENCE_MAX_REMINDERS} reminders, and no more are going out. Ask the applicant for someone else, then use "Replace this reference".`,
+      items: rows.map((row) => referenceItem(row, ` · stopped ${formatDateInZone(row.gave_up_at as string, "America/Denver")}`)),
+    },
+    markSent: async () => {},
+  };
+};
+
+/** Both references in, not yet marked reviewed. Listed every day until an
+ * admin does. */
+const referencesToReview: DigestSource = async (admin) => {
+  const { data, error } = await admin
+    .from("volunteer_applications")
+    .select("id, full_name, chapters, status_changed_at")
+    .eq("status", "references_in")
+    .is("references_reviewed_at", null)
+    .order("status_changed_at");
+  if (error) throw new Error(`loading references to review: ${error.message}`);
+  const rows = (data ?? []) as { id: number; full_name: string; chapters: string[]; status_changed_at: string }[];
+  return {
+    section: {
+      title: "References in, ready to review",
+      intro: "Both references have answered. Read them and mark them reviewed — the step before approval.",
+      items: rows.map((row) => ({
+        label: row.full_name,
+        detail: `${row.chapters.join(", ")} · in ${daysSince(row.status_changed_at)}`,
+        url: `${getSiteUrl()}/protected/admin/applications/${row.id}`,
+      })),
+    },
+    markSent: async () => {},
+  };
+};
+
 /** In the order the sections appear — most pressing first. */
 export const DIGEST_SOURCES: DigestSource[] = [
   readyApplications,
   screeningDecisions,
+  referencesNeedingReplacement,
+  referencesToReview,
   pausedToRevisit,
   screenedAwaitingReferences,
+  outstandingReferences,
 ];

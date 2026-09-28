@@ -5,6 +5,11 @@
  * teaching the assessor as a beginner. Tied to the person, not a volunteer
  * record. The latest check is the one that counts; there's no expiry, so
  * every display shows when and by whom, for the reader to judge.
+ *
+ * Only a check recorded here counts. A reference's answers about someone's
+ * fishing (lib/volunteer-references.ts) are reference signal — they may
+ * suggest scheduling a check, or who should run it — and must never be read
+ * as satisfying this requirement.
  */
 
 export const PRACTICAL_OUTCOMES = [

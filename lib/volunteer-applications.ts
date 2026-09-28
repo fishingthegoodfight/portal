@@ -429,6 +429,9 @@ export type ApplicationRecord = {
   ref2_relationship: string;
   ref2_known_for: string;
   anything_else: string | null;
+  /** Phase 3: an admin marked both references reviewed (before approval). */
+  references_reviewed_at: string | null;
+  references_reviewed_by: string | null;
 };
 
 /** Where the attendance count points, for the review screen: the numbers
