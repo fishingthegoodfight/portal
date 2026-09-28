@@ -9916,6 +9916,9 @@ $$;
 -- =============================================================================
 -- 2026-09-28 — Volunteer applications, phase 4: approval and registration
 -- =============================================================================
+-- Run 2026-09-28, together with the digest entry below, after phase 4 and
+-- the digest change were pushed to main.
+--
 -- After both references are in and an admin has marked them reviewed, an
 -- ADMIN approves the application (chapter leads recommend, through the
 -- screening call's recommended roles, but can't approve). Approving, in one
@@ -10266,8 +10269,10 @@ grant execute on function public.application_record_registration_email(bigint, t
 commit;
 
 -- =============================================================================
--- 2026-09-29 — Admin digest: "Ready to screen" repeats until actioned
+-- 2026-09-28 — Admin digest: "Ready to screen" repeats until actioned
 -- =============================================================================
+-- Run 2026-09-28, together with phase 4 above.
+--
 -- digest_ready_applications() used to return only applications that became
 -- ready after applying (an 'attendance_reached' event) and hadn't been in a
 -- digest yet (digest_notified_at null), and the digest then marked them. So
