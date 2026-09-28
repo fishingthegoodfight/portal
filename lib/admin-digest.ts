@@ -14,17 +14,21 @@ type AdminClient = ReturnType<typeof createAdminClient>;
  * is listed twice and nothing is marked unless the email actually went out.
  *
  * To add a section, write another DigestSource and add it to DIGEST_SOURCES in the order it should appear.
- * A source whose items should be listed only once (a new arrival) marks them
- * in markSent; one that's a standing reminder (still waiting on someone)
- * leaves markSent empty and is listed every day until it's dealt with.
+ * Every section is a standing reminder: listed every day until it's dealt
+ * with, with markSent left empty. Don't make one "list once" — a missed
+ * digest would then lose it for good. Things that need noticing the moment
+ * they happen (a new application) get their own immediate email instead.
+ * markSent stays as the hook for a source that ever needs it.
  */
 export type DigestSource = (admin: AdminClient) => Promise<{
   section: AdminDigestSection;
   markSent: () => Promise<void>;
 }>;
 
-/** Applications that moved from "Waiting on attendance" to "Ready to screen" on
- * their own since the last digest. */
+/** Every application at Ready to screen, however it got there (arrived
+ * ready, or reached the attendance minimum later). Listed every day until
+ * it's actioned, like every other section. The moment one arrives is covered
+ * separately by the new-application email (sendAdminNewApplicationEmail). */
 const readyApplications: DigestSource = async (admin) => {
   const { data, error } = await admin.rpc("digest_ready_applications");
   if (error) throw new Error(`digest_ready_applications: ${error.message}`);
@@ -37,25 +41,47 @@ const readyApplications: DigestSource = async (admin) => {
   }[];
   return {
     section: {
-      title: "Applications now ready to screen",
-      intro: "They've reached the events-attended minimum since applying. Invite them to schedule a call when you're ready.",
+      title: "Ready to screen",
+      intro: "They've reached the events-attended minimum. Invite them to schedule a call, or ask them to attend a few more events.",
       items: rows.map((row) => ({
         label: row.full_name,
-        detail: `${row.chapters.join(", ")} · ${row.attended} events attended · ready ${formatDateInZone(row.ready_since, "America/Denver")}`,
+        detail: `${row.chapters.join(", ")} · ${row.attended} events attended · ready ${daysSince(row.ready_since)}`,
         url: `${getSiteUrl()}/protected/admin/applications/${row.id}`,
       })),
     },
-    markSent: async () => {
-      if (rows.length === 0) return;
-      const { error: markError } = await admin
-        .from("volunteer_applications")
-        .update({ digest_notified_at: new Date().toISOString() })
-        .in(
-          "id",
-          rows.map((r) => r.id),
-        );
-      if (markError) throw new Error(`marking applications as digested: ${markError.message}`);
+    markSent: async () => {},
+  };
+};
+
+/** Days an application can sit at Waiting on attendance before it's named
+ * in the digest. */
+const WAITING_ON_ATTENDANCE_DAYS = 30;
+
+/** Waiting on attendance for more than WAITING_ON_ATTENDANCE_DAYS, so none
+ * sit there unnoticed. For information only: they move on by themselves as
+ * they attend. Counted from when they entered that status (on applying, or
+ * when asked to attend more). */
+const longWaitingOnAttendance: DigestSource = async (admin) => {
+  const cutoff = new Date(Date.now() - WAITING_ON_ATTENDANCE_DAYS * 86_400_000).toISOString();
+  const { data, error } = await admin
+    .from("volunteer_applications")
+    .select("id, full_name, chapters, status_changed_at")
+    .eq("status", "waiting_on_attendance")
+    .lt("status_changed_at", cutoff)
+    .order("status_changed_at");
+  if (error) throw new Error(`loading applications waiting on attendance: ${error.message}`);
+  const rows = (data ?? []) as { id: number; full_name: string; chapters: string[]; status_changed_at: string }[];
+  return {
+    section: {
+      title: `Waiting on attendance for over ${WAITING_ON_ATTENDANCE_DAYS} days (${rows.length})`,
+      intro: "Nothing to do. They move to Ready to screen by themselves once they reach the minimum.",
+      items: rows.map((row) => ({
+        label: row.full_name,
+        detail: `${row.chapters.join(", ")} · waiting ${daysSince(row.status_changed_at)}`,
+        url: `${getSiteUrl()}/protected/admin/applications/${row.id}`,
+      })),
     },
+    markSent: async () => {},
   };
 };
 
@@ -267,4 +293,5 @@ export const DIGEST_SOURCES: DigestSource[] = [
   pausedToRevisit,
   screenedAwaitingReferences,
   outstandingReferences,
+  longWaitingOnAttendance,
 ];

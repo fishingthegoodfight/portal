@@ -10264,3 +10264,44 @@ revoke all on function public.application_record_registration_email(bigint, text
 grant execute on function public.application_record_registration_email(bigint, text) to authenticated;
 
 commit;
+
+-- =============================================================================
+-- 2026-09-29 — Admin digest: "Ready to screen" repeats until actioned
+-- =============================================================================
+-- digest_ready_applications() used to return only applications that became
+-- ready after applying (an 'attendance_reached' event) and hadn't been in a
+-- digest yet (digest_notified_at null), and the digest then marked them. So
+-- an application was listed once, and one that arrived already Ready to
+-- screen was never listed at all.
+--
+-- Now it returns every application still at Ready to screen, however it got
+-- there, every day, until it's actioned (invited to schedule, asked to
+-- attend more, declined or withdrawn all move it on). ready_since is when it
+-- became ready (set at submission for one that arrived ready). The digest no
+-- longer writes digest_notified_at; the column stays, unused, so nothing
+-- that still sets it breaks.
+--
+-- New arrivals are covered separately: an immediate email to
+-- ADMIN_NOTIFICATION_EMAILS on every submission (app code, no SQL).
+--
+-- The new "Waiting on attendance for over 30 days" section reads
+-- volunteer_applications directly with the service role, so it needs no SQL.
+--
+-- No new tables, so no new grants. Same signature, so the existing grant
+-- (service_role only) stands. Safe to re-run.
+
+create or replace function public.digest_ready_applications()
+returns table (id bigint, full_name text, chapters text[], ready_since timestamptz, attended integer)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select a.id, a.full_name, a.chapters, coalesce(a.ready_since, a.status_changed_at), public.attendance_total(a.user_id)
+    from public.volunteer_applications a
+   where a.status = 'ready_to_screen'
+   order by coalesce(a.ready_since, a.status_changed_at);
+$function$;
+
+revoke all on function public.digest_ready_applications() from public, anon, authenticated;
+grant execute on function public.digest_ready_applications() to service_role;

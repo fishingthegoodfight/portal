@@ -3,6 +3,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/server";
+import { homeChapterOption } from "@/lib/chapters";
 import { RsvpForm } from "@/components/rsvp-form";
 import { EventCard } from "@/components/event-card";
 import { VolunteerSignupSection, type EligibleVolunteerRole } from "@/components/volunteer-signup-section";
@@ -253,7 +254,7 @@ async function RsvpLoader({
         last_name: profile?.last_name ?? "",
         email: profile?.email ?? "",
         phone: profile?.phone ?? "",
-        chapter: profile?.chapter ?? "",
+        chapter: homeChapterOption(profile?.chapter),
       }}
       profileFields={profileFields}
       initialRsvp={

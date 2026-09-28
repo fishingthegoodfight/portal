@@ -18,6 +18,21 @@ export const CHAPTERS: Chapter[] = [
 // Stored in profiles.chapter for members not local to any chapter above.
 export const NOT_LOCAL_CHAPTER = "No local chapter";
 
+// Earlier spellings still found on older profiles, and what each is now.
+const LEGACY_HOME_CHAPTERS: Record<string, string> = {
+  "Colorado Springs": "CO Springs",
+  "Not local to a chapter": NOT_LOCAL_CHAPTER,
+};
+
+/** A stored home chapter as one of the dropdown's values (HomeChapterField),
+ * or "" when it isn't one. Maps the earlier spellings, so a profile that has
+ * a chapter never shows the dropdown blank. */
+export function homeChapterOption(stored: string | null | undefined): string {
+  const value = (stored ?? "").trim();
+  const current = LEGACY_HOME_CHAPTERS[value] ?? value;
+  return current === NOT_LOCAL_CHAPTER || CHAPTERS.some((c) => c.name === current) ? current : "";
+}
+
 // Stored in events.chapter for an event with no physical chapter — offered
 // alongside CHAPTERS on the event create/edit forms only (never as a
 // person's own chapter, so it's kept out of the CHAPTERS list itself).

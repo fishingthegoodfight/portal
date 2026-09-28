@@ -4,15 +4,19 @@ import { createClient } from "@/lib/supabase/server";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { formatPhoneNumber } from "@/lib/phone";
 import {
+  applicationChapterLabel,
   applicationErrors,
   experienceToRow,
   type ApplicationInput,
   type YesNo,
 } from "@/lib/volunteer-applications";
 import {
+  sendAdminNewApplicationEmail,
   sendApplicationAttendMoreEventsEmail,
   sendApplicationInviteToScheduleEmail,
 } from "@/lib/email/send";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { NOT_LOCAL_CHAPTER } from "@/lib/chapters";
 
 export type ApplicationActionResult = { ok: true } | { ok: false; error: string };
 
@@ -88,18 +92,64 @@ export async function submitVolunteerApplicationAction(input: ApplicationInput):
     };
   }
 
-  // The phone they just gave goes onto the profile when it has none (core
-  // profile, lib/core-profile.ts) — never over one already there. The name
-  // isn't: the application has one full-name field, and splitting it would
-  // be guesswork. Their own row, so their own client; a failure here doesn't
-  // undo the application.
+  // The phone and chapter they just gave go onto the profile when it has
+  // none (core profile, lib/core-profile.ts) — never over one already there.
+  // The name isn't: the application has one full-name field, and splitting
+  // it would be guesswork. Their own row, so their own client; a failure
+  // here doesn't undo the application.
+  const userId = claims.claims.sub as string;
   const { error: phoneError } = await supabase
     .from("profiles")
     .update({ phone: formatPhoneNumber(input.phone) })
-    .eq("id", claims.claims.sub as string)
+    .eq("id", userId)
     .or("phone.is.null,phone.eq.");
   if (phoneError) console.error(`[volunteer application] saving phone to profile: ${phoneError.message}`);
+  const { error: chapterError } = await supabase
+    .from("profiles")
+    .update({ chapter: input.chapter })
+    .eq("id", userId)
+    .or("chapter.is.null,chapter.eq.");
+  if (chapterError) console.error(`[volunteer application] saving chapter to profile: ${chapterError.message}`);
+
+  await notifyAdminsOfApplication(userId);
   return { ok: true };
+}
+
+/**
+ * Tells ADMIN_NOTIFICATION_EMAILS about a just-submitted application: who,
+ * which chapter, the attendance count the database worked out, and whether
+ * it landed as Ready to screen or Waiting on attendance. Read with the
+ * service role — an applicant can't select their own application row, and
+ * the target is an app setting. Never fails the submission.
+ */
+async function notifyAdminsOfApplication(userId: string): Promise<void> {
+  try {
+    const admin = createAdminClient();
+    const [{ data: app, error }, { data: settings }] = await Promise.all([
+      admin
+        .from("volunteer_applications")
+        .select("id, full_name, chapters, status, attendance_at_submission")
+        .eq("user_id", userId)
+        .order("submitted_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      admin.from("app_settings").select("min_events_before_screening").maybeSingle(),
+    ]);
+    if (error || !app) throw new Error(error?.message ?? "the new application wasn't found");
+    await sendAdminNewApplicationEmail({
+      applicationId: app.id as number,
+      applicantName: app.full_name as string,
+      chapterLabel:
+        ((app.chapters as string[]) ?? [])
+          .map((c) => (c === NOT_LOCAL_CHAPTER ? c : applicationChapterLabel(c)))
+          .join(", ") || "No chapter",
+      attended: app.attendance_at_submission as number,
+      target: (settings?.min_events_before_screening as number | undefined) ?? 2,
+      readyToScreen: app.status === "ready_to_screen",
+    });
+  } catch (err) {
+    console.error("[volunteer application] admin notification failed:", err);
+  }
 }
 
 type Act = "invited_to_schedule" | "asked_to_attend_more" | "declined" | "reapplication_allowed" | "withdrawn";

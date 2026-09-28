@@ -479,6 +479,62 @@ export function adminChangeNotificationEmail({
   return { subject, html, text };
 }
 
+/**
+ * Internal notification to ADMIN_NOTIFICATION_EMAILS the moment a volunteer
+ * application is submitted — whoever it is and whatever state it lands in,
+ * so an arrival never depends on catching that day's digest.
+ */
+export function adminNewApplicationEmail({
+  applicantName,
+  chapterLabel,
+  attended,
+  target,
+  readyToScreen,
+  applicationUrl,
+}: {
+  applicantName: string;
+  chapterLabel: string;
+  attended: number;
+  target: number;
+  readyToScreen: boolean;
+  applicationUrl: string;
+}): RenderedEmail {
+  const subject = `New volunteer application: ${applicantName} (${chapterLabel})`;
+  const statusLine = readyToScreen
+    ? "Ready to screen: they've met the events-attended minimum."
+    : "Waiting on attendance: under the events-attended minimum. It moves to Ready to screen by itself once they reach it.";
+  const rows: [string, string][] = [
+    ["Applicant", applicantName],
+    ["Chapter", chapterLabel],
+    ["Events attended", `${attended} of ${target}`],
+    ["Status", readyToScreen ? "Ready to screen" : "Waiting on attendance"],
+  ];
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">New volunteer application</p>`,
+      `<table style="border-collapse:collapse;font-size:14px;margin:0 0 16px;"><tbody>${rows
+        .map(
+          ([label, value]) =>
+            `<tr><td style="padding:4px 12px 4px 0;font-weight:600;vertical-align:top;white-space:nowrap;">${escapeHtml(label)}</td><td style="padding:4px 0;vertical-align:top;">${escapeHtml(value)}</td></tr>`,
+        )
+        .join("")}</tbody></table>`,
+      `<p style="margin:0 0 16px;">${escapeHtml(statusLine)}</p>`,
+      `<p style="margin:16px 0 0;font-size:13px;"><a href="${escapeHtml(applicationUrl)}" style="color:#166534;">View application</a></p>`,
+    ].join("\n"),
+  );
+  const text = [
+    "New volunteer application",
+    "",
+    ...rows.map(([label, value]) => `${label}: ${value}`),
+    "",
+    statusLine,
+    "",
+    `View application: ${applicationUrl}`,
+  ].join("\n");
+  return { subject, html, text };
+}
+
 export type ReminderKind = "1week" | "1day";
 
 /**

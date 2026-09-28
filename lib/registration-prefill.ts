@@ -5,6 +5,7 @@ import {
   type InterestArea,
 } from "@/lib/volunteer-applications";
 import { PROGRAM_INTERESTS, SKILL_INTERESTS } from "@/lib/volunteers";
+import { homeChapterOption } from "@/lib/chapters";
 
 /**
  * Registration answers carried over from an approved application (phase 4):
@@ -20,6 +21,8 @@ import { PROGRAM_INTERESTS, SKILL_INTERESTS } from "@/lib/volunteers";
 export type RegistrationPrefill = {
   applicationId: number;
   appliedOn: string;
+  /** The chapter they applied for — used only when the profile has none. */
+  chapter: string;
   skillInterests: string[];
   skillInterestsOther: string;
   programInterests: string[];
@@ -33,6 +36,7 @@ export function prefillFromApplication(
     interest_area_ids: number[];
     interest_other: string | null;
     interested_in_retreats: boolean;
+    chapters: string[];
   },
   areas: Pick<InterestArea, "id" | "kind" | "label">[],
 ): Omit<RegistrationPrefill, "appliedOn"> {
@@ -49,6 +53,7 @@ export function prefillFromApplication(
   );
   return {
     applicationId: app.id,
+    chapter: homeChapterOption(app.chapters?.[0]),
     skillInterests,
     skillInterestsOther: other,
     programInterests,

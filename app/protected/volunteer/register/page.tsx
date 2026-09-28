@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { VolunteerRegistrationForm } from "@/components/volunteer-registration-form";
 import { formatPhoneNumber } from "@/lib/phone";
 import { formatDateInZone } from "@/lib/format-date";
+import { homeChapterOption } from "@/lib/chapters";
 import {
   EMPTY_EXPERIENCE,
   experienceFromRow,
@@ -77,7 +78,8 @@ async function RegisterLoader() {
           emergency_contact_2: profile?.emergency_contact_2 ?? "",
           emergency_phone_2: formatPhoneNumber(profile?.emergency_phone_2 ?? ""),
           emergency_contact_2_relationship: profile?.emergency_contact_2_relationship ?? "",
-          chapter: profile?.chapter ?? "",
+          // The profile's, else the chapter on their approved application.
+          chapter: homeChapterOption(profile?.chapter) || prefill?.chapter || "",
           tshirt_size: profile?.tshirt_size ?? "",
           favorite_snack: profile?.favorite_snack ?? "",
           favorite_na_beverage: profile?.favorite_na_beverage ?? "",

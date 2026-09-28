@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
+import { homeChapterOption } from "@/lib/chapters";
 import { ProfileForm } from "@/components/profile-form";
 import { formatPhoneNumber } from "@/lib/phone";
 import {
@@ -66,7 +67,7 @@ async function ProfileFormLoader({
         // pasted or entered before this field forced a format) so the
         // display is always standardized, not just newly-typed input.
         phone: formatPhoneNumber(profile?.phone ?? ""),
-        chapter: profile?.chapter ?? "",
+        chapter: homeChapterOption(profile?.chapter),
         address_line1: profile?.address_line1 ?? "",
         address_line2: profile?.address_line2 ?? "",
         city: profile?.city ?? "",

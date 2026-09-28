@@ -6,6 +6,7 @@ import { getSiteUrl } from "@/lib/site-url";
 import { buildEventIcs, buildGoogleCalendarLink, icsUidForVolunteerShift } from "@/lib/email/ics";
 import {
   adminChangeNotificationEmail,
+  adminNewApplicationEmail,
   cancellationEmail,
   confirmationEmail,
   eventCancellationEmail,
@@ -416,6 +417,42 @@ export async function sendAdminChangeNotificationEmail(params: {
   console.log(
     `[admin-notify] event ${params.eventId} (${params.action}): sent via ${getEmailProvider()}`,
   );
+}
+
+/**
+ * To ADMIN_NOTIFICATION_EMAILS as soon as a volunteer application is
+ * submitted. Same recipients, logging and skip-when-unset as
+ * sendAdminChangeNotificationEmail. Throws on a failed send; the caller
+ * catches it, since the application is already saved.
+ */
+export async function sendAdminNewApplicationEmail(params: {
+  applicationId: number;
+  applicantName: string;
+  chapterLabel: string;
+  attended: number;
+  target: number;
+  readyToScreen: boolean;
+}): Promise<void> {
+  const recipients = (process.env.ADMIN_NOTIFICATION_EMAILS ?? "")
+    .split(",")
+    .map((address) => address.trim())
+    .filter(Boolean);
+  console.log(
+    `[admin-notify] application ${params.applicationId} submitted: ADMIN_NOTIFICATION_EMAILS parsed to`,
+    recipients.length > 0 ? recipients : "(empty — not set, skipping send)",
+  );
+  if (recipients.length === 0) return;
+
+  const { subject, html, text } = adminNewApplicationEmail({
+    applicantName: params.applicantName,
+    chapterLabel: params.chapterLabel,
+    attended: params.attended,
+    target: params.target,
+    readyToScreen: params.readyToScreen,
+    applicationUrl: `${getSiteUrl()}/protected/admin/applications/${params.applicationId}`,
+  });
+  await deliverEmail({ to: recipients, subject, html, text });
+  console.log(`[admin-notify] application ${params.applicationId} submitted: sent via ${getEmailProvider()}`);
 }
 
 /** Pre-event reminder (no .ics). Throws on failure — the cron caller catches
