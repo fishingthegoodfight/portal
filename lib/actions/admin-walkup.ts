@@ -127,6 +127,12 @@ export async function addWalkupRsvpAction(input: {
     .ilike("email", email)
     .maybeSingle();
 
+  // Home chapter is part of the core profile (lib/core-profile.ts): asked at
+  // the desk only when there isn't one on file.
+  if (!chapter && !((existingProfile?.chapter as string | null | undefined)?.trim())) {
+    return { ok: false, error: "Choose their home chapter" };
+  }
+
   // What the profile already has for every catalog field (empty for someone
   // with no profile yet) — sections complete here are skipped, exactly as on
   // the RSVP form.
@@ -218,6 +224,11 @@ export async function addWalkupRsvpAction(input: {
     const hasSecondContactOnFile = Boolean(onFileText("emergency_contact_2") || onFileText("emergency_phone_2"));
     const hasChapterOnFile = Boolean(onFileText("chapter"));
     const fillIn: Record<string, string | null> = {};
+    // Name and phone too: an account made at sign-up before those were
+    // asked has neither, and would otherwise stay an email on the roster.
+    if (!onFileText("first_name")) fillIn.first_name = firstName;
+    if (!onFileText("last_name")) fillIn.last_name = lastName;
+    if (!onFileText("phone")) fillIn.phone = phone;
     if (!hasEmergencyContactOnFile) {
       fillIn.emergency_contact = emergencyContactName;
       fillIn.emergency_phone = emergencyContactPhone;

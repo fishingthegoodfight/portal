@@ -121,6 +121,9 @@ export type WalkupLookupResult =
        * keyed by profile column — or null when there's no profile for that
        * email yet (a brand-new person). */
       profileFields: Record<string, string> | null;
+      /** Their profile already has a home chapter — the walk-up form asks
+       * for one only when it doesn't. */
+      hasChapterOnFile: boolean;
     }
   | { ok: false; error: string };
 
@@ -175,6 +178,7 @@ export async function walkupLookupAction(
     ok: true,
     info: await waiverInfoForUser(lookup, event, (profile?.id as string | undefined) ?? null),
     profileFields,
+    hasChapterOnFile: Boolean((profile?.chapter as string | null | undefined)?.trim()),
   };
 }
 

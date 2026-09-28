@@ -253,6 +253,7 @@ async function RsvpLoader({
         last_name: profile?.last_name ?? "",
         email: profile?.email ?? "",
         phone: profile?.phone ?? "",
+        chapter: profile?.chapter ?? "",
       }}
       profileFields={profileFields}
       initialRsvp={

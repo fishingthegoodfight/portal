@@ -313,6 +313,7 @@ export function EventRoster({
   const [walkupLookup, setWalkupLookup] = useState<{
     info: WaiverInfo;
     profileFields: Record<string, string> | null;
+    hasChapterOnFile: boolean;
   } | null>(null);
   const [walkupSign, setWalkupSign] = useState<WaiverSignState>(EMPTY_WAIVER_SIGN);
   const [walkupSectionValues, setWalkupSectionValues] = useState<Record<string, string>>({});
@@ -339,6 +340,7 @@ export function EventRoster({
   ): Promise<{
     info: WaiverInfo;
     profileFields: Record<string, string> | null;
+    hasChapterOnFile: boolean;
   } | null> => {
     if (!email.trim()) return null;
     const result = await walkupLookupAction(eventId, email);
@@ -346,7 +348,7 @@ export function EventRoster({
       setWalkupError(result.error);
       return null;
     }
-    const lookup = { info: result.info, profileFields: result.profileFields };
+    const lookup = { info: result.info, profileFields: result.profileFields, hasChapterOnFile: result.hasChapterOnFile };
     setWalkupLookup(lookup);
     setWalkupSectionValues((prev) => withProfileValues(prev, result.profileFields));
     setWalkupSectionsKey((k) => k + 1);
@@ -1118,11 +1120,13 @@ export function EventRoster({
                   onPhone={updateWalkupPhoneField("emergencyContact2Phone")}
                   onRelationship={updateWalkupField("emergencyContact2Relationship")}
                 />
+                {/* Required only when their profile has no chapter yet (a new
+                    person, or one who never gave one). */}
                 <HomeChapterField
                   idPrefix="walkup"
                   value={walkupForm.chapter}
                   onChange={(value) => setWalkupForm((prev) => ({ ...prev, chapter: value }))}
-                  required={false}
+                  required={!walkupLookup?.hasChapterOnFile}
                 />
                 <RegistrationFieldInput
                   field={DIRECTORY_FIELD}

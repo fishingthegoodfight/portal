@@ -303,11 +303,14 @@ export function ProfileForm({
               inputMode="numeric"
               placeholder="(303) 555-0100"
               maxLength={14}
+              required
               value={profile.phone}
               onChange={updatePhoneField}
             />
           </div>
-          <HomeChapterField idPrefix="profile" value={profile.chapter} onChange={updateChapter} required={false} />
+          {/* Phone and chapter are core profile (lib/core-profile.ts), like the
+              name and emergency contact: required, so they can't be cleared. */}
+          <HomeChapterField idPrefix="profile" value={profile.chapter} onChange={updateChapter} />
           <div className="grid gap-2">
             <Label htmlFor="address_line1">Address line 1</Label>
             <Input

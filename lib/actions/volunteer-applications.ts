@@ -99,6 +99,18 @@ export async function submitVolunteerApplicationAction(input: ApplicationInput):
       error: "Your application couldn't be saved. Everything you entered is still here — try again in a moment.",
     };
   }
+
+  // The phone they just gave goes onto the profile when it has none (core
+  // profile, lib/core-profile.ts) — never over one already there. The name
+  // isn't: the application has one full-name field, and splitting it would
+  // be guesswork. Their own row, so their own client; a failure here doesn't
+  // undo the application.
+  const { error: phoneError } = await supabase
+    .from("profiles")
+    .update({ phone: formatPhoneNumber(input.phone) })
+    .eq("id", claims.claims.sub as string)
+    .or("phone.is.null,phone.eq.");
+  if (phoneError) console.error(`[volunteer application] saving phone to profile: ${phoneError.message}`);
   return { ok: true };
 }
 

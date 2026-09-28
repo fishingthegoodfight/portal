@@ -42,6 +42,12 @@ import {
   type RegistrationSection,
 } from "@/lib/registration-sections";
 import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
+import { missingDetailsFields, type DetailsCardKey } from "@/lib/core-profile";
+import { CHAPTERS } from "@/lib/chapters";
+import { formatPhoneNumber } from "@/lib/phone";
+import { HomeChapterField } from "@/components/chapter-select";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 type EventSummary = {
   id: number;
@@ -69,6 +75,7 @@ type ProfileSummary = {
   last_name: string;
   email: string;
   phone: string;
+  chapter: string;
 };
 
 type InitialRsvp = {
@@ -168,15 +175,39 @@ export function RsvpForm({
   // Spots-left is as of page load — the capacity-check function is the real
   // gate at submit time; this just avoids inviting a doomed submission.
   const isFull = spotsLeft != null && spotsLeft <= 0 && !hasActiveRsvp;
-  const profileIncomplete =
-    !profile.first_name || !profile.last_name || !profile.email;
+  // "Your details": the core-profile fields this profile is still missing
+  // (lib/core-profile.ts), asked once and saved to the profile before the
+  // RSVP. Fixed at page load, so the card doesn't vanish as they type.
+  const [missingDetails] = useState(() => missingDetailsFields(profile));
+  const [details, setDetails] = useState<Record<DetailsCardKey, string>>(() => ({
+    first_name: profile.first_name,
+    last_name: profile.last_name,
+    phone: profile.phone,
+    // They've just picked an event, so its chapter is the likely answer.
+    chapter: profile.chapter || (CHAPTERS.some((c) => c.name === event.chapter) ? (event.chapter as string) : ""),
+  }));
+  const detailsProblem = (() => {
+    const missing = missingDetails.filter((key) => !details[key].trim());
+    if (missing.length > 0) return "Add your name, phone and home chapter under Your details.";
+    if (missingDetails.includes("phone") && details.phone.replace(/\D/g, "").length !== 10) {
+      return "Enter a 10-digit phone number under Your details.";
+    }
+    return null;
+  })();
+  // Saves "Your details" to the profile. Only the fields that were missing.
+  const saveDetails = async () => {
+    if (missingDetails.length === 0) return;
+    const update = Object.fromEntries(missingDetails.map((key) => [key, details[key].trim()]));
+    const { error: detailsError } = await createClient().from("profiles").update(update).eq("id", userId);
+    if (detailsError) throw detailsError;
+  };
 
   const updateField = (key: string, value: string) =>
     setFieldValues((prev) => ({ ...prev, [key]: value }));
 
   const incompleteRequiredSection = firstIncompleteSection(activeSections, fieldValues);
   const waiverBlocked = waiverNeedsInput(waiver, waiverSign);
-  const hasMissingRequired = Boolean(incompleteRequiredSection) || waiverBlocked;
+  const hasMissingRequired = Boolean(incompleteRequiredSection) || waiverBlocked || Boolean(detailsProblem);
 
   const editProfileHref = `/protected/profile?return_to=${encodeURIComponent(
     `/protected/events/${event.id}/rsvp`,
@@ -188,8 +219,9 @@ export function RsvpForm({
     include: editingSectionIds,
   });
   const hasRegistrationChanges =
-    Object.keys(pendingUpdates).length > 0 &&
-    (editingSectionIds.size > 0 || Object.values(pendingUpdates).some(Boolean));
+    missingDetails.length > 0 ||
+    (Object.keys(pendingUpdates).length > 0 &&
+      (editingSectionIds.size > 0 || Object.values(pendingUpdates).some(Boolean)));
 
   const startEditingSection = (sectionId: string) => {
     setUpdateMessage(null);
@@ -215,12 +247,17 @@ export function RsvpForm({
   const handleUpdateRegistration = async () => {
     setError(null);
     setUpdateMessage(null);
+    if (detailsProblem) {
+      setError(detailsProblem);
+      return;
+    }
     if (incompleteRequiredSection) {
       setError(incompleteSectionMessage(incompleteRequiredSection, fieldValues, " first."));
       return;
     }
     setIsUpdating(true);
     try {
+      await saveDetails();
       const dietaryActive = activeSections.some((s) => s.id === "dietary");
 
       // The RSVP row first: if the RSVP is gone (cancelled elsewhere) this fails
@@ -271,6 +308,10 @@ export function RsvpForm({
 
   const submitRsvp = async (switchFromVolunteering: boolean) => {
     setError(null);
+    if (detailsProblem) {
+      setError(detailsProblem);
+      return;
+    }
     if (incompleteRequiredSection) {
       // Belt-and-suspenders: the submit button is disabled for this case
       // too, but guard here in case the form is ever submitted some other
@@ -282,6 +323,7 @@ export function RsvpForm({
     const supabase = createClient();
 
     try {
+      await saveDetails();
       // Save any newly-entered values to the profile so these sections are
       // never asked again on a future RSVP. Sections already complete are
       // left untouched.
@@ -421,11 +463,12 @@ export function RsvpForm({
         </CardHeader>
         <form onSubmit={handleSubmit}>
           <CardContent className="flex flex-col gap-4">
-            {profileIncomplete && (
-              <p className="text-sm text-amber-600">
-                Your profile is missing your name or email — you can still
-                RSVP, but consider completing it first.
-              </p>
+            {missingDetails.length > 0 && (
+              <YourDetails
+                missing={missingDetails}
+                values={details}
+                onChange={(key, value) => setDetails((prev) => ({ ...prev, [key]: value }))}
+              />
             )}
             {needsWaiverSignature && waiver.status === "unsigned" && (
               <p className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400">
@@ -619,5 +662,76 @@ export function RsvpForm({
         </form>
       </Card>
     </div>
+  );
+}
+
+/** The core-profile fields still missing (never the ones on file), asked
+ * once. Saved to the profile, so the next RSVP doesn't show this at all. */
+function YourDetails({
+  missing,
+  values,
+  onChange,
+}: {
+  missing: DetailsCardKey[];
+  values: Record<DetailsCardKey, string>;
+  onChange: (key: DetailsCardKey, value: string) => void;
+}) {
+  const asks = (key: DetailsCardKey) => missing.includes(key);
+  return (
+    <fieldset className="flex flex-col gap-4 rounded-md border p-4">
+      <legend className="px-1 text-sm font-semibold">Your details</legend>
+      <p className="-mt-2 text-xs text-muted-foreground">
+        Just once — these go on your profile, so event staff know who&apos;s coming and how to reach you.
+      </p>
+      {(asks("first_name") || asks("last_name")) && (
+        <div className="grid grid-cols-2 gap-4">
+          {asks("first_name") && (
+            <div className="grid gap-2">
+              <Label htmlFor="details_first_name">First name</Label>
+              <Input
+                id="details_first_name"
+                autoComplete="given-name"
+                required
+                value={values.first_name}
+                onChange={(e) => onChange("first_name", e.target.value)}
+              />
+            </div>
+          )}
+          {asks("last_name") && (
+            <div className="grid gap-2">
+              <Label htmlFor="details_last_name">Last name</Label>
+              <Input
+                id="details_last_name"
+                autoComplete="family-name"
+                required
+                value={values.last_name}
+                onChange={(e) => onChange("last_name", e.target.value)}
+              />
+            </div>
+          )}
+        </div>
+      )}
+      {asks("phone") && (
+        <div className="grid gap-2 sm:max-w-xs">
+          <Label htmlFor="details_phone">Phone</Label>
+          <Input
+            id="details_phone"
+            type="tel"
+            inputMode="numeric"
+            autoComplete="tel"
+            placeholder="(303) 555-0100"
+            maxLength={14}
+            required
+            value={values.phone}
+            onChange={(e) => onChange("phone", formatPhoneNumber(e.target.value))}
+          />
+        </div>
+      )}
+      {asks("chapter") && (
+        <div className="sm:max-w-xs">
+          <HomeChapterField idPrefix="details" value={values.chapter} onChange={(value) => onChange("chapter", value)} />
+        </div>
+      )}
+    </fieldset>
   );
 }

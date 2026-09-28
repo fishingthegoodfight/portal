@@ -9875,3 +9875,40 @@ revoke all on function public.refresh_ref1_matches() from public, anon;
 grant execute on function public.refresh_ref1_matches() to authenticated;
 
 commit;
+
+-- =============================================================================
+-- 2026-09-28 — Core profile: name and phone saved at sign-up
+-- =============================================================================
+-- Sign-up now asks for first name, last name and phone (lib/core-profile.ts).
+-- With email confirmation there's no session at sign-up, so the form can't
+-- write the profile itself: it puts them on the account (auth user_metadata)
+-- and handle_new_user copies them onto the new profile, as it already does
+-- for the directory choice. Blank or missing values are left null. The
+-- chapter and emergency contact come later, on the RSVP form's "Your
+-- details" card and its emergency-contact section.
+--
+-- Accounts created by admins (walk-up, invites, the volunteer import) already
+-- pass first_name/last_name the same way and then write the profile
+-- themselves; this now fills them in a step earlier. Nothing else changes.
+--
+-- No new tables, so no new grants. Safe to re-run.
+
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.profiles (id, email, first_name, last_name, phone, directory_opt_in)
+  values (
+    new.id,
+    new.email,
+    nullif(btrim(left(new.raw_user_meta_data->>'first_name', 100)), ''),
+    nullif(btrim(left(new.raw_user_meta_data->>'last_name', 100)), ''),
+    nullif(btrim(left(new.raw_user_meta_data->>'phone', 20)), ''),
+    coalesce((new.raw_user_meta_data->>'directory_opt_in')::boolean, false)
+  );
+  return new;
+end;
+$$;

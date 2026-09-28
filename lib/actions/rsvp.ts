@@ -1,5 +1,6 @@
 "use server";
 
+import { CORE_PROFILE_FIELDS, missingCoreFields } from "@/lib/core-profile";
 import { createClient } from "@/lib/supabase/server";
 import {
   sendLeadParticipantCancelledEmail,
@@ -94,6 +95,21 @@ export async function confirmRsvpAction(
     return { ok: false, error: "Not authenticated" };
   }
   const userId = claims.claims.sub as string;
+
+  // Server-side backstop for the core profile (lib/core-profile.ts): the
+  // form's "Your details" card and emergency-contact section save these
+  // first, but a hand-rolled request shouldn't RSVP without them — they're
+  // what the roster runs on.
+  const { data: coreProfile } = await supabase
+    .from("profiles")
+    .select("first_name, last_name, phone, chapter, emergency_contact, emergency_phone")
+    .eq("id", userId)
+    .maybeSingle();
+  const missingCore = missingCoreFields(coreProfile);
+  if (missingCore.length > 0) {
+    const labels = CORE_PROFILE_FIELDS.filter((f) => missingCore.includes(f.key)).map((f) => f.label.toLowerCase());
+    return { ok: false, error: `Add your ${labels.join(", ")} before RSVPing.` };
+  }
 
   // Server-side backstop for the waiver: the form gates on it, but a
   // hand-rolled request shouldn't be able to RSVP without one.

@@ -16,6 +16,7 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { RegistrationFieldInput } from "@/components/registration-fields";
+import { formatPhoneNumber } from "@/lib/phone";
 import { withNext } from "@/lib/safe-next";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 
@@ -31,6 +32,9 @@ export function SignUpForm({
    * e.g. the RSVP page of the public event they came from. */
   next: string | null;
 }) {
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [repeatPassword, setRepeatPassword] = useState("");
@@ -44,6 +48,16 @@ export function SignUpForm({
     setIsLoading(true);
     setError(null);
 
+    if (!firstName.trim() || !lastName.trim()) {
+      setError("Your first and last name are required");
+      setIsLoading(false);
+      return;
+    }
+    if (phone.replace(/\D/g, "").length !== 10) {
+      setError("Enter a 10-digit phone number");
+      setIsLoading(false);
+      return;
+    }
     if (password !== repeatPassword) {
       setError("Passwords do not match");
       setIsLoading(false);
@@ -58,7 +72,13 @@ export function SignUpForm({
         options: {
           emailRedirectTo: `${window.location.origin}${destination}`,
           data: {
-            // Read by the handle_new_user trigger into profiles.directory_opt_in.
+            // Read by the handle_new_user trigger onto the new profile: with
+            // email confirmation there's no session yet, so this is the only
+            // way to save them at sign-up. Chapter and emergency contact come
+            // later, on the RSVP form (lib/core-profile.ts).
+            first_name: firstName.trim(),
+            last_name: lastName.trim(),
+            phone,
             directory_opt_in: directoryOptIn === "true",
             // Where they were headed, saved ON THE ACCOUNT so it survives the
             // email-confirmation round trip whatever the confirmation link
@@ -94,6 +114,42 @@ export function SignUpForm({
         <CardContent>
           <form onSubmit={handleSignUp}>
             <div className="flex flex-col gap-6">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="first_name">First name</Label>
+                  <Input
+                    id="first_name"
+                    autoComplete="given-name"
+                    required
+                    value={firstName}
+                    onChange={(e) => setFirstName(e.target.value)}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="last_name">Last name</Label>
+                  <Input
+                    id="last_name"
+                    autoComplete="family-name"
+                    required
+                    value={lastName}
+                    onChange={(e) => setLastName(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="phone">Phone</Label>
+                <Input
+                  id="phone"
+                  type="tel"
+                  inputMode="numeric"
+                  autoComplete="tel"
+                  placeholder="(303) 555-0100"
+                  maxLength={14}
+                  required
+                  value={phone}
+                  onChange={(e) => setPhone(formatPhoneNumber(e.target.value))}
+                />
+              </div>
               <div className="grid gap-2">
                 <Label htmlFor="email">Email</Label>
                 <Input
