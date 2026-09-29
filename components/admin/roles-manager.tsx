@@ -5,6 +5,9 @@ import { useRouter } from "next/navigation";
 import { HeartPulse, ShieldCheck } from "lucide-react";
 
 import { setDataAccessAction, setUserRoleAction } from "@/lib/actions/roles";
+import { restorePersonAccessAction } from "@/lib/actions/person-removal";
+import { formatDateInZone } from "@/lib/format-date";
+import { RemovePersonPanel } from "@/components/admin/remove-person-panel";
 import { ROLE_LABELS, SCREENING_FLAG_RULE, screeningFlagGrants, type Role } from "@/lib/roles";
 import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
 import { Badge } from "@/components/ui/badge";
@@ -28,7 +31,28 @@ export type RolePerson = {
   canViewScreening: boolean;
   /** profiles.can_view_health_history — within the events they manage. */
   canViewHealthHistory: boolean;
+  /** profiles.access_removed_at — set by Remove access. */
+  accessRemovedAt: string | null;
 };
+
+/** One person_removal_log row. */
+export type RemovalLogEntry = {
+  id: number;
+  action: "access_removed" | "access_restored" | "deleted";
+  subject: string;
+  actor: string;
+  /** Why, as the admin wrote it — null when they left it blank. */
+  reason: string | null;
+  createdAt: string;
+};
+
+const REMOVAL_ACTION_LABELS: Record<RemovalLogEntry["action"], string> = {
+  access_removed: "Access removed",
+  access_restored: "Access restored",
+  deleted: "Deleted",
+};
+
+const shortDate = (instant: string) => formatDateInZone(instant, "America/Denver");
 
 const CHAPTER_OPTIONS = [...CHAPTERS.map((c) => c.name), VIRTUAL_CHAPTER];
 
@@ -44,13 +68,15 @@ function roleSummary(person: RolePerson): string {
 /**
  * Admin-only screen for setting someone's role and, for a chapter lead, the
  * chapters they cover. Removing your own admin role asks first — only
- * another admin can give it back.
+ * another admin can give it back. Each row other than your own also has
+ * "Remove person…" (see RemovePersonPanel).
  */
 export function RolesManager({
   currentUserId,
   staff,
   query,
   results,
+  removals,
 }: {
   currentUserId: string;
   /** Everyone who's currently an admin or chapter lead, or has either
@@ -59,10 +85,33 @@ export function RolesManager({
   query: string;
   /** Search matches for `query`, or null when nothing's been searched. */
   results: RolePerson[] | null;
+  /** The latest person_removal_log entries, newest first. */
+  removals: RemovalLogEntry[];
 }) {
   const healthAccess = staff.filter((p) => p.canViewHealthHistory);
+  // A deleted person's row disappears, so what happened is said up here.
+  const [notice, setNotice] = useState<string | null>(null);
+  const renderRow = (person: RolePerson) => (
+    <PersonRow
+      key={person.id}
+      person={person}
+      isSelf={person.id === currentUserId}
+      onDeleted={setNotice}
+    />
+  );
   return (
     <div className="flex flex-col gap-6">
+      {notice && (
+        <div
+          role="status"
+          className="flex items-start justify-between gap-3 rounded-md border bg-muted/40 p-3 text-sm"
+        >
+          <span>{notice}</span>
+          <Button type="button" size="sm" variant="ghost" onClick={() => setNotice(null)}>
+            Dismiss
+          </Button>
+        </div>
+      )}
       <Card>
         <CardHeader>
           <CardTitle>Admins, chapter leads and sensitive-data access</CardTitle>
@@ -80,9 +129,7 @@ export function RolesManager({
           {staff.length === 0 ? (
             <p className="text-sm text-muted-foreground">Nobody yet.</p>
           ) : (
-            staff.map((person) => (
-              <PersonRow key={person.id} person={person} isSelf={person.id === currentUserId} />
-            ))
+            staff.map(renderRow)
           )}
         </CardContent>
       </Card>
@@ -112,12 +159,43 @@ export function RolesManager({
             (results.length === 0 ? (
               <p className="text-sm text-muted-foreground">No one matches &ldquo;{query}&rdquo;.</p>
             ) : (
-              results.map((person) => (
-                <PersonRow key={person.id} person={person} isSelf={person.id === currentUserId} />
-              ))
+              results.map(renderRow)
             ))}
           {!results && query.length > 0 && (
             <p className="text-sm text-muted-foreground">Type at least 2 characters.</p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Removed people</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-2 text-sm">
+          <p className="text-muted-foreground">
+            Every Remove access, Restore access and delete, newest first. Find someone above to
+            restore their access.
+          </p>
+          {removals.length === 0 ? (
+            <p className="text-muted-foreground">Nobody has been removed yet.</p>
+          ) : (
+            <ul className="flex flex-col divide-y">
+              {removals.map((entry) => (
+                <li key={entry.id} className="py-2">
+                  <span className="font-medium">{REMOVAL_ACTION_LABELS[entry.action]}:</span>{" "}
+                  {entry.subject}
+                  <span className="block text-muted-foreground">
+                    by {entry.actor} · {shortDate(entry.createdAt)}
+                  </span>
+                  {entry.reason && (
+                    <span className="mt-1 block whitespace-pre-line">
+                      <span className="text-muted-foreground">Reason: </span>
+                      {entry.reason}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
           )}
         </CardContent>
       </Card>
@@ -125,9 +203,21 @@ export function RolesManager({
   );
 }
 
-function PersonRow({ person, isSelf }: { person: RolePerson; isSelf: boolean }) {
+function PersonRow({
+  person,
+  isSelf,
+  onDeleted,
+}: {
+  person: RolePerson;
+  isSelf: boolean;
+  onDeleted: (message: string) => void;
+}) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const removed = person.accessRemovedAt !== null;
   const [role, setRole] = useState<Role>(person.role);
   const [chapters, setChapters] = useState<string[]>(person.ledChapters);
   const [confirmingSelfDemotion, setConfirmingSelfDemotion] = useState(false);
@@ -136,7 +226,20 @@ function PersonRow({ person, isSelf }: { person: RolePerson; isSelf: boolean }) 
 
   const removesOwnAdmin = isSelf && person.role === "admin" && role !== "admin";
 
+  const restore = async () => {
+    setRestoring(true);
+    setRestoreError(null);
+    const result = await restorePersonAccessAction(person.id);
+    setRestoring(false);
+    if (!result.ok) {
+      setRestoreError(result.error);
+      return;
+    }
+    router.refresh();
+  };
+
   const startEdit = () => {
+    setRemoving(false);
     setRole(person.role);
     setChapters(person.ledChapters);
     setError(null);
@@ -178,6 +281,11 @@ function PersonRow({ person, isSelf }: { person: RolePerson; isSelf: boolean }) 
           <div className="flex flex-wrap items-center gap-2">
             <span className="font-medium">{person.name || person.email}</span>
             {isSelf && <Badge variant="outline">You</Badge>}
+            {removed && (
+              <Badge variant="outline" className="border-red-500/50 text-red-700 dark:text-red-400">
+                Access removed {shortDate(person.accessRemovedAt as string)}
+              </Badge>
+            )}
           </div>
           <span className="text-sm text-muted-foreground">
             {[person.email, person.chapter && `Home chapter: ${person.chapter}`]
@@ -186,19 +294,66 @@ function PersonRow({ person, isSelf }: { person: RolePerson; isSelf: boolean }) 
           </span>
           <span className="text-sm">{roleSummary(person)}</span>
         </div>
-        {!editing && (
-          <Button type="button" size="sm" variant="outline" onClick={startEdit}>
-            Change role
-          </Button>
+        {!editing && !removing && (
+          <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row">
+            {removed ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={restoring}
+                onClick={() => void restore()}
+              >
+                {restoring ? "Restoring..." : "Restore access"}
+              </Button>
+            ) : (
+              <Button type="button" size="sm" variant="outline" onClick={startEdit}>
+                Change role
+              </Button>
+            )}
+            {!isSelf && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                className="border-red-500/60 text-red-700 hover:bg-red-500/10 dark:text-red-400"
+                onClick={() => setRemoving(true)}
+              >
+                Remove person…
+              </Button>
+            )}
+          </div>
         )}
       </div>
 
+      {restoreError && <p className="mt-2 text-sm text-red-500">{restoreError}</p>}
+      {removed && (
+        <p className="mt-2 text-sm text-muted-foreground">
+          They can&apos;t sign in. Their history is kept. Restoring lets them sign in again as a
+          participant; cancelled RSVPs and shifts don&apos;t come back.
+        </p>
+      )}
+
+      {removing && (
+        <RemovePersonPanel
+          userId={person.id}
+          label={person.name || person.email}
+          onClose={() => setRemoving(false)}
+          onDeleted={(message) => {
+            setRemoving(false);
+            onDeleted(message);
+          }}
+        />
+      )}
+
       {/* Keyed on the saved values, so a refresh after a change made from
         * this person's other row (staff list vs. search) is picked up. */}
-      <DataAccessFlags
-        key={`${person.canViewScreening}-${person.canViewHealthHistory}`}
-        person={person}
-      />
+      {!removed && (
+        <DataAccessFlags
+          key={`${person.canViewScreening}-${person.canViewHealthHistory}`}
+          person={person}
+        />
+      )}
 
       {editing && (
         <div className="mt-3 flex flex-col gap-3 border-t pt-3">

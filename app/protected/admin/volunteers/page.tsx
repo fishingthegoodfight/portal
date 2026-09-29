@@ -50,7 +50,10 @@ async function VolunteersListLoader({
 
   const [{ data: profiles }, { data: approvals }, { data: certs }, accountStates] = await Promise.all([
     ids.length > 0
-      ? supabase.from("profiles").select("id, first_name, last_name, email, chapter").in("id", ids)
+      ? supabase
+          .from("profiles")
+          .select("id, first_name, last_name, email, chapter, access_removed_at")
+          .in("id", ids)
       : Promise.resolve({ data: [] }),
     ids.length > 0
       ? supabase
@@ -96,24 +99,30 @@ async function VolunteersListLoader({
   const qLower = (q ?? "").trim().toLowerCase();
   const roleIdFilter = role ? Number(role) : null;
 
-  let combined = rows.map((r) => {
-    const profile = profileById.get(r.user_id);
-    const roleApprovals = approvalsByVolunteer.get(r.user_id) ?? [];
-    const needsCert = roleApprovals.some((a) => a.role_type?.requires_cert);
-    const hasCurrentCert = currentCertByVolunteer.get(r.user_id) === true;
-    return {
-      userId: r.user_id,
-      status: r.status,
-      firstName: (profile?.first_name as string | null) ?? "",
-      lastName: (profile?.last_name as string | null) ?? "",
-      email: (profile?.email as string | null) ?? "",
-      chapter: (profile?.chapter as string | null) ?? "",
-      roles: roleApprovals.map((a) => a.role_type?.name).filter(Boolean) as string[],
-      roleTypeIds: roleApprovals.map((a) => a.role_type_id),
-      certMissingOrExpired: needsCert && !hasCurrentCert,
-      account: accountStates.error ? null : accountStateOf(lastSignInById.get(r.user_id), r.invited_at),
-    };
-  });
+  // Someone whose access was removed (People & roles) keeps their volunteer
+  // record as history, but isn't an active volunteer.
+  const removedCount = rows.filter((r) => profileById.get(r.user_id)?.access_removed_at).length;
+
+  let combined = rows
+    .filter((r) => !profileById.get(r.user_id)?.access_removed_at)
+    .map((r) => {
+      const profile = profileById.get(r.user_id);
+      const roleApprovals = approvalsByVolunteer.get(r.user_id) ?? [];
+      const needsCert = roleApprovals.some((a) => a.role_type?.requires_cert);
+      const hasCurrentCert = currentCertByVolunteer.get(r.user_id) === true;
+      return {
+        userId: r.user_id,
+        status: r.status,
+        firstName: (profile?.first_name as string | null) ?? "",
+        lastName: (profile?.last_name as string | null) ?? "",
+        email: (profile?.email as string | null) ?? "",
+        chapter: (profile?.chapter as string | null) ?? "",
+        roles: roleApprovals.map((a) => a.role_type?.name).filter(Boolean) as string[],
+        roleTypeIds: roleApprovals.map((a) => a.role_type_id),
+        certMissingOrExpired: needsCert && !hasCurrentCert,
+        account: accountStates.error ? null : accountStateOf(lastSignInById.get(r.user_id), r.invited_at),
+      };
+    });
 
   if (chapter) combined = combined.filter((v) => v.chapter.toLowerCase() === chapterLower);
   if (roleIdFilter) combined = combined.filter((v) => v.roleTypeIds.includes(roleIdFilter));
@@ -141,6 +150,12 @@ async function VolunteersListLoader({
         <p className="text-sm text-muted-foreground">No volunteers match these filters.</p>
       ) : (
         <VolunteersList volunteers={combined} />
+      )}
+      {removedCount > 0 && (
+        <p className="text-xs text-muted-foreground">
+          Not listed: {removedCount} {removedCount === 1 ? "person" : "people"} whose access was
+          removed (see People &amp; roles).
+        </p>
       )}
     </div>
   );

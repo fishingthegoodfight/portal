@@ -10310,3 +10310,917 @@ $function$;
 
 revoke all on function public.digest_ready_applications() from public, anon, authenticated;
 grant execute on function public.digest_ready_applications() to service_role;
+
+-- =============================================================================
+-- 2026-09-29 — Removing a person from People & roles
+-- =============================================================================
+-- "Remove person…" on each row of People & roles (admins only). Three
+-- actions, each one database function doing all of its work in one
+-- transaction:
+--
+-- 1. admin_remove_person_access(user_id): for someone with history. Their
+--    login is disabled (auth.users.banned_until, far future) and every
+--    session is ended (auth.sessions deleted, so refresh tokens stop working;
+--    an access token already issued runs out within the hour). Their
+--    profile gets access_removed_at, which takes them out of the volunteer
+--    registry and the event-lead picker. Also, so they don't linger in
+--    anything current:
+--      - they're made a participant with no sensitive-data access (an admin
+--        or chapter lead loses those powers at once, not when their token
+--        expires; the previous role is kept in the log);
+--      - their RSVPs to events that haven't started are removed the way a
+--        cancel removes them, and the freed spots are offered to the
+--        waitlist (the app emails the offers);
+--      - their volunteer shifts at events that haven't started are
+--        cancelled and the slots freed;
+--      - an open volunteer application is withdrawn (volunteer_application_act,
+--        with a history note).
+--    Everything from events that have started stays exactly as it was:
+--    RSVPs, check-ins, shifts, waivers, health forms, applications, the
+--    volunteer record. Past rosters and attendance counts don't change.
+--
+-- 2. admin_restore_person_access(user_id): undoes the login part — clears
+--    access_removed_at and the ban. It doesn't bring back cancelled RSVPs or
+--    the old role; an admin sets the role again if needed.
+--
+-- 3. admin_delete_person(user_id, typed_email): deletes the person entirely:
+--    RSVPs (with the same spot bookkeeping and waitlist offers), volunteer
+--    shifts, waiver signatures, health forms and check-in answers, attendance
+--    credits, practical checks, volunteer applications (with their history,
+--    screenings and references), the volunteer record (notes, role
+--    approvals, certifications, registration answers), the profile, and the
+--    login (auth.users — its identities and sessions go with it). Anything
+--    else that names them as the person who did something (recorded a
+--    screening, approved a role, created a venue…) is kept with the name
+--    cleared, and they're taken off as lead of any event. The typed email
+--    must match theirs. The app then removes their certification files from
+--    storage (the storage API is the only way to delete those).
+--    health_access_log is untouched — it has no foreign keys and is
+--    append-only, so entries about them (or by them) stay.
+--
+-- All three refuse: a non-admin caller, the caller themselves, and the last
+-- remaining admin (locked the same way admin_set_user_role locks, so two
+-- admins can't remove each other at once).
+--
+-- admin_person_removal_preview(user_id) returns what's attached to someone,
+-- for the screen: the counts, whether it's the caller, whether they're the
+-- last admin, and whether access is already removed.
+--
+-- Who removed whom, when and why: new table person_removal_log, one row per
+-- action (access_removed, access_restored, deleted), with the subject's
+-- email and name and the admin's name copied in at the time, so it still
+-- reads after either is deleted, plus the counts. Remove access and delete
+-- each take an optional reason (p_reason, trimmed, up to 1000 characters),
+-- stored in person_removal_log.reason. Admins can read it (the
+-- screen shows the latest); only the functions above write to it.
+--
+-- Also:
+--   - profiles_access_guard: only an admin (or a trusted server context) can
+--     change access_removed_at, so a removed person with a still-valid token
+--     can't clear it on their own profile.
+--   - admin_set_user_role refuses to give a role to someone whose access is
+--     removed (restore them first), so the admin count only ever counts
+--     people who can sign in.
+--   - event_lead_candidates leaves out removed people.
+--   - The stamp triggers on volunteer_screenings, attendance_credits and
+--     app_settings, which rewrite "who changed this" on every update, stand
+--     aside while a person is being deleted (ftgf.deleting_person). Without
+--     that, the foreign keys' own ON DELETE SET NULL would re-stamp those
+--     rows with the deleting admin's id — or, for a screening's recorded_by,
+--     put the deleted person's id straight back and fail.
+--
+-- Step 0 checks the live database: that this role can change auth.users and
+-- auth.sessions, and that every foreign key into auth.users or profiles is
+-- one of the person's own tables handled below or a nullable "who did it"
+-- column. profiles, rsvps, events and volunteer_opportunities were created in
+-- the dashboard before this file existed, so their constraints aren't
+-- recorded here. If anything unexpected turns up, the whole script stops with
+-- the list and nothing is applied — send it over rather than editing around
+-- it.
+--
+-- New table person_removal_log ships with its grants: RLS on, admins may
+-- select; authenticated gets select only (no write policy exists); anon
+-- nothing; service_role all.
+--
+-- Safe to re-run. One transaction.
+
+begin;
+
+-- ---- 1. Columns and the log table --------------------------------------------------
+alter table public.profiles
+  add column if not exists access_removed_at timestamptz;
+
+create table if not exists public.person_removal_log (
+  id bigserial primary key,
+  action text not null check (action in ('access_removed', 'access_restored', 'deleted')),
+  -- No foreign keys: the row has to outlive both people.
+  subject_user_id uuid not null,
+  subject_email text,
+  subject_name text,
+  actor_user_id uuid,
+  actor_label text,
+  -- Optional, from the admin: why they were removed.
+  reason text check (reason is null or length(reason) <= 1000),
+  details jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+-- For a database where an earlier version of this entry was already run.
+alter table public.person_removal_log
+  add column if not exists reason text check (reason is null or length(reason) <= 1000);
+
+create index if not exists person_removal_log_created_idx
+  on public.person_removal_log (created_at desc);
+create index if not exists person_removal_log_subject_idx
+  on public.person_removal_log (subject_user_id, created_at desc);
+
+alter table public.person_removal_log enable row level security;
+
+drop policy if exists person_removal_log_select_admin on public.person_removal_log;
+create policy person_removal_log_select_admin on public.person_removal_log
+  for select to authenticated
+  using (public.is_admin());
+-- No insert, update or delete policy: only the functions below write to it.
+
+revoke all on public.person_removal_log from anon;
+revoke all on public.person_removal_log from authenticated;
+grant select on public.person_removal_log to authenticated;
+grant all on public.person_removal_log to service_role;
+revoke all on sequence public.person_removal_log_id_seq from anon, authenticated;
+grant usage, select on sequence public.person_removal_log_id_seq to service_role;
+
+-- ---- 2. Every other foreign key that can name a person -----------------------------
+-- Foreign keys from public tables into auth.users or profiles, apart from the
+-- person's own rows (deleted outright by admin_delete_person) and
+-- events.lead_user_id (counted separately). These are "who did it" columns.
+create or replace function public.person_other_references()
+returns table (src regclass, col name, on_delete "char", not_null boolean, columns integer)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select c.conrelid::regclass, a.attname, c.confdeltype, a.attnotnull, cardinality(c.conkey)
+    from pg_constraint c
+    join pg_class s on s.oid = c.conrelid
+    join pg_namespace n on n.oid = s.relnamespace
+    join pg_attribute a on a.attrelid = c.conrelid and a.attnum = c.conkey[1]
+   where c.contype = 'f'
+     and c.confrelid in ('auth.users'::regclass, 'public.profiles'::regclass)
+     and n.nspname = 'public'
+     and (s.relname::text, a.attname::text) not in (
+       ('profiles', 'id'),
+       ('rsvps', 'user_id'),
+       ('volunteer_signups', 'user_id'),
+       ('waiver_signatures', 'user_id'),
+       ('health_histories', 'user_id'),
+       ('health_checkin_answers', 'user_id'),
+       ('attendance_credits', 'user_id'),
+       ('practical_instruction_checks', 'user_id'),
+       ('volunteer_applications', 'user_id'),
+       ('volunteers', 'user_id'),
+       ('events', 'lead_user_id')
+     );
+$function$;
+
+-- ---- 0. Checks (run here, once the helper above exists) --------------------------
+do $check$
+declare
+  v_unexpected text;
+begin
+  if not (has_table_privilege('auth.users', 'UPDATE')
+          and has_table_privilege('auth.users', 'DELETE')
+          and has_table_privilege('auth.sessions', 'DELETE')) then
+    raise exception 'This role can''t update/delete auth.users or delete auth.sessions — nothing was applied';
+  end if;
+
+  -- Anything that would be deleted along with a person without being listed,
+  -- or that can't be cleared.
+  select string_agg(format('%s.%s (on delete %s, not null %s, %s columns)', src, col, on_delete, not_null, columns), E'\n')
+    into v_unexpected
+    from public.person_other_references()
+   where on_delete = 'c' or columns > 1 or (not_null and on_delete not in ('n', 'd'));
+
+  -- Foreign keys from any other schema (auth's own are fine) that would
+  -- block the delete.
+  select concat_ws(E'\n', v_unexpected, string_agg(
+           format('%s.%s -> %s (%s)', c.conrelid::regclass, a.attname, c.confrelid::regclass, c.conname), E'\n'))
+    into v_unexpected
+    from pg_constraint c
+    join pg_class s on s.oid = c.conrelid
+    join pg_namespace n on n.oid = s.relnamespace
+    join pg_attribute a on a.attrelid = c.conrelid and a.attnum = c.conkey[1]
+   where c.contype = 'f'
+     and c.confrelid in ('auth.users'::regclass, 'public.profiles'::regclass)
+     and n.nspname not in ('public', 'auth')
+     and c.confdeltype not in ('c', 'n', 'd');
+
+  if nullif(v_unexpected, '') is not null then
+    raise exception E'Unexpected foreign keys reference people — nothing was applied:\n%', v_unexpected;
+  end if;
+end $check$;
+
+-- ---- 3. What's attached to someone ------------------------------------------------
+create or replace function public.person_removal_counts(p_user_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+declare
+  r record;
+  v_n bigint;
+  v_other bigint := 0;
+begin
+  for r in select * from public.person_other_references() loop
+    execute format('select count(*) from %s where %I = $1', r.src, r.col) into v_n using p_user_id;
+    v_other := v_other + v_n;
+  end loop;
+
+  return jsonb_build_object(
+    'rsvps', (select count(*) from public.rsvps where user_id = p_user_id),
+    'rsvps_checked_in', (select count(*) from public.rsvps where user_id = p_user_id and checked_in_at is not null),
+    'rsvps_upcoming', (
+      select count(*) from public.rsvps r join public.events e on e.id = r.event_id
+       where r.user_id = p_user_id and r.status in ('confirmed', 'waitlisted', 'offered') and e.starts_at > now()
+    ),
+    'volunteer_signups', (select count(*) from public.volunteer_signups where user_id = p_user_id),
+    'volunteer_signups_upcoming', (
+      select count(*) from public.volunteer_signups s
+        join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+        join public.events e on e.id = vo.event_id
+       where s.user_id = p_user_id and s.status = 'confirmed' and e.starts_at > now()
+    ),
+    'waiver_signatures', (select count(*) from public.waiver_signatures where user_id = p_user_id),
+    'health_histories', (select count(*) from public.health_histories where user_id = p_user_id),
+    'health_checkin_answers', (select count(*) from public.health_checkin_answers where user_id = p_user_id),
+    'volunteer_applications', (select count(*) from public.volunteer_applications where user_id = p_user_id),
+    'volunteer_applications_open', (
+      select count(*) from public.volunteer_applications
+       where user_id = p_user_id and status not in ('approved', 'declined', 'withdrawn')
+    ),
+    'volunteer_record', (select count(*) from public.volunteers where user_id = p_user_id),
+    'certification_files', (
+      select count(*) from storage.objects o
+       where o.bucket_id = 'volunteer-certifications'
+         and (storage.foldername(o.name))[1] = p_user_id::text
+    ),
+    'attendance_credits', (select count(*) from public.attendance_credits where user_id = p_user_id),
+    'practical_checks', (select count(*) from public.practical_instruction_checks where user_id = p_user_id),
+    'events_led', (select count(*) from public.events where lead_user_id = p_user_id),
+    'events_led_upcoming', (
+      select count(*) from public.events
+       where lead_user_id = p_user_id and starts_at > now() and coalesce(status, 'scheduled') <> 'cancelled'
+    ),
+    'other_references', v_other,
+    'health_access_log', (
+      select count(*) from public.health_access_log
+       where subject_user_id = p_user_id or accessed_by = p_user_id
+    )
+  );
+end $function$;
+
+create or replace function public.admin_person_removal_preview(p_user_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+declare
+  v_profile public.profiles%rowtype;
+  v_email text;
+begin
+  if not public.is_admin() then
+    raise exception 'Admins only' using errcode = '42501';
+  end if;
+  select * into v_profile from public.profiles where id = p_user_id;
+  if not found then
+    raise exception 'Person not found';
+  end if;
+  select u.email into v_email from auth.users u where u.id = p_user_id;
+
+  return jsonb_build_object(
+    'email', coalesce(v_profile.email, v_email),
+    'name', nullif(concat_ws(' ', v_profile.first_name, v_profile.last_name), ''),
+    'role', v_profile.role,
+    'is_self', p_user_id = auth.uid(),
+    'is_last_admin', v_profile.role = 'admin'
+                     and (select count(*) from public.profiles where role = 'admin') <= 1,
+    'access_removed_at', v_profile.access_removed_at,
+    'counts', public.person_removal_counts(p_user_id)
+  );
+end $function$;
+
+-- ---- 4. Shared steps --------------------------------------------------------------
+-- Removes their RSVPs (all, or only active ones to events that haven't
+-- started) with cancel_rsvp's bookkeeping: a confirmed spot is given back,
+-- and a freed spot or voided offer goes to the waitlist. Returns the new
+-- offers ({event_id, user_id, expires_at}) for the app to email.
+create or replace function public.person_drop_rsvps(p_user_id uuid, p_upcoming_only boolean)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  r record;
+  v_status text;
+  v_offered jsonb := '[]'::jsonb;
+begin
+  for r in
+    select rs.event_id
+      from public.rsvps rs
+      join public.events e on e.id = rs.event_id
+     where rs.user_id = p_user_id
+       and (not p_upcoming_only
+            or (rs.status in ('confirmed', 'waitlisted', 'offered') and e.starts_at > now()))
+     order by rs.event_id
+  loop
+    perform 1 from public.events where id = r.event_id for update;
+    v_status := null;
+    delete from public.rsvps
+     where event_id = r.event_id and user_id = p_user_id
+    returning status into v_status;
+
+    if v_status = 'confirmed' then
+      update public.events
+         set spots_taken = greatest(spots_taken - 1, 0), updated_at = now()
+       where id = r.event_id;
+    end if;
+    if v_status in ('confirmed', 'offered') then
+      v_offered := v_offered || coalesce((
+        select jsonb_agg(jsonb_build_object('event_id', r.event_id, 'user_id', o.o_user_id, 'expires_at', o.o_expires_at))
+          from public.offer_waitlisted_spots(r.event_id) o
+      ), '[]'::jsonb);
+    end if;
+  end loop;
+  return v_offered;
+end $function$;
+
+-- Volunteer shifts: confirmed ones give their slot back. Upcoming only:
+-- cancelled like cancel_volunteer_signup (the row stays, as it does there).
+-- Otherwise every signup row is deleted. Returns how many rows changed.
+create or replace function public.person_drop_volunteer_signups(p_user_id uuid, p_upcoming_only boolean)
+returns integer
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_count integer;
+begin
+  update public.volunteer_opportunities vo
+     set slots_taken = greatest(vo.slots_taken - 1, 0)
+    from public.volunteer_signups s
+   where s.opportunity_id = vo.id
+     and s.user_id = p_user_id
+     and s.status = 'confirmed'
+     and (not p_upcoming_only
+          or exists (select 1 from public.events e where e.id = vo.event_id and e.starts_at > now()));
+
+  if p_upcoming_only then
+    update public.volunteer_signups s
+       set status = 'cancelled', cancelled_at = now()
+      from public.volunteer_opportunities vo
+      join public.events e on e.id = vo.event_id
+     where vo.id = s.opportunity_id
+       and s.user_id = p_user_id
+       and s.status = 'confirmed'
+       and e.starts_at > now();
+  else
+    delete from public.volunteer_signups where user_id = p_user_id;
+  end if;
+  get diagnostics v_count = row_count;
+  return v_count;
+end $function$;
+
+-- Earlier signatures, without the reason (a re-run would otherwise leave
+-- them alongside the new ones).
+drop function if exists public.log_person_removal(text, uuid, text, text, jsonb);
+drop function if exists public.admin_remove_person_access(uuid);
+drop function if exists public.admin_delete_person(uuid, text);
+
+create or replace function public.log_person_removal(
+  p_action text,
+  p_user_id uuid,
+  p_email text,
+  p_name text,
+  p_details jsonb,
+  p_reason text default null
+)
+returns void
+language sql
+security definer
+set search_path to 'public'
+as $function$
+  insert into public.person_removal_log
+    (action, subject_user_id, subject_email, subject_name, actor_user_id, actor_label, reason, details)
+  values (
+    p_action, p_user_id, p_email, p_name, auth.uid(),
+    (select case
+              when nullif(concat_ws(' ', a.first_name, a.last_name), '') is null then a.email
+              else concat_ws(' ', a.first_name, a.last_name) || coalesce(' <' || a.email || '>', '')
+            end
+       from public.profiles a where a.id = auth.uid()),
+    nullif(btrim(coalesce(p_reason, '')), ''),
+    coalesce(p_details, '{}'::jsonb)
+  );
+$function$;
+
+-- ---- 5. Remove access ---------------------------------------------------------------
+create or replace function public.admin_remove_person_access(p_user_id uuid, p_reason text default null)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_profile public.profiles%rowtype;
+  v_email text;
+  v_counts jsonb;
+  v_offered jsonb;
+  v_shifts integer;
+  v_apps integer := 0;
+  r record;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can remove someone''s access' using errcode = '42501';
+  end if;
+  if p_user_id = auth.uid() then
+    raise exception 'You can''t remove your own access' using errcode = '42501';
+  end if;
+  if length(btrim(coalesce(p_reason, ''))) > 1000 then
+    raise exception 'Keep the reason under 1000 characters' using errcode = '22023';
+  end if;
+
+  -- Same lock as admin_set_user_role: two admins can't remove each other.
+  perform 1 from public.profiles where role = 'admin' for update;
+  select * into v_profile from public.profiles where id = p_user_id for update;
+  if not found then
+    raise exception 'Person not found';
+  end if;
+  if v_profile.access_removed_at is not null then
+    raise exception 'Their access has already been removed' using errcode = 'P0001';
+  end if;
+  if v_profile.role = 'admin' and (select count(*) from public.profiles where role = 'admin') <= 1 then
+    raise exception 'They''re the only admin — make someone else an admin first' using errcode = '42501';
+  end if;
+
+  select coalesce(v_profile.email, u.email) into v_email from auth.users u where u.id = p_user_id;
+  v_counts := public.person_removal_counts(p_user_id);
+
+  update public.profiles
+     set role = 'participant',
+         led_chapters = '{}'::text[],
+         can_view_volunteer_screening = false,
+         can_view_health_history = false,
+         access_removed_at = now()
+   where id = p_user_id;
+
+  v_offered := public.person_drop_rsvps(p_user_id, true);
+  v_shifts := public.person_drop_volunteer_signups(p_user_id, true);
+
+  for r in
+    select id from public.volunteer_applications
+     where user_id = p_user_id and status not in ('approved', 'declined', 'withdrawn')
+  loop
+    perform public.volunteer_application_act(r.id, 'withdrawn', 'Withdrawn when an admin removed their access');
+    v_apps := v_apps + 1;
+  end loop;
+
+  update auth.users set banned_until = now() + interval '100 years' where id = p_user_id;
+  delete from auth.sessions where user_id = p_user_id;
+
+  perform public.log_person_removal(
+    'access_removed', p_user_id, coalesce(v_email, v_profile.email),
+    nullif(concat_ws(' ', v_profile.first_name, v_profile.last_name), ''),
+    jsonb_build_object(
+      'counts', v_counts,
+      'previous_role', v_profile.role,
+      'previous_led_chapters', to_jsonb(v_profile.led_chapters),
+      'had_screening_access', v_profile.can_view_volunteer_screening,
+      'had_health_access', v_profile.can_view_health_history,
+      'rsvps_removed', v_counts->'rsvps_upcoming',
+      'shifts_cancelled', v_shifts,
+      'applications_withdrawn', v_apps
+    ),
+    p_reason
+  );
+
+  return jsonb_build_object(
+    'offered', v_offered,
+    'rsvps_removed', v_counts->'rsvps_upcoming',
+    'shifts_cancelled', v_shifts,
+    'applications_withdrawn', v_apps
+  );
+end $function$;
+
+-- ---- 6. Restore access -----------------------------------------------------------------
+create or replace function public.admin_restore_person_access(p_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_profile public.profiles%rowtype;
+  v_email text;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can restore someone''s access' using errcode = '42501';
+  end if;
+  select * into v_profile from public.profiles where id = p_user_id for update;
+  if not found then
+    raise exception 'Person not found';
+  end if;
+  if v_profile.access_removed_at is null then
+    raise exception 'They already have access' using errcode = 'P0001';
+  end if;
+  select coalesce(v_profile.email, u.email) into v_email from auth.users u where u.id = p_user_id;
+
+  update public.profiles set access_removed_at = null where id = p_user_id;
+  update auth.users set banned_until = null where id = p_user_id;
+
+  perform public.log_person_removal(
+    'access_restored', p_user_id, coalesce(v_email, v_profile.email),
+    nullif(concat_ws(' ', v_profile.first_name, v_profile.last_name), ''),
+    jsonb_build_object('access_removed_at', v_profile.access_removed_at)
+  );
+end $function$;
+
+-- ---- 7. Delete ---------------------------------------------------------------------------
+create or replace function public.admin_delete_person(
+  p_user_id uuid,
+  p_confirm_email text,
+  p_reason text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_profile public.profiles%rowtype;
+  v_email text;
+  v_counts jsonb;
+  v_offered jsonb;
+  r record;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can delete people' using errcode = '42501';
+  end if;
+  if p_user_id = auth.uid() then
+    raise exception 'You can''t delete yourself' using errcode = '42501';
+  end if;
+  if length(btrim(coalesce(p_reason, ''))) > 1000 then
+    raise exception 'Keep the reason under 1000 characters' using errcode = '22023';
+  end if;
+
+  perform 1 from public.profiles where role = 'admin' for update;
+  select * into v_profile from public.profiles where id = p_user_id for update;
+  if not found then
+    raise exception 'Person not found';
+  end if;
+  select coalesce(v_profile.email, u.email) into v_email from auth.users u where u.id = p_user_id;
+  v_email := coalesce(v_email, v_profile.email);
+  if v_email is null or lower(btrim(coalesce(p_confirm_email, ''))) <> lower(btrim(v_email)) then
+    raise exception 'Type their email exactly to confirm' using errcode = '22023';
+  end if;
+  if v_profile.role = 'admin' and (select count(*) from public.profiles where role = 'admin') <= 1 then
+    raise exception 'They''re the only admin — make someone else an admin first' using errcode = '42501';
+  end if;
+
+  v_counts := public.person_removal_counts(p_user_id);
+
+  -- The stamp triggers stand aside for the foreign keys' SET NULL (see the
+  -- header). Transaction-local; cleared again below.
+  perform set_config('ftgf.deleting_person', 'on', true);
+
+  v_offered := public.person_drop_rsvps(p_user_id, false);
+  perform public.person_drop_volunteer_signups(p_user_id, false);
+
+  delete from public.health_checkin_answers where user_id = p_user_id;
+  delete from public.health_histories where user_id = p_user_id;
+  delete from public.waiver_signatures where user_id = p_user_id;
+  delete from public.attendance_credits where user_id = p_user_id;
+  delete from public.practical_instruction_checks where user_id = p_user_id;
+  -- History, screenings, reference requests and links go with them.
+  delete from public.volunteer_applications where user_id = p_user_id;
+  -- Notes, role approvals, certifications, registration answers go with it.
+  delete from public.volunteers where user_id = p_user_id;
+
+  -- "Who did it" columns without ON DELETE SET NULL are cleared here; the
+  -- rest (and events.lead_user_id) clear themselves when the rows go.
+  for r in select * from public.person_other_references() where on_delete in ('a', 'r') loop
+    execute format('update %s set %I = null where %I = $1', r.src, r.col, r.col) using p_user_id;
+  end loop;
+
+  perform public.log_person_removal(
+    'deleted', p_user_id, v_email,
+    nullif(concat_ws(' ', v_profile.first_name, v_profile.last_name), ''),
+    jsonb_build_object(
+      'counts', v_counts,
+      'previous_role', v_profile.role,
+      'access_removed_at', v_profile.access_removed_at
+    ),
+    p_reason
+  );
+
+  delete from public.profiles where id = p_user_id;
+  delete from auth.users where id = p_user_id;
+
+  perform set_config('ftgf.deleting_person', '', true);
+
+  return jsonb_build_object('counts', v_counts, 'offered', v_offered, 'email', v_email);
+end $function$;
+
+-- ---- 8. Stamp triggers stand aside during a delete -------------------------------------
+create or replace function public.volunteer_screenings_stamp()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  -- admin_delete_person: only the foreign key's SET NULL is changing.
+  if tg_op = 'UPDATE' and current_setting('ftgf.deleting_person', true) = 'on' then
+    return new;
+  end if;
+  if tg_op = 'INSERT' then
+    new.recorded_by := coalesce(auth.uid(), new.recorded_by);
+    new.recorded_at := now();
+  else
+    new.application_id := old.application_id;
+    new.recorded_by := old.recorded_by;
+    new.recorded_at := old.recorded_at;
+  end if;
+  new.updated_by := coalesce(auth.uid(), new.updated_by);
+  new.updated_at := now();
+  -- Worked out when the outcome is set; an edit that leaves the outcome alone
+  -- (an admin tidying a lead's notes) doesn't turn a recommendation into a
+  -- decline — the admin uses Decline for that.
+  if tg_op = 'INSERT' or new.outcome is distinct from old.outcome then
+    new.decline_is_recommendation := new.outcome = 'decline' and auth.uid() is not null and not public.is_admin();
+  else
+    new.decline_is_recommendation := old.decline_is_recommendation;
+  end if;
+  return new;
+end $function$;
+
+create or replace function public.attendance_credits_stamp()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  -- admin_delete_person: only the foreign key's SET NULL is changing.
+  if tg_op = 'UPDATE' and current_setting('ftgf.deleting_person', true) = 'on' then
+    return new;
+  end if;
+  new.set_by := coalesce(auth.uid(), new.set_by);
+  new.set_at := now();
+  return new;
+end $function$;
+
+create or replace function public.app_settings_stamp()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  -- admin_delete_person: only the foreign key's SET NULL is changing.
+  if current_setting('ftgf.deleting_person', true) = 'on' then
+    return new;
+  end if;
+  new.updated_by := coalesce(auth.uid(), new.updated_by);
+  new.updated_at := now();
+  return new;
+end $function$;
+
+-- ---- 9. Only admins change access_removed_at ------------------------------------------
+create or replace function public.profiles_access_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if auth.uid() is null or public.is_admin() then
+    return new;
+  end if;
+  if tg_op = 'INSERT' then
+    new.access_removed_at := null;
+  elsif new.access_removed_at is distinct from old.access_removed_at then
+    raise exception 'Only admins can change whether someone has access' using errcode = '42501';
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists profiles_access_guard on public.profiles;
+create trigger profiles_access_guard
+  before insert or update of access_removed_at on public.profiles
+  for each row execute function public.profiles_access_guard();
+
+-- ---- 10. No role for someone without access ----------------------------------------------
+create or replace function public.admin_set_user_role(
+  p_user_id uuid,
+  p_role text,
+  p_led_chapters text[] default '{}'::text[]
+)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_old_role text;
+  v_access_removed_at timestamptz;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can change roles' using errcode = '42501';
+  end if;
+  if p_role not in ('participant', 'chapter_lead', 'admin') then
+    raise exception 'Unknown role %', p_role;
+  end if;
+
+  -- Serializes concurrent demotions so two admins can't each remove the
+  -- other and leave nobody.
+  perform 1 from public.profiles where role = 'admin' for update;
+  select role, access_removed_at into v_old_role, v_access_removed_at
+    from public.profiles where id = p_user_id for update;
+  if not found then
+    raise exception 'Person not found';
+  end if;
+
+  if v_access_removed_at is not null and p_role <> 'participant' then
+    raise exception 'Their access has been removed — restore it before giving them a role' using errcode = '42501';
+  end if;
+
+  if v_old_role = 'admin' and p_role <> 'admin'
+     and (select count(*) from public.profiles where role = 'admin') <= 1 then
+    raise exception 'There has to be at least one admin' using errcode = '42501';
+  end if;
+
+  update public.profiles
+     set role = p_role,
+         led_chapters = case
+           when p_role = 'chapter_lead' then coalesce(p_led_chapters, '{}'::text[])
+           else '{}'::text[]
+         end
+   where id = p_user_id;
+end $function$;
+
+-- ---- 11. The event-lead picker leaves out removed people -------------------------------
+create or replace function public.event_lead_candidates(p_query text)
+returns table (
+  id uuid,
+  first_name text,
+  last_name text,
+  email text,
+  phone text,
+  role text,
+  chapter text
+)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+declare
+  v_q text := btrim(coalesce(p_query, ''));
+  v_pattern text;
+  v_is_admin boolean := public.is_admin();
+  v_led text[];
+begin
+  if not public.has_event_admin_access() then
+    raise exception 'Not allowed' using errcode = '42501';
+  end if;
+  if length(v_q) < 2 then
+    return;
+  end if;
+  v_pattern := '%' || replace(replace(replace(v_q, '\', '\\'), '%', '\%'), '_', '\_') || '%';
+  select p.led_chapters into v_led from public.profiles p where p.id = auth.uid();
+
+  return query
+    select p.id, p.first_name, p.last_name, p.email, p.phone, p.role, p.chapter
+      from public.profiles p
+     where (
+             p.first_name ilike v_pattern
+             or p.last_name ilike v_pattern
+             or p.email ilike v_pattern
+             or concat_ws(' ', p.first_name, p.last_name) ilike v_pattern
+           )
+       and p.access_removed_at is null
+       and (
+             v_is_admin
+             or p.role in ('admin', 'chapter_lead')
+             or p.id = auth.uid()
+             or p.chapter = any(coalesce(v_led, '{}'::text[]))
+           )
+     order by p.first_name nulls last, p.last_name nulls last
+     limit 10;
+end $function$;
+
+-- ---- Grants --------------------------------------------------------------------------------
+-- Internal helpers: nobody calls these directly.
+revoke all on function public.person_other_references() from public, anon, authenticated;
+revoke all on function public.person_removal_counts(uuid) from public, anon, authenticated;
+revoke all on function public.person_drop_rsvps(uuid, boolean) from public, anon, authenticated;
+revoke all on function public.person_drop_volunteer_signups(uuid, boolean) from public, anon, authenticated;
+revoke all on function public.log_person_removal(text, uuid, text, text, jsonb, text) from public, anon, authenticated;
+revoke all on function public.profiles_access_guard() from public, anon, authenticated;
+
+-- Admin-only (each re-checks is_admin()).
+revoke all on function public.admin_person_removal_preview(uuid) from public, anon;
+grant execute on function public.admin_person_removal_preview(uuid) to authenticated;
+revoke all on function public.admin_remove_person_access(uuid, text) from public, anon;
+grant execute on function public.admin_remove_person_access(uuid, text) to authenticated;
+revoke all on function public.admin_restore_person_access(uuid) from public, anon;
+grant execute on function public.admin_restore_person_access(uuid) to authenticated;
+revoke all on function public.admin_delete_person(uuid, text, text) from public, anon;
+grant execute on function public.admin_delete_person(uuid, text, text) to authenticated;
+
+-- Same signatures as before, so their existing grants stand.
+
+commit;
+
+-- =============================================================================
+-- 2026-09-29 — Fix: person_removal_counts alias clash
+-- =============================================================================
+-- "Remove person…" failed straight away with: record "r" has no field
+-- "event_id". In person_removal_counts (the "Removing a person" entry
+-- above), the upcoming-RSVPs count aliased rsvps as r, the same name as the
+-- function's loop variable r. PL/pgSQL resolves r.event_id to the variable,
+-- which by then holds a person_other_references() row. Now aliased rs.
+-- The preview, Remove access and delete all call this function, so all three
+-- failed; this fixes all three.
+--
+-- No other function in that entry has a table alias matching one of its
+-- variables. Same signature, so the existing grants (none — internal only)
+-- stand. Safe to re-run.
+
+create or replace function public.person_removal_counts(p_user_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+declare
+  r record;
+  v_n bigint;
+  v_other bigint := 0;
+begin
+  for r in select * from public.person_other_references() loop
+    execute format('select count(*) from %s where %I = $1', r.src, r.col) into v_n using p_user_id;
+    v_other := v_other + v_n;
+  end loop;
+
+  return jsonb_build_object(
+    'rsvps', (select count(*) from public.rsvps where user_id = p_user_id),
+    'rsvps_checked_in', (select count(*) from public.rsvps where user_id = p_user_id and checked_in_at is not null),
+    'rsvps_upcoming', (
+      -- Aliased rs, not r: inside PL/pgSQL, r.event_id would read the loop
+      -- variable r above instead of this table.
+      select count(*) from public.rsvps rs join public.events e on e.id = rs.event_id
+       where rs.user_id = p_user_id and rs.status in ('confirmed', 'waitlisted', 'offered') and e.starts_at > now()
+    ),
+    'volunteer_signups', (select count(*) from public.volunteer_signups where user_id = p_user_id),
+    'volunteer_signups_upcoming', (
+      select count(*) from public.volunteer_signups s
+        join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+        join public.events e on e.id = vo.event_id
+       where s.user_id = p_user_id and s.status = 'confirmed' and e.starts_at > now()
+    ),
+    'waiver_signatures', (select count(*) from public.waiver_signatures where user_id = p_user_id),
+    'health_histories', (select count(*) from public.health_histories where user_id = p_user_id),
+    'health_checkin_answers', (select count(*) from public.health_checkin_answers where user_id = p_user_id),
+    'volunteer_applications', (select count(*) from public.volunteer_applications where user_id = p_user_id),
+    'volunteer_applications_open', (
+      select count(*) from public.volunteer_applications
+       where user_id = p_user_id and status not in ('approved', 'declined', 'withdrawn')
+    ),
+    'volunteer_record', (select count(*) from public.volunteers where user_id = p_user_id),
+    'certification_files', (
+      select count(*) from storage.objects o
+       where o.bucket_id = 'volunteer-certifications'
+         and (storage.foldername(o.name))[1] = p_user_id::text
+    ),
+    'attendance_credits', (select count(*) from public.attendance_credits where user_id = p_user_id),
+    'practical_checks', (select count(*) from public.practical_instruction_checks where user_id = p_user_id),
+    'events_led', (select count(*) from public.events where lead_user_id = p_user_id),
+    'events_led_upcoming', (
+      select count(*) from public.events
+       where lead_user_id = p_user_id and starts_at > now() and coalesce(status, 'scheduled') <> 'cancelled'
+    ),
+    'other_references', v_other,
+    'health_access_log', (
+      select count(*) from public.health_access_log
+       where subject_user_id = p_user_id or accessed_by = p_user_id
+    )
+  );
+end $function$;
