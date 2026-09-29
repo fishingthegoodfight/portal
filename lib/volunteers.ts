@@ -21,6 +21,10 @@ export const VOLUNTEER_STATUS_LABELS: Record<VolunteerStatus, string> = {
   declined: "Declined",
 };
 
+/** The Volunteers list's extra status filter: approved but never through
+ * the registration form (volunteers.registered_at is null). */
+export const NOT_REGISTERED_FILTER = "approved_not_registered";
+
 /** Most "Send portal invite" emails one batch can send
  * (sendPortalInvitesAction) — so a mis-click can't email the whole roster. */
 export const PORTAL_INVITE_BATCH_LIMIT = 25;

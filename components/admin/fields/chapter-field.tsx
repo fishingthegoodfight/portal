@@ -2,7 +2,7 @@
 
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
+import { VIRTUAL_CHAPTER, type Chapter } from "@/lib/chapters";
 
 /**
  * The chapter dropdown shared by the admin event create wizard and edit form
@@ -18,6 +18,7 @@ export function ChapterField({
   onChange,
   required = true,
   allowed,
+  chapters,
 }: {
   idPrefix: string;
   value: string;
@@ -28,6 +29,9 @@ export function ChapterField({
    * value is always kept, so opening an event never silently changes it.
    * Omitted = every chapter. */
   allowed?: string[];
+  /** Every chapter (loadChapters). Only active ones are offered, apart from
+   * the current value. */
+  chapters: Chapter[];
 }) {
   const offered = (name: string) => !allowed || allowed.includes(name) || name === value;
   return (
@@ -40,7 +44,7 @@ export function ChapterField({
         onChange={(e) => onChange(e.target.value)}
       >
         <option value="">Select a chapter</option>
-        {CHAPTERS.filter((c) => offered(c.name)).map((c) => (
+        {chapters.filter((c) => (c.active && offered(c.name)) || c.name === value).map((c) => (
           <option key={c.name} value={c.name}>
             {c.name}, {c.state}
           </option>

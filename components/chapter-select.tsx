@@ -2,7 +2,7 @@
 
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { CHAPTERS, NOT_LOCAL_CHAPTER } from "@/lib/chapters";
+import { NOT_LOCAL_CHAPTER, type Chapter } from "@/lib/chapters";
 
 /**
  * The chapter dropdown shared by every place a person picks their OWN home
@@ -16,11 +16,15 @@ export function HomeChapterField({
   value,
   onChange,
   required = true,
+  chapters,
 }: {
   idPrefix: string;
   value: string;
   onChange: (value: string) => void;
   required?: boolean;
+  /** Every chapter (loadChapters). Active ones are offered, plus the current
+   * value if its chapter has since been deactivated. */
+  chapters: Chapter[];
 }) {
   return (
     <div className="grid gap-2">
@@ -32,7 +36,7 @@ export function HomeChapterField({
         onChange={(e) => onChange(e.target.value)}
       >
         <option value="">Select a chapter</option>
-        {CHAPTERS.map((chapter) => (
+        {chapters.filter((c) => c.active || c.name === value).map((chapter) => (
           <option key={chapter.name} value={chapter.name}>
             {chapter.name}, {chapter.state}
           </option>

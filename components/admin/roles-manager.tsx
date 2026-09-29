@@ -9,7 +9,6 @@ import { restorePersonAccessAction } from "@/lib/actions/person-removal";
 import { formatDateInZone } from "@/lib/format-date";
 import { RemovePersonPanel } from "@/components/admin/remove-person-panel";
 import { ROLE_LABELS, SCREENING_FLAG_RULE, screeningFlagGrants, type Role } from "@/lib/roles";
-import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -54,7 +53,6 @@ const REMOVAL_ACTION_LABELS: Record<RemovalLogEntry["action"], string> = {
 
 const shortDate = (instant: string) => formatDateInZone(instant, "America/Denver");
 
-const CHAPTER_OPTIONS = [...CHAPTERS.map((c) => c.name), VIRTUAL_CHAPTER];
 
 function roleSummary(person: RolePerson): string {
   if (person.role === "chapter_lead") {
@@ -77,8 +75,12 @@ export function RolesManager({
   query,
   results,
   removals,
+  chapterOptions,
 }: {
   currentUserId: string;
+  /** The chapters a lead can be given: active chapters, then Virtual
+   * (eventChapterNames). */
+  chapterOptions: string[];
   /** Everyone who's currently an admin or chapter lead, or has either
    * sensitive-data flag. */
   staff: RolePerson[];
@@ -97,6 +99,7 @@ export function RolesManager({
       person={person}
       isSelf={person.id === currentUserId}
       onDeleted={setNotice}
+      chapterOptions={chapterOptions}
     />
   );
   return (
@@ -207,10 +210,12 @@ function PersonRow({
   person,
   isSelf,
   onDeleted,
+  chapterOptions,
 }: {
   person: RolePerson;
   isSelf: boolean;
   onDeleted: (message: string) => void;
+  chapterOptions: string[];
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
@@ -379,7 +384,8 @@ function PersonRow({
             <div className="grid gap-2">
               <span className="text-sm font-medium">Chapters they lead</span>
               <div className="flex flex-wrap gap-4 text-sm">
-                {CHAPTER_OPTIONS.map((name) => (
+                {/* Plus any they already lead that's since been deactivated. */}
+                {[...chapterOptions, ...person.ledChapters.filter((c) => !chapterOptions.includes(c))].map((name) => (
                   <label key={name} className="flex items-center gap-2">
                     <Checkbox
                       checked={chapters.includes(name)}

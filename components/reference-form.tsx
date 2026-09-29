@@ -11,7 +11,6 @@ import {
   KNOWN_FOR_OPTIONS,
   RATING_QUESTIONS,
   RECOMMEND_OPTIONS,
-  REFERENCE_CHAPTER_OPTIONS,
   REFERENCE_QUESTIONS as Q,
   referenceErrors,
   TWO_PARTICIPANTS_OPTIONS,
@@ -39,12 +38,15 @@ export function ReferenceForm({
   referenceName,
   slot,
   fishingQuestions,
+  chapterOptions,
 }: {
   token: string;
   applicantName: string;
   referenceName: string;
   slot: ReferenceSlot;
   fishingQuestions: boolean;
+  /** Active chapters' names, for reference 1's chapter question. */
+  chapterOptions: string[];
 }) {
   const [form, setForm] = useState<ReferenceInput>(() => emptyReference(referenceName));
   const [errors, setErrors] = useState<string[]>([]);
@@ -61,7 +63,7 @@ export function ReferenceForm({
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const problems = referenceErrors(form, shape);
+    const problems = referenceErrors(form, shape, chapterOptions);
     setErrors(problems);
     if (problems.length > 0) return;
     setSaving(true);
@@ -122,7 +124,7 @@ export function ReferenceForm({
                 <Label htmlFor="ref_chapter">{Q.chapter}</Label>
                 <Select id="ref_chapter" value={form.chapter} onChange={onText("chapter")}>
                   <option value="">Choose one</option>
-                  {REFERENCE_CHAPTER_OPTIONS.map((c) => (
+                  {chapterOptions.map((c) => (
                     <option key={c} value={c}>
                       {c}
                     </option>

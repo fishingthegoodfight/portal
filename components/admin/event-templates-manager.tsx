@@ -18,7 +18,7 @@ import { isVirtualChapter } from "@/lib/chapters";
 import type { Venue } from "@/lib/venues";
 import { LocationFields } from "@/components/admin/fields/location-fields";
 import type { EventTypeOption } from "@/lib/event-types";
-import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
+import { VIRTUAL_CHAPTER, type Chapter } from "@/lib/chapters";
 import { DescriptionField, EventTypeField } from "@/components/admin/fields/event-text-fields";
 import { RoleDescriptionField } from "@/components/admin/fields/volunteer-role-fields";
 import { RegistrationSectionsFields } from "@/components/admin/fields/registration-sections-fields";
@@ -279,6 +279,7 @@ function TemplateFormFields({
   roleTypes,
   eventTypes,
   venues,
+  chapters,
   idPrefix,
 }: {
   value: TemplateInput;
@@ -286,6 +287,7 @@ function TemplateFormFields({
   roleTypes: TemplateRoleTypeOption[];
   eventTypes: EventTypeOption[];
   venues: Venue[];
+  chapters: Chapter[];
   idPrefix: string;
 }) {
   const addRole = () => onChange({ ...value, roles: [...value.roles, { ...EMPTY_ROLE }] });
@@ -337,7 +339,7 @@ function TemplateFormFields({
             onChange={(e) => onChange({ ...value, chapter: e.target.value })}
           >
             <option value="">All chapters</option>
-            {CHAPTERS.map((c) => (
+            {chapters.filter((c) => c.active || c.name === value.chapter).map((c) => (
               <option key={c.name} value={c.name}>
                 {c.name}, {c.state}
               </option>
@@ -438,8 +440,11 @@ export function EventTemplatesManager({
   roleTypes,
   eventTypes,
   venues,
+  chapters,
 }: {
   templates: EventTemplateWithRoles[];
+  /** Every chapter (loadChapters), for the "Chapter" picker. */
+  chapters: Chapter[];
   roleTypes: TemplateRoleTypeOption[];
   eventTypes: EventTypeOption[];
   /** Active saved venues, for the default-location picker. */
@@ -533,6 +538,7 @@ export function EventTemplatesManager({
                 roleTypes={roleTypes}
                 eventTypes={eventTypes}
                 venues={venues}
+                chapters={chapters}
                 idPrefix="add_template"
               />
               {addError && <p className="text-sm text-red-500">{addError}</p>}
@@ -572,6 +578,7 @@ export function EventTemplatesManager({
                     roleTypes={roleTypes}
                     eventTypes={eventTypes}
                     venues={venues}
+                    chapters={chapters}
                     idPrefix={`edit_template_${template.id}`}
                   />
                   {editError && <p className="text-sm text-red-500">{editError}</p>}

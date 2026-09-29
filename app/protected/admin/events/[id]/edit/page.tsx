@@ -3,9 +3,9 @@ import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
 import { toZonedDateTimeInputs } from "@/lib/timezone";
-import { CHAPTERS, timezoneForChapter, VIRTUAL_CHAPTER } from "@/lib/chapters";
+import { eventChapterNames, loadChapters, timezoneForChapter } from "@/lib/chapters";
 import { loadManageableChapters } from "@/lib/admin/require-admin";
-import { WAIVER_STATES, waiverStateForChapter } from "@/lib/waivers";
+import { waiverStateForChapter, waiverStateName } from "@/lib/waivers";
 import { loadActiveRoles, toEditableRole } from "@/lib/admin/event-roles";
 import { EventEditForm } from "@/components/admin/event-edit-form";
 import type { EventTypeOption } from "@/lib/event-types";
@@ -20,6 +20,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
   }
 
   const supabase = await createClient();
+  const chapters = await loadChapters(supabase);
   const [
     { data: event },
     { data: eventTypes },
@@ -46,7 +47,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
       .select("id, name, for_chapter_events, for_retreats, active")
       .order("sort_order", { ascending: true }),
     loadActiveRoles(supabase, [eventId]),
-    loadManageableChapters(supabase, [...CHAPTERS.map((c) => c.name), VIRTUAL_CHAPTER]),
+    loadManageableChapters(supabase, eventChapterNames(chapters)),
     supabase.from("venues").select(VENUE_COLUMNS).eq("active", true).order("name", { ascending: true }),
   ]);
 
@@ -56,7 +57,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
 
   // event.timezone is `not null default 'America/Denver'`, so this fallback
   // is defensive rather than something normal data should ever hit.
-  const timezone = event.timezone || timezoneForChapter(event.chapter);
+  const timezone = event.timezone || timezoneForChapter(event.chapter, chapters);
   const { date, time } = toZonedDateTimeInputs(new Date(event.starts_at), timezone);
   const endTime = event.ends_at
     ? toZonedDateTimeInputs(new Date(event.ends_at), timezone).time
@@ -86,6 +87,7 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
       signedUpByRoleId={Object.fromEntries(roles.map((r) => [r.id, r.confirmed]))}
       allowedChapters={allowedChapters}
       venues={(venues ?? []) as Venue[]}
+      chapters={chapters}
       legacyLocation={
         !event.venue_name && !event.street_address && !event.city && !event.state && !event.postal_code
           ? event.location
@@ -93,8 +95,8 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
       }
       waiverLabel={
         (() => {
-          const state = waiverStateForChapter(event.chapter);
-          return state ? WAIVER_STATES[state] : null;
+          const state = waiverStateForChapter(event.chapter, chapters);
+          return state ? waiverStateName(state) : null;
         })()
       }
       initial={{

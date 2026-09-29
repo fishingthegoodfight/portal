@@ -14,6 +14,7 @@ import { publicEventPath } from "@/lib/event-slug";
 import { getSiteUrl } from "@/lib/site-url";
 import { loadHealthMarkers, loadHealthStatus } from "@/lib/health-access";
 import { loadLatestPracticalChecks } from "@/lib/admin/practical-checks";
+import { loadChapters } from "@/lib/chapters";
 
 async function AdminEventLoader({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -26,12 +27,15 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
   // Health: status (outstanding / answered at check-in) for every manager;
   // markers only for someone who passes the health check, and loading them
   // writes one roster_view entry to the health access log.
-  const [data, access, registered, healthStatus, healthMarkers] = await Promise.all([
+  const [data, access, registered, healthStatus, healthMarkers, chapters, unregistered] = await Promise.all([
     loadEventRoster(supabase, eventId),
     loadEventAdminAccess(supabase),
     eventsWithRegistrations(supabase, [eventId]),
     loadHealthStatus(supabase, eventId),
     loadHealthMarkers(supabase, eventId),
+    loadChapters(supabase),
+    // Confirmed volunteers here who haven't completed volunteer registration.
+    supabase.rpc("event_unregistered_volunteer_ids", { p_event_id: eventId }),
   ]);
   if (!data) {
     notFound();
@@ -85,6 +89,8 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
         seriesId={event.series_id}
         volunteersCancelledWithEvent={volunteersCancelledWithEvent}
         canSaveAsTemplate={access?.isAdmin ?? false}
+        chapters={chapters}
+        unregisteredVolunteerIds={(unregistered.data ?? []) as string[]}
         practicalChecks={
           practicalChecks
             ? Object.fromEntries(

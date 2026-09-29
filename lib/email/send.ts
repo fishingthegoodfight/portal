@@ -25,6 +25,9 @@ import {
   adminDigestEmail,
   applicationAttendMoreEventsEmail,
   volunteerApprovedEmail,
+  volunteerOpportunitiesEmail,
+  finishRegistrationEmail,
+  type OpportunitiesEmailEvent,
   applicationInviteToScheduleEmail,
   type AdminDigestSection,
   volunteerInviteEmail,
@@ -55,6 +58,8 @@ type OutgoingEmail = {
   text: string;
   /** `content` is base64-encoded. */
   attachments?: { filename: string; content: string; contentType: string }[];
+  /** Extra headers, e.g. List-Unsubscribe. */
+  headers?: Record<string, string>;
 };
 
 function getEmailProvider(): EmailProvider {
@@ -73,7 +78,14 @@ function getResendClient(): Resend {
   return new Resend(apiKey);
 }
 
+// One pooled connection per server instance, reused across sends — a bulk
+// run (the volunteer opportunities email) would otherwise open a new TLS
+// connection and log in to Google for every message, which Gmail throttles
+// as too many logins.
+let smtpTransport: ReturnType<typeof nodemailer.createTransport> | null = null;
+
 function getSmtpTransport() {
+  if (smtpTransport) return smtpTransport;
   const host = process.env.SMTP_HOST;
   const port = Number(process.env.SMTP_PORT || 587);
   if (!host) {
@@ -83,13 +95,27 @@ function getSmtpTransport() {
     throw new Error("EMAIL_FROM is not set");
   }
   const user = process.env.SMTP_USER;
-  return nodemailer.createTransport({
+  smtpTransport = nodemailer.createTransport({
     host,
     port,
     // Implicit TLS on 465; other ports upgrade via STARTTLS when offered.
     secure: port === 465,
     auth: user ? { user, pass: process.env.SMTP_PASS ?? "" } : undefined,
+    pool: true,
+    maxConnections: 1,
   });
+  return smtpTransport;
+}
+
+/**
+ * The pause between emails in a bulk run, for the configured provider.
+ * Resend: its documented default limit is 2 requests a second, so 600ms.
+ * Google Workspace SMTP (smtp.gmail.com): Google publishes a daily cap
+ * (2,000 messages per rolling 24 hours per account) but no per-second
+ * rate; one a second is a conservative pace that doesn't look like a burst.
+ */
+export function bulkSendGapMs(): number {
+  return getEmailProvider() === "smtp" ? 1000 : 600;
 }
 
 /** Single send path for every email — picks the transport from
@@ -109,6 +135,7 @@ async function deliverEmail(email: OutgoingEmail): Promise<void> {
         encoding: "base64",
         contentType: a.contentType,
       })),
+      headers: email.headers,
     });
     return;
   }
@@ -121,6 +148,7 @@ async function deliverEmail(email: OutgoingEmail): Promise<void> {
     html: email.html,
     text: email.text,
     attachments: email.attachments,
+    headers: email.headers,
   });
   if (error) {
     throw new Error(error.message);
@@ -949,4 +977,57 @@ export async function sendAdminDigestEmail(sections: AdminDigestSection[]): Prom
   const { subject, html, text } = adminDigestEmail({ sections: nonEmpty });
   await deliverEmail({ to: recipients, subject, html, text });
   return true;
+}
+
+/** The one-click unsubscribe headers (RFC 8058) — Gmail and Yahoo show an
+ * "Unsubscribe" link beside the sender, which POSTs to `oneClickUrl`. */
+function unsubscribeHeaders(oneClickUrl: string): Record<string, string> {
+  return {
+    "List-Unsubscribe": `<${oneClickUrl}>`,
+    "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+  };
+}
+
+/** Links carried by both opportunities emails. `token` is the person's
+ * email_preference_tokens row. */
+export function opportunitiesEmailLinks(token: string) {
+  const site = getSiteUrl();
+  return {
+    unsubscribeUrl: `${site}/unsubscribe/${token}`,
+    oneClickUrl: `${site}/api/unsubscribe/${token}`,
+    profileUrl: `${site}/protected/profile#volunteer`,
+    registerUrl: `${site}/protected/volunteer/register`,
+  };
+}
+
+/** Every other week: open roles for an approved, registered volunteer
+ * (lib/volunteer-opportunities-email.ts decides what's in it). */
+export function renderVolunteerOpportunitiesEmail(params: {
+  recipientName: string | null;
+  events: OpportunitiesEmailEvent[];
+  weeks: number;
+  token: string;
+}) {
+  const links = opportunitiesEmailLinks(params.token);
+  return volunteerOpportunitiesEmail({ ...params, ...links });
+}
+
+/** Same schedule: the finish-registration nudge for an approved volunteer
+ * who hasn't registered. */
+export function renderFinishRegistrationEmail(params: { recipientName: string | null; token: string }) {
+  const links = opportunitiesEmailLinks(params.token);
+  return finishRegistrationEmail({ recipientName: params.recipientName, ...links });
+}
+
+/** Sends one of the two above, with the one-click unsubscribe headers. */
+export async function sendOpportunitiesEmail(params: {
+  toEmail: string;
+  token: string;
+  rendered: { subject: string; html: string; text: string };
+}): Promise<void> {
+  await deliverEmail({
+    to: params.toEmail,
+    ...params.rendered,
+    headers: unsubscribeHeaders(opportunitiesEmailLinks(params.token).oneClickUrl),
+  });
 }

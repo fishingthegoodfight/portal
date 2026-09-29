@@ -11,7 +11,7 @@ import {
   venueUsageAction,
   type VenueInput,
 } from "@/lib/actions/venues";
-import { CHAPTERS } from "@/lib/chapters";
+import type { Chapter } from "@/lib/chapters";
 import { EMPTY_LOCATION } from "@/lib/event-location";
 import { venueAddressLine, type Venue } from "@/lib/venues";
 import { ShowInactiveToggle, useDeleteFlow } from "@/components/admin/setup-list-controls";
@@ -39,10 +39,12 @@ function VenueFormFields({
   value,
   onChange,
   idPrefix,
+  chapters,
 }: {
   value: VenueInput;
   onChange: (next: VenueInput) => void;
   idPrefix: string;
+  chapters: Chapter[];
 }) {
   const text = (field: keyof VenueInput, label: string, extra: React.ComponentProps<typeof Input> = {}) => (
     <div className="grid gap-2">
@@ -69,7 +71,7 @@ function VenueFormFields({
             onChange={(e) => onChange({ ...value, chapter: e.target.value })}
           >
             <option value="">All chapters</option>
-            {CHAPTERS.map((c) => (
+            {chapters.filter((c) => c.active || c.name === value.chapter).map((c) => (
               <option key={c.name} value={c.name}>
                 {c.name}, {c.state}
               </option>
@@ -87,7 +89,14 @@ function VenueFormFields({
   );
 }
 
-export function VenuesManager({ venues }: { venues: Venue[] }) {
+export function VenuesManager({
+  venues,
+  chapters,
+}: {
+  venues: Venue[];
+  /** Every chapter (loadChapters), for each venue's "Chapter". */
+  chapters: Chapter[];
+}) {
   const router = useRouter();
   const [addInput, setAddInput] = useState<VenueInput>(EMPTY_INPUT);
   const [adding, setAdding] = useState(false);
@@ -159,7 +168,7 @@ export function VenuesManager({ venues }: { venues: Venue[] }) {
         </CardHeader>
         <CardContent>
           <form onSubmit={handleAdd} className="flex flex-col gap-4">
-            <VenueFormFields value={addInput} onChange={setAddInput} idPrefix="add_venue" />
+            <VenueFormFields value={addInput} onChange={setAddInput} idPrefix="add_venue" chapters={chapters} />
             {addError && <p className="text-sm text-red-500">{addError}</p>}
             <div>
               <Button type="submit" disabled={adding}>
@@ -185,7 +194,12 @@ export function VenuesManager({ venues }: { venues: Venue[] }) {
             <div key={venue.id} className="rounded-md border p-3">
               {editingId === venue.id ? (
                 <div className="flex flex-col gap-3">
-                  <VenueFormFields value={editInput} onChange={setEditInput} idPrefix={`edit_venue_${venue.id}`} />
+                  <VenueFormFields
+                    value={editInput}
+                    onChange={setEditInput}
+                    idPrefix={`edit_venue_${venue.id}`}
+                    chapters={chapters}
+                  />
                   {editError && <p className="text-sm text-red-500">{editError}</p>}
                   <div className="flex gap-2">
                     <Button type="button" size="sm" disabled={busyId === venue.id} onClick={() => saveEdit(venue.id)}>

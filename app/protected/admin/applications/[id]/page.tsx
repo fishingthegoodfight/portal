@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
+import { loadChapters } from "@/lib/chapters";
 import { loadEventAdminAccess } from "@/lib/admin/require-admin";
 import { formatDateInZone, formatEventInstant } from "@/lib/format-date";
 import {
@@ -156,6 +157,7 @@ async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }
   const roleNameById = new Map(((allRoleTypes ?? []) as { id: number; name: string }[]).map((r) => [r.id, r.name]));
   const roleNamesFor = (ids: number[]) => ids.map((id) => roleNameById.get(id)).filter((n): n is string => Boolean(n));
   const legacyRoleNames = roleNamesFor(legacyRoleIds);
+  const chapters = await loadChapters(supabase);
   const interestNames = interestAreaNames(
     (interestAreas ?? []) as { id: number; label: string; description: string | null }[],
     app.interest_area_ids,
@@ -240,7 +242,7 @@ async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }
         <div>
           <h1 className="text-2xl font-bold">{app.full_name}</h1>
           <p className="text-sm text-muted-foreground">
-            Applied {formatDateInZone(app.submitted_at, ZONE)} · {app.chapters.map(applicationChapterLabel).join(", ")}
+            Applied {formatDateInZone(app.submitted_at, ZONE)} · {app.chapters.map((c) => applicationChapterLabel(c, chapters)).join(", ")}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -506,6 +508,7 @@ async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }
       <ApplicationAnswers
         app={app}
         interestAreaNames={interestNames}
+        chapters={chapters}
         reviewer={{ ref1Matched: app.ref1_matched_volunteer, legacyRoleNames }}
       />
 

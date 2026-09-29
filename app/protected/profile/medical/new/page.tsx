@@ -3,6 +3,7 @@ import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
 import { healthFormYearFor } from "@/lib/health-requirements";
+import { loadChapters } from "@/lib/chapters";
 import { HealthHistoryForm } from "@/components/health-history-form";
 import { formatPhoneNumber } from "@/lib/phone";
 import { safeNext } from "@/lib/safe-next";
@@ -26,7 +27,7 @@ async function NewHealthFormLoader({ searchParams }: { searchParams: Promise<{ n
 
   return (
     <HealthHistoryForm
-      year={healthFormYearFor(profile?.chapter as string | null | undefined)}
+      year={healthFormYearFor(profile?.chapter as string | null | undefined, await loadChapters(supabase))}
       returnTo={safeNext(next) ?? "/protected/profile/medical"}
       contacts={{
         emergencyContactName: profile?.emergency_contact ?? "",

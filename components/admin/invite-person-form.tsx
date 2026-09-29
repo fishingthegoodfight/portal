@@ -7,7 +7,6 @@ import { HeartPulse, ShieldCheck } from "lucide-react";
 
 import { invitePersonAction } from "@/lib/actions/person-invite";
 import { ROLE_LABELS, SCREENING_FLAG_RULE, screeningFlagGrants, type Role } from "@/lib/roles";
-import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -15,14 +14,19 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 
-const CHAPTER_OPTIONS = [...CHAPTERS.map((c) => c.name), VIRTUAL_CHAPTER];
 
 /**
  * "Invite a person" — an account and a profile for someone who isn't
  * joining the volunteer team (staff, board members). Role and
  * sensitive-data access can be set up front. See invitePersonAction.
  */
-export function InvitePersonForm() {
+export function InvitePersonForm({
+  chapterOptions,
+}: {
+  /** The chapters a lead can be given: active chapters, then Virtual
+   * (eventChapterNames). */
+  chapterOptions: string[];
+}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [email, setEmail] = useState("");
@@ -138,7 +142,7 @@ export function InvitePersonForm() {
               <div className="grid gap-2">
                 <span className="text-sm font-medium">Chapters they lead</span>
                 <div className="flex flex-wrap gap-4 text-sm">
-                  {CHAPTER_OPTIONS.map((chapter) => (
+                  {chapterOptions.map((chapter) => (
                     <label key={chapter} className="flex items-center gap-2">
                       <Checkbox
                         checked={chapters.includes(chapter)}

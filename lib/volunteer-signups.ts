@@ -25,18 +25,30 @@ export type VolunteerOpportunity = {
   cancelled_at?: string | null;
 };
 
+/** Where someone stands as a volunteer: approved (volunteers.status), and
+ * whether they've completed volunteer registration (registered_at) — both
+ * are needed to take a shift. Registration is where the current year's
+ * volunteer waiver is signed; an approved volunteer added by import or
+ * backfill is approved without having registered. */
+export async function volunteerStanding(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<{ approved: boolean; registered: boolean }> {
+  const { data } = await supabase
+    .from("volunteers")
+    .select("status, registered_at")
+    .eq("user_id", userId)
+    .maybeSingle();
+  return { approved: data?.status === "approved", registered: data?.registered_at != null };
+}
+
 /** volunteers.status === 'approved' — the base gate for every eligibility
  * check below. */
 export async function isApprovedVolunteer(
   supabase: SupabaseClient,
   userId: string,
 ): Promise<boolean> {
-  const { data } = await supabase
-    .from("volunteers")
-    .select("status")
-    .eq("user_id", userId)
-    .maybeSingle();
-  return data?.status === "approved";
+  return (await volunteerStanding(supabase, userId)).approved;
 }
 
 /** role_type_ids this volunteer has an active (unrevoked) approval for. */
@@ -74,10 +86,14 @@ export function eligibleOpportunities(
   return opportunities.filter((o) => isRoleEligible(o, approvedRoleTypes));
 }
 
+export const NOT_REGISTERED_MESSAGE =
+  "Complete your volunteer registration before signing up for a shift — it's where this year's volunteer waiver is signed.";
+
 export type SignupEligibility =
   | { ok: true }
   | { ok: false; reason: "not_approved"; message: string }
   | { ok: false; reason: "role_not_approved"; message: string }
+  | { ok: false; reason: "not_registered"; message: string }
   | { ok: false; reason: "waiver_unsigned"; message: string; waiverInfo: WaiverInfo };
 
 /**
@@ -92,7 +108,8 @@ export async function checkVolunteerSignupEligibility(
   opportunity: Pick<VolunteerOpportunity, "role_type_id">,
   event: WaiverEvent,
 ): Promise<SignupEligibility> {
-  if (!(await isApprovedVolunteer(supabase, userId))) {
+  const standing = await volunteerStanding(supabase, userId);
+  if (!standing.approved) {
     return {
       ok: false,
       reason: "not_approved",
@@ -109,6 +126,10 @@ export async function checkVolunteerSignupEligibility(
         message: "You're not approved for this role yet.",
       };
     }
+  }
+
+  if (!standing.registered) {
+    return { ok: false, reason: "not_registered", message: NOT_REGISTERED_MESSAGE };
   }
 
   const waiverInfo = await waiverInfoForVolunteerAtEvent(supabase, event, userId);
@@ -135,6 +156,7 @@ export const SIGNUP_BLOCKER_MESSAGES: Record<string, string> = {
   not_found: "This volunteer role no longer exists.",
   not_approved: "Volunteering requires an approved volunteer registration.",
   role_not_approved: "You're not approved for this role yet.",
+  not_registered: NOT_REGISTERED_MESSAGE,
   waiver_unsigned: "Sign the volunteer waiver to continue.",
   registration_incomplete: "Please complete the registration questions first.",
 };
@@ -207,8 +229,9 @@ export type OpenShift = {
  * open slot, and that they're role-eligible for (see isRoleEligible), and
  * that they aren't already signed up for. Backs the events list's "Needs
  * volunteers" filter/badge and the volunteer home page's "Open shifts" list.
- * Returns [] for anyone who isn't an approved volunteer. `eventIds` narrows
- * it to those events. Sorted by shift start.
+ * Returns [] for anyone who isn't an approved, registered volunteer (they
+ * couldn't take any of them). `eventIds` narrows it to those events. Sorted
+ * by shift start.
  */
 export async function loadOpenShiftsForVolunteer(
   supabase: SupabaseClient,
@@ -216,7 +239,8 @@ export async function loadOpenShiftsForVolunteer(
   options: { eventIds?: number[] } = {},
 ): Promise<OpenShift[]> {
   if (options.eventIds?.length === 0) return [];
-  if (!(await isApprovedVolunteer(supabase, userId))) return [];
+  const standing = await volunteerStanding(supabase, userId);
+  if (!standing.approved || !standing.registered) return [];
 
   let query = supabase
     .from("volunteer_opportunities")

@@ -8,6 +8,7 @@ import {
 } from "@/components/admin/roles-manager";
 import { InvitePersonForm } from "@/components/admin/invite-person-form";
 import type { Role } from "@/lib/roles";
+import { eventChapterNames, loadChapters } from "@/lib/chapters";
 
 const PERSON_COLUMNS =
   "id, first_name, last_name, email, chapter, role, led_chapters, can_view_volunteer_screening, can_view_health_history, access_removed_at";
@@ -62,6 +63,11 @@ function toRemoval(row: RemovalLogRow): RemovalLogEntry {
   };
 }
 
+async function InvitePersonFormLoader() {
+  const chapters = await loadChapters(await createClient());
+  return <InvitePersonForm chapterOptions={eventChapterNames(chapters)} />;
+}
+
 async function RolesLoader({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
   const { q } = await searchParams;
   const query = (q ?? "").trim();
@@ -99,10 +105,11 @@ async function RolesLoader({ searchParams }: { searchParams: Promise<{ q?: strin
     .order("created_at", { ascending: false })
     .limit(15);
 
-  const [{ data: staff, error }, search, { data: removals }] = await Promise.all([
+  const [{ data: staff, error }, search, { data: removals }, chapters] = await Promise.all([
     staffQuery,
     searchQuery,
     removalsQuery,
+    loadChapters(supabase),
   ]);
   if (error) {
     return <p className="text-sm text-red-500">Couldn&apos;t load people: {error.message}</p>;
@@ -115,6 +122,7 @@ async function RolesLoader({ searchParams }: { searchParams: Promise<{ q?: strin
       query={query}
       results={search ? ((search.data ?? []) as PersonRow[]).map(toPerson) : null}
       removals={((removals ?? []) as RemovalLogRow[]).map(toRemoval)}
+      chapterOptions={eventChapterNames(chapters)}
     />
   );
 }
@@ -141,7 +149,9 @@ export default function AdminRolesPage({ searchParams }: { searchParams: Promise
           removed instead, so past rosters and attendance counts stay the same.
         </p>
       </div>
-      <InvitePersonForm />
+      <Suspense fallback={null}>
+        <InvitePersonFormLoader />
+      </Suspense>
       <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>
         <RolesLoader searchParams={searchParams} />
       </Suspense>

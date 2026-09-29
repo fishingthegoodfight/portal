@@ -7,13 +7,15 @@ import { Button } from "@/components/ui/button";
 import { ChapterTag } from "@/components/chapter-tag";
 import { ChapterFilterPills, FilterPill, filterHref } from "@/components/filter-pills";
 import {
+  chapterFilterOptions,
   chapterSelectionFor,
   chapterSelectionLabel,
   chapterSelectionParam,
-  CHAPTERS,
+  eventChapterNames,
+  loadChapters,
   matchesChapterSelection,
   parseChapterSelection,
-  VIRTUAL_CHAPTER,
+  type ChapterFilterOption,
   type ChapterSelection,
 } from "@/lib/chapters";
 import {
@@ -68,9 +70,11 @@ type AdminSearchParams = { chapter?: string; status?: string };
  * single-select status filter beside them. */
 function AdminFilterBar({
   selection,
+  options,
   status,
 }: {
   selection: ChapterSelection;
+  options: ChapterFilterOption[];
   status: StatusFilter;
 }) {
   const basePath = "/protected/admin";
@@ -80,6 +84,7 @@ function AdminFilterBar({
         <span className="text-xs font-medium text-muted-foreground">Chapter</span>
         <ChapterFilterPills
           selection={selection}
+          options={options}
           basePath={basePath}
           otherParams={{ status: status === "all" ? undefined : status }}
         />
@@ -112,11 +117,13 @@ async function AdminEventsLoader({ searchParams }: { searchParams: Promise<Admin
   // An admin oversees every chapter, so defaults to All; a chapter lead to
   // the chapters they lead; an event's own lead (no chapters) to All of the
   // events they manage.
-  const access = await loadEventAdminAccess(supabase);
+  const [access, chapters] = await Promise.all([loadEventAdminAccess(supabase), loadChapters(supabase)]);
+  const filterOptions = chapterFilterOptions(chapters);
   const isAdmin = access?.isAdmin ?? false;
   const selection = parseChapterSelection(
     chapterParam,
-    access?.role === "chapter_lead" ? chapterSelectionFor(access.ledChapters) : null,
+    access?.role === "chapter_lead" ? chapterSelectionFor(access.ledChapters, filterOptions) : null,
+    filterOptions,
   );
   // Everyone but an admin sees only the events they manage
   // (managed_event_ids — can_manage_event per event). RLS alone would also
@@ -188,7 +195,7 @@ async function AdminEventsLoader({ searchParams }: { searchParams: Promise<Admin
     }
   };
   const rows = (visibleEvents as AdminEventRow[]).filter(
-    (e) => matchesChapterSelection(selection, e.chapter) && matchesStatus(e),
+    (e) => matchesChapterSelection(selection, e.chapter, filterOptions) && matchesStatus(e),
   );
   const upcoming = rows.filter((e) => !isPast(e)); // soonest first (query order)
   const past = rows.filter(isPast).reverse(); // most recent first
@@ -214,10 +221,10 @@ async function AdminEventsLoader({ searchParams }: { searchParams: Promise<Admin
 
   return (
     <div className="flex flex-col gap-8">
-      <AdminFilterBar selection={selection} status={status} />
+      <AdminFilterBar selection={selection} options={filterOptions} status={status} />
       {rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          {emptyMessage} for {chapterSelectionLabel(selection)}.
+          {emptyMessage} for {chapterSelectionLabel(selection, filterOptions)}.
         </p>
       ) : (
         <>
@@ -346,7 +353,7 @@ async function AdminIndexActions() {
   const supabase = await createClient();
   const [access, creatableChapters] = await Promise.all([
     loadEventAdminAccess(supabase),
-    loadManageableChapters(supabase, [...CHAPTERS.map((c) => c.name), VIRTUAL_CHAPTER]),
+    loadChapters(supabase).then((chapters) => loadManageableChapters(supabase, eventChapterNames(chapters))),
   ]);
   return (
     <div className="flex flex-wrap gap-2">

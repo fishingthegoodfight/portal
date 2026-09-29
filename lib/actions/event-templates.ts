@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { countLabel, type DeleteResult, type UsageResult } from "@/lib/admin/usage";
-import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
+import { isChapterName, loadChapters, VIRTUAL_CHAPTER, type Chapter } from "@/lib/chapters";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 import type { ShiftAnchor } from "@/lib/event-templates";
 import { isLocationEmpty, locationErrors, type LocationFieldsValue } from "@/lib/event-location";
@@ -48,10 +48,10 @@ const VALID_SECTION_IDS = new Set(
   REGISTRATION_SECTIONS.filter((s) => !s.alwaysRequired && !s.profileOnly).map((s) => s.id),
 );
 
-function validate(input: TemplateInput): string | null {
+function validate(input: TemplateInput, chapters: Chapter[]): string | null {
   if (!input.name.trim()) return "Name is required";
   if (!input.eventType.trim()) return "Event type is required";
-  if (input.chapter && !CHAPTERS.some((c) => c.name === input.chapter) && input.chapter !== VIRTUAL_CHAPTER) {
+  if (input.chapter && !isChapterName(chapters, input.chapter) && input.chapter !== VIRTUAL_CHAPTER) {
     return "Choose a valid chapter, or leave it as all chapters";
   }
   if (input.defaultCapacity.trim()) {
@@ -141,7 +141,7 @@ export async function createTemplateAction(input: TemplateInput): Promise<Action
   const adminCheck = await requireAdmin(supabase);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
 
-  const error0 = validate(input);
+  const error0 = validate(input, await loadChapters(supabase));
   if (error0) return { ok: false, error: error0 };
 
   const { data: created, error } = await supabase
@@ -167,7 +167,7 @@ export async function updateTemplateAction(id: number, input: TemplateInput): Pr
   const adminCheck = await requireAdmin(supabase);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
 
-  const error0 = validate(input);
+  const error0 = validate(input, await loadChapters(supabase));
   if (error0) return { ok: false, error: error0 };
 
   const { error } = await supabase
@@ -277,7 +277,7 @@ export async function saveEventAsTemplateAction(
   if (!name) return { ok: false, error: "Template name is required" };
   if (
     input.chapter &&
-    !CHAPTERS.some((c) => c.name === input.chapter) &&
+    !isChapterName(await loadChapters(supabase), input.chapter) &&
     input.chapter !== VIRTUAL_CHAPTER
   ) {
     return { ok: false, error: "Choose a valid chapter, or leave it as all chapters" };

@@ -3,9 +3,9 @@ import { Check } from "lucide-react";
 import type { ReactNode } from "react";
 
 import {
-  CHAPTER_FILTER_OPTIONS,
   chapterSelectionParam,
   toggleChapterSelection,
+  type ChapterFilterOption,
   type ChapterSelection,
 } from "@/lib/chapters";
 import { cn } from "@/lib/utils";
@@ -65,10 +65,13 @@ export function filterHref(basePath: string, params: Record<string, string | und
  */
 export function ChapterFilterPills({
   selection,
+  options,
   basePath,
   otherParams = {},
 }: {
   selection: ChapterSelection;
+  /** chapterFilterOptions(chapters). */
+  options: ChapterFilterOption[];
   basePath: string;
   /** The page's other filter params, kept as they are when a pill is tapped. */
   otherParams?: Record<string, string | undefined>;
@@ -81,10 +84,10 @@ export function ChapterFilterPills({
       <FilterPill href={href(null)} active={selection === null}>
         All
       </FilterPill>
-      {CHAPTER_FILTER_OPTIONS.map((option) => (
+      {options.map((option) => (
         <FilterPill
           key={option.slug}
-          href={href(toggleChapterSelection(selection, option.slug))}
+          href={href(toggleChapterSelection(selection, option.slug, options))}
           active={selection?.includes(option.slug) ?? false}
         >
           {option.label}

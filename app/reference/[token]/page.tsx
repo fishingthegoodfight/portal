@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 
-import { lookupReferenceToken } from "@/lib/reference-form";
+import { lookupReferenceToken, referenceChapterOptions } from "@/lib/reference-form";
 import { ReferenceForm, ReferenceThankYou } from "@/components/reference-form";
 
 /**
@@ -42,6 +42,7 @@ async function ReferenceLoader({ params }: { params: Params }) {
       referenceName={lookup.referenceName}
       slot={lookup.slot}
       fishingQuestions={lookup.fishingQuestions}
+      chapterOptions={lookup.slot === 1 ? await referenceChapterOptions() : []}
     />
   );
 }

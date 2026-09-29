@@ -6,7 +6,8 @@ import { InviteVolunteerForm } from "@/components/admin/invite-volunteer-form";
 import { VolunteerFilters } from "@/components/admin/volunteer-filters";
 import { VolunteersList } from "@/components/admin/volunteers-list";
 import { Button } from "@/components/ui/button";
-import { accountStateOf, type VolunteerStatus } from "@/lib/volunteers";
+import { accountStateOf, NOT_REGISTERED_FILTER, type VolunteerStatus } from "@/lib/volunteers";
+import { loadChapters, timezoneForChapter } from "@/lib/chapters";
 
 // "Send portal invite" runs on this page — a batch of up to
 // PORTAL_INVITE_BATCH_LIMIT emails, spaced out, can take a while.
@@ -16,6 +17,7 @@ type VolunteerRow = {
   user_id: string;
   status: VolunteerStatus;
   invited_at: string | null;
+  registered_at: string | null;
 };
 
 type RoleApprovalRow = {
@@ -34,11 +36,18 @@ async function VolunteersListLoader({
 
   let volunteersQuery = supabase
     .from("volunteers")
-    .select("user_id, status, invited_at");
-  if (status) volunteersQuery = volunteersQuery.eq("status", status);
-  const [{ data: volunteers, error }, { data: roleTypes }] = await Promise.all([
+    .select("user_id, status, invited_at, registered_at");
+  // "Approved, not registered": approved, but never through the
+  // registration form — they can't take a shift until they are.
+  if (status === NOT_REGISTERED_FILTER) {
+    volunteersQuery = volunteersQuery.eq("status", "approved").is("registered_at", null);
+  } else if (status) {
+    volunteersQuery = volunteersQuery.eq("status", status);
+  }
+  const [{ data: volunteers, error }, { data: roleTypes }, chapters] = await Promise.all([
     volunteersQuery,
     supabase.from("volunteer_role_types").select("id, name").order("sort_order", { ascending: true }),
+    loadChapters(supabase),
   ]);
 
   if (error) {
@@ -117,6 +126,8 @@ async function VolunteersListLoader({
         lastName: (profile?.last_name as string | null) ?? "",
         email: (profile?.email as string | null) ?? "",
         chapter: (profile?.chapter as string | null) ?? "",
+        timeZone: timezoneForChapter(profile?.chapter as string | null | undefined, chapters),
+        registered: r.registered_at != null,
         roles: roleApprovals.map((a) => a.role_type?.name).filter(Boolean) as string[],
         roleTypeIds: roleApprovals.map((a) => a.role_type_id),
         certMissingOrExpired: needsCert && !hasCurrentCert,
@@ -141,6 +152,7 @@ async function VolunteersListLoader({
         role={role ?? ""}
         q={q ?? ""}
         roleTypes={roleTypes ?? []}
+        chapters={chapters}
       />
 
       {accountStates.error && (

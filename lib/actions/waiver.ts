@@ -4,8 +4,10 @@ import { createClient } from "@/lib/supabase/server";
 import { requireAdmin, requireEventManager } from "@/lib/admin/require-admin";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { profileValueFromColumn, REGISTRATION_SECTIONS } from "@/lib/registration-sections";
+import { loadChapters } from "@/lib/chapters";
 import {
   isWaiverState,
+  waiverStatesForChapters,
   resolveEventWaiver,
   resolveVolunteerWaiverForEvent,
   waiverInfoForUser,
@@ -200,7 +202,9 @@ export async function createWaiverVersionAction(input: {
   const adminCheck = await requireAdmin(supabase);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
 
-  if (!isWaiverState(input.state)) return { ok: false, error: "Choose Colorado or Georgia" };
+  if (!isWaiverState(input.state) || !waiverStatesForChapters(await loadChapters(supabase)).includes(input.state)) {
+    return { ok: false, error: "Choose the state of one of the chapters" };
+  }
   const year = Math.trunc(input.year);
   if (!Number.isFinite(year) || year < 2000 || year > 2100) {
     return { ok: false, error: "Enter a valid year" };

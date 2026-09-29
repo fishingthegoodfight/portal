@@ -6,7 +6,7 @@ import { ExperienceAnswers } from "@/components/application-answers";
 import type { ExperienceRow } from "@/lib/volunteer-applications";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { formatDateInZone } from "@/lib/format-date";
-import { timezoneForChapter } from "@/lib/chapters";
+import { loadChapters, timezoneForChapter } from "@/lib/chapters";
 import { accountStateOf, certIsCurrent, VOLUNTEER_STATUS_LABELS, type VolunteerStatus } from "@/lib/volunteers";
 import { VolunteerStatusSelect } from "@/components/admin/volunteer-status-select";
 import { VolunteerRoleApprovals, type RoleTypeForApproval } from "@/components/admin/volunteer-role-approvals";
@@ -108,12 +108,26 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
   }[]).filter((s) => s.waiver?.audience === "volunteer");
 
   const name = [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || profile?.email || volunteerId;
-  const timeZone = timezoneForChapter(profile?.chapter as string | null | undefined);
+  const timeZone = timezoneForChapter(profile?.chapter as string | null | undefined, await loadChapters(supabase));
   const status = volunteer.status as VolunteerStatus;
   const approvedRoleNames = roleTypesForApproval.filter((rt) => rt.activeApprovalId != null).map((rt) => rt.name);
 
   return (
     <div className="flex flex-col gap-6">
+      {status === "approved" && !volunteer.registered_at && (
+        <div
+          role="alert"
+          className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400"
+        >
+          <p className="font-semibold">Approved, but not registered</p>
+          <p>
+            They haven&apos;t completed volunteer registration, where this year&apos;s volunteer waiver is
+            signed, so they can&apos;t sign up for a shift. An admin can still add them to one from the
+            event roster, with a reason. While the volunteer opportunities email is on (Setup), they&apos;re
+            sent a reminder with the registration link on its schedule instead.
+          </p>
+        </div>
+      )}
       {approvedRoleNames.length > 0 && status !== "approved" && (
         <div
           role="alert"
@@ -136,7 +150,7 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
         <div className="flex flex-col items-end gap-2">
           <VolunteerStatusSelect volunteerId={volunteerId} status={volunteer.status} />
           <span className="text-xs">
-            <AccountStateLabel account={account} chapter={(profile?.chapter as string | null) ?? ""} />
+            <AccountStateLabel account={account} timeZone={timeZone} />
           </span>
           {account && account.kind !== "active" && profile?.email ? (
             <SendPortalInviteButton volunteerId={volunteerId} resend={account.kind === "invited"} />

@@ -28,6 +28,10 @@ export type AdminAddVolunteerResult =
    * they haven't passed a practical instruction check. Only an admin can
    * add them anyway, with a recorded reason (practicalCheckOverrideReason). */
   | { ok: true; status: "practical_check_required"; message: string; canOverride: boolean }
+  /** They haven't completed volunteer registration, where this year's
+   * volunteer waiver is signed. Only an admin can add them anyway, with a
+   * recorded reason (registrationOverrideReason). */
+  | { ok: true; status: "registration_required"; message: string; canOverride: boolean }
   | { ok: false; error: string };
 
 /**
@@ -50,6 +54,9 @@ export async function adminAddVolunteerSignupAction(input: {
   /** Admin only: add past a missing practical check, with this reason
    * (recorded on the signup). */
   practicalCheckOverrideReason?: string;
+  /** Admin only: add someone who hasn't completed volunteer registration,
+   * with this reason (recorded on the signup). */
+  registrationOverrideReason?: string;
 }): Promise<AdminAddVolunteerResult> {
   const supabase = await createClient();
 
@@ -112,22 +119,29 @@ export async function adminAddVolunteerSignupAction(input: {
     if (rsvpStatus) return { ok: true, status: "has_rsvp", rsvpStatus };
   }
 
-  const overrideReason = isAdmin ? input.practicalCheckOverrideReason?.trim() : undefined;
-  const { data, error } = overrideReason
-    ? await supabase.rpc("admin_add_volunteer_signup_with_override", {
-        p_opportunity_id: input.opportunityId,
-        p_user_id: userId,
-        p_force: input.forceCapacity ?? false,
-        p_reason: overrideReason,
-      })
-    : await supabase.rpc("admin_add_volunteer_signup", {
-        p_opportunity_id: input.opportunityId,
-        p_user_id: userId,
-        p_force: input.forceCapacity ?? false,
-      });
-  // The database's practical-check refusal (volunteer_signups_practical_check_guard).
+  const practicalReason = (isAdmin && input.practicalCheckOverrideReason?.trim()) || null;
+  const registrationReason = (isAdmin && input.registrationOverrideReason?.trim()) || null;
+  const { data, error } =
+    practicalReason || registrationReason
+      ? await supabase.rpc("admin_add_volunteer_signup_with_overrides", {
+          p_opportunity_id: input.opportunityId,
+          p_user_id: userId,
+          p_force: input.forceCapacity ?? false,
+          p_practical_check_reason: practicalReason,
+          p_registration_reason: registrationReason,
+        })
+      : await supabase.rpc("admin_add_volunteer_signup", {
+          p_opportunity_id: input.opportunityId,
+          p_user_id: userId,
+          p_force: input.forceCapacity ?? false,
+        });
+  // The database's practical-check and registration refusals
+  // (volunteer_signups_practical_check_guard / _registration_guard).
   if (error?.hint === "practical_check_required") {
     return { ok: true, status: "practical_check_required", message: error.message, canOverride: isAdmin };
+  }
+  if (error?.hint === "registration_required") {
+    return { ok: true, status: "registration_required", message: error.message, canOverride: isAdmin };
   }
   if (error) {
     console.error(`[admin-volunteer] opportunity ${input.opportunityId}: add failed:`, error);

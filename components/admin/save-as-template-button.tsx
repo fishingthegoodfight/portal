@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 
 import { saveEventAsTemplateAction } from "@/lib/actions/event-templates";
-import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
+import { VIRTUAL_CHAPTER, type Chapter } from "@/lib/chapters";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -19,10 +19,13 @@ export function SaveAsTemplateButton({
   eventId,
   eventName,
   eventChapter,
+  chapters,
 }: {
   eventId: number;
   eventName: string;
   eventChapter: string | null;
+  /** Every chapter (loadChapters). */
+  chapters: Chapter[];
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const [name, setName] = useState(`${eventName} template`);
@@ -100,7 +103,7 @@ export function SaveAsTemplateButton({
                 onChange={(e) => setChapter(e.target.value)}
               >
                 <option value="">All chapters</option>
-                {CHAPTERS.map((c) => (
+                {chapters.filter((c) => c.active || c.name === chapter).map((c) => (
                   <option key={c.name} value={c.name}>
                     {c.name}, {c.state}
                   </option>

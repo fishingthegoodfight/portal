@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import { activeChapters, loadChapters } from "@/lib/chapters";
 import type { ReferenceSlot } from "@/lib/volunteer-references";
 
 export type ReferenceFormLookup =
@@ -10,6 +11,13 @@ export type ReferenceFormLookup =
       fishingQuestions: boolean;
     }
   | { state: "submitted" | "closed" | "not_found" };
+
+/** The chapters a reference 1 can say they volunteer with: the active
+ * chapters' names, in display order. Service role, since the form has no
+ * signed-in user. */
+export async function referenceChapterOptions(): Promise<string[]> {
+  return activeChapters(await loadChapters(createAdminClient())).map((c) => c.name);
+}
 
 /** What a reference link may show. Service role: anon can reach nothing
  * about references directly. Deliberately not a server action (this file

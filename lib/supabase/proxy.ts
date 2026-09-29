@@ -97,6 +97,12 @@ export async function updateSession(request: NextRequest) {
     // Reference forms: the link's one-use token is the only key, checked
     // server-side with the service role (lib/reference-form.ts).
     !request.nextUrl.pathname.startsWith("/reference/") &&
+    // Unsubscribe links (the page, and mail clients' one-click POST): the
+    // token is the only key, checked with the service role
+    // (lib/email-preferences.ts), and all it can do is turn an email off
+    // or back on.
+    !request.nextUrl.pathname.startsWith("/unsubscribe/") &&
+    !request.nextUrl.pathname.startsWith("/api/unsubscribe/") &&
     // Machine-called endpoints authenticate themselves (CRON_SECRET).
     !request.nextUrl.pathname.startsWith("/api/cron")
   ) {

@@ -3,6 +3,7 @@ import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
 import { VolunteerImport } from "@/components/admin/volunteer-import";
+import { activeChapters, loadChapters } from "@/lib/chapters";
 
 // Server Actions on this page take the page's limit — a chunk of
 // IMPORT_CHUNK_SIZE new accounts can take a while.
@@ -10,12 +11,20 @@ export const maxDuration = 120;
 
 async function ImportLoader() {
   const supabase = await createClient();
-  const { data: roleTypes } = await supabase
-    .from("volunteer_role_types")
-    .select("name")
-    .eq("active", true)
-    .order("sort_order", { ascending: true });
-  return <VolunteerImport activeRoleNames={(roleTypes ?? []).map((r) => r.name as string)} />;
+  const [{ data: roleTypes }, chapters] = await Promise.all([
+    supabase
+      .from("volunteer_role_types")
+      .select("name")
+      .eq("active", true)
+      .order("sort_order", { ascending: true }),
+    loadChapters(supabase),
+  ]);
+  return (
+    <VolunteerImport
+      activeRoleNames={(roleTypes ?? []).map((r) => r.name as string)}
+      activeChapterNames={activeChapters(chapters).map((c) => c.name)}
+    />
+  );
 }
 
 export default function ImportVolunteersPage() {

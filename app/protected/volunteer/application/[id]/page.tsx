@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
+import { loadChapters } from "@/lib/chapters";
 import { formatDateInZone } from "@/lib/format-date";
 import {
   APPLICATION_STATUS_FOR_APPLICANT,
@@ -24,9 +25,10 @@ async function OwnApplicationLoader({ params }: { params: Promise<{ id: string }
   if (!Number.isInteger(applicationId)) notFound();
 
   const supabase = await createClient();
-  const [{ data: rows }, { data: areas }] = await Promise.all([
+  const [{ data: rows }, { data: areas }, chapters] = await Promise.all([
     supabase.rpc("my_volunteer_application", { p_id: applicationId }),
     supabase.from("volunteer_interest_areas").select("id, label, description, sort_order").order("sort_order"),
+    loadChapters(supabase),
   ]);
   const app = ((rows ?? []) as (ApplicationAnswersData & { status: ApplicationStatus })[])[0];
   if (!app) notFound();
@@ -49,7 +51,7 @@ async function OwnApplicationLoader({ params }: { params: Promise<{ id: string }
           changed, just tell us when we talk.
         </p>
       </div>
-      <ApplicationAnswers app={app} interestAreaNames={interestNames} />
+      <ApplicationAnswers app={app} interestAreaNames={interestNames} chapters={chapters} />
     </>
   );
 }

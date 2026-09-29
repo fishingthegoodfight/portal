@@ -4,7 +4,8 @@ import { createClient } from "@/lib/supabase/server";
 import { NewWaiverForm } from "@/components/admin/new-waiver-form";
 import { WaiverText } from "@/components/waiver-text";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { WAIVER_STATES, isWaiverState } from "@/lib/waivers";
+import { waiverStateName, waiverStatesForChapters } from "@/lib/waivers";
+import { loadChapters } from "@/lib/chapters";
 
 type WaiverRow = {
   id: number;
@@ -21,13 +22,16 @@ async function WaiversLoader() {
   const supabase = await createClient();
   // Participant waivers only — the volunteer waiver (audience 'volunteer')
   // is seeded separately and isn't managed from this page.
-  const { data, error } = await supabase
-    .from("waivers")
-    .select("id, state, year, version, title, body_markdown, is_active, created_at")
-    .eq("audience", "participant")
-    .order("state", { ascending: true })
-    .order("year", { ascending: false })
-    .order("version", { ascending: false });
+  const [{ data, error }, chapters] = await Promise.all([
+    supabase
+      .from("waivers")
+      .select("id, state, year, version, title, body_markdown, is_active, created_at")
+      .eq("audience", "participant")
+      .order("state", { ascending: true })
+      .order("year", { ascending: false })
+      .order("version", { ascending: false }),
+    loadChapters(supabase),
+  ]);
 
   if (error) {
     return <p className="text-sm text-red-500">Couldn&apos;t load waivers: {error.message}</p>;
@@ -53,13 +57,16 @@ async function WaiversLoader() {
     }
   }
 
-  const groups = Object.keys(WAIVER_STATES)
+  // Every chapter's state, in chapter order, then any other state that
+  // already has waivers (e.g. its chapter was since moved).
+  const chapterStates = waiverStatesForChapters(chapters);
+  const groups = Array.from(new Set([...chapterStates, ...waivers.map((w) => w.state)]))
     .map((code) => ({ code, rows: waivers.filter((w) => w.state === code) }))
     .filter((g) => g.rows.length > 0);
 
   return (
     <>
-      <NewWaiverForm latestByState={latestByState} />
+      <NewWaiverForm latestByState={latestByState} states={chapterStates} />
 
       {waivers.length === 0 && (
         <p className="text-sm text-muted-foreground">No waivers yet. Add the first one above.</p>
@@ -68,7 +75,7 @@ async function WaiversLoader() {
       {groups.map(({ code, rows }) => (
         <Card key={code}>
           <CardHeader>
-            <CardTitle>{isWaiverState(code) ? WAIVER_STATES[code] : code}</CardTitle>
+            <CardTitle>{waiverStateName(code)}</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             {rows.map((w) => (

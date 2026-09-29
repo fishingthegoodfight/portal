@@ -1,4 +1,3 @@
-import { CHAPTERS } from "@/lib/chapters";
 
 /**
  * Reference checks, phase 3 of volunteer applications (tables
@@ -154,9 +153,6 @@ export const REFERENCE_QUESTIONS = {
   twoParticipantsWhy: "Why?",
 } as const;
 
-/** The chapters a reference 1 might volunteer with. */
-export const REFERENCE_CHAPTER_OPTIONS = CHAPTERS.map((c) => c.name);
-
 export type ReferenceInput = {
   name: string;
   howKnow: string;
@@ -211,14 +207,20 @@ const oneOf = (value: string, options: readonly { value: string }[]) => options.
 /** Every problem with a reference's answers, in form order — one rule for the
  * form and the server action. Optional: what gives pause, anything else,
  * what they noticed teaching, and the "why". */
-export function referenceErrors(input: ReferenceInput, shape: ReferenceFormShape): string[] {
+export function referenceErrors(
+  input: ReferenceInput,
+  shape: ReferenceFormShape,
+  /** The chapters a reference 1 might volunteer with (active chapters'
+   * names — referenceChapterOptions). */
+  chapterOptions: string[],
+): string[] {
   const errors: string[] = [];
   const blank = (v: string) => !v.trim();
   if (blank(input.name)) errors.push("Give your name");
   if (blank(input.howKnow)) errors.push("Say how you know them");
   if (!(KNOWN_FOR_OPTIONS as readonly string[]).includes(input.knownFor)) errors.push("Say how long you've known them");
   if (shape.slot === 1) {
-    if (!REFERENCE_CHAPTER_OPTIONS.includes(input.chapter)) errors.push("Choose the chapter you volunteer with");
+    if (!chapterOptions.includes(input.chapter)) errors.push("Choose the chapter you volunteer with");
     if (blank(input.seenAtEvents)) errors.push("Tell us what you've seen them do at events");
   }
   if (RATING_QUESTIONS.some((q) => !["1", "2", "3", "4", "5"].includes(input[q.key]))) {

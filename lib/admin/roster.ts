@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { formatDateInZone, formatEventDateRange, formatEventInstant } from "@/lib/format-date";
 import { resolveEventWaiver, waiverHeading } from "@/lib/waivers";
 import { profileValueFromColumn, REGISTRATION_SECTIONS } from "@/lib/registration-sections";
+import { PRACTICAL_CHECK_ROLE_KEYS } from "@/lib/practical-checks";
 
 export type AdminEventSummary = {
   id: number;
@@ -333,7 +334,7 @@ export async function loadEventRoster(
   }[];
   const instructorOpportunities = new Set(
     opportunities
-      .filter((o) => ["fishing_instructor", "lead_fly_fishing_instructor"].includes(o.role_type?.key ?? ""))
+      .filter((o) => PRACTICAL_CHECK_ROLE_KEYS.includes(o.role_type?.key ?? ""))
       .map((o) => o.id),
   );
 

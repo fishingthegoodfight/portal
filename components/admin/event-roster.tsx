@@ -55,6 +55,7 @@ import type {
 import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
 import { RosterHealthLine, type RosterHealth } from "@/components/admin/roster-health";
 import { practicalCheckSummary, type PracticalCheck } from "@/lib/practical-checks";
+import type { Chapter } from "@/lib/chapters";
 import { personDisplayName } from "@/lib/person-name";
 
 type LatestPracticalCheck = Pick<PracticalCheck, "outcome" | "checked_on" | "assessor_name">;
@@ -111,6 +112,8 @@ export function EventRoster({
   canSaveAsTemplate = false,
   health,
   practicalChecks = null,
+  unregisteredVolunteerIds = [],
+  chapters,
 }: {
   eventId: number;
   eventCard: EventCardEvent;
@@ -149,6 +152,12 @@ export function EventRoster({
    * shift — only at an event that requires health history, and only for
    * admins and chapter leads; null otherwise (nothing shown). */
   practicalChecks?: Record<string, LatestPracticalCheck> | null;
+  /** Volunteers on this roster who haven't completed volunteer registration
+   * (event_unregistered_volunteer_ids) — flagged so they can be chased. */
+  unregisteredVolunteerIds?: string[];
+  /** Every chapter (loadChapters) — the walk-up form's home chapter and
+   * "Save as template". */
+  chapters: Chapter[];
 }) {
   const router = useRouter();
   const isCancelled = status === "cancelled";
@@ -282,10 +291,12 @@ export function EventRoster({
   // the walk-up capacity flow. Overrides already confirmed are remembered
   // (addVolunteerAcked) so a later check doesn't send the admin back to one.
   const [addVolunteerConfirm, setAddVolunteerConfirm] = useState<
-    "not_approved" | "has_rsvp" | "capacity" | "practical_check" | null
+    "not_approved" | "has_rsvp" | "capacity" | "practical_check" | "registration" | null
   >(null);
   // An admin's reason for adding someone past a missing practical check.
   const [practicalOverrideReason, setPracticalOverrideReason] = useState("");
+  // An admin's reason for adding someone who hasn't completed registration.
+  const [registrationOverrideReason, setRegistrationOverrideReason] = useState("");
   const [addVolunteerAcked, setAddVolunteerAcked] = useState<Set<string>>(() => new Set());
   // Their RSVP to attend, when the has_rsvp warning is showing.
   const [addVolunteerRsvpStatus, setAddVolunteerRsvpStatus] = useState<string | null>(null);
@@ -542,6 +553,7 @@ export function EventRoster({
     setAddVolunteerAcked(new Set());
     setAddVolunteerError(null);
     setPracticalOverrideReason("");
+    setRegistrationOverrideReason("");
   };
 
   const closeAddVolunteerForm = () => {
@@ -559,6 +571,11 @@ export function EventRoster({
       setAddVolunteerError("Give a reason for adding them without a passed practical check.");
       return;
     }
+    if (addVolunteerConfirm === "registration" && !registrationOverrideReason.trim()) {
+      setIsAddingVolunteer(false);
+      setAddVolunteerError("Give a reason for adding them before they've registered.");
+      return;
+    }
     const acked = new Set(addVolunteerAcked);
     if (addVolunteerConfirm) acked.add(addVolunteerConfirm);
     setAddVolunteerAcked(acked);
@@ -570,6 +587,7 @@ export function EventRoster({
       overrideRsvp: acked.has("has_rsvp"),
       forceCapacity: acked.has("capacity"),
       practicalCheckOverrideReason: acked.has("practical_check") ? practicalOverrideReason : undefined,
+      registrationOverrideReason: acked.has("registration") ? registrationOverrideReason : undefined,
     });
 
     setIsAddingVolunteer(false);
@@ -605,10 +623,10 @@ export function EventRoster({
       setAddVolunteerError("This shift is full.");
       return;
     }
-    if (result.status === "practical_check_required") {
+    if (result.status === "practical_check_required" || result.status === "registration_required") {
       // Chapter leads can't override — they just get the reason.
       if (result.canOverride) {
-        setAddVolunteerConfirm("practical_check");
+        setAddVolunteerConfirm(result.status === "practical_check_required" ? "practical_check" : "registration");
       } else {
         setAddVolunteerAcked(new Set());
         setAddVolunteerConfirm(null);
@@ -701,6 +719,7 @@ export function EventRoster({
               eventId={eventId}
               eventName={eventCard.name}
               eventChapter={eventCard.chapter}
+              chapters={chapters}
             />
           )}
           {!isCancelled && (
@@ -893,6 +912,7 @@ export function EventRoster({
                   <VolunteerRosterRow
                     key={person.signupId}
                     person={person}
+                    unregistered={unregisteredVolunteerIds.includes(person.userId)}
                     answerSections={answerSections}
                     onToggleCheckIn={toggleVolunteerCheckIn}
                     practicalCheck={
@@ -993,6 +1013,21 @@ export function EventRoster({
                     />
                     <p className="text-xs text-muted-foreground">
                       Recorded on their shift with your name and the time.
+                    </p>
+                  </div>
+                )}
+                {addVolunteerConfirm === "registration" && (
+                  <div className="grid gap-2">
+                    <Label htmlFor="add_volunteer_registration_reason">Reason for adding them anyway</Label>
+                    <Textarea
+                      id="add_volunteer_registration_reason"
+                      value={registrationOverrideReason}
+                      onChange={(e) => setRegistrationOverrideReason(e.target.value)}
+                      placeholder="e.g. Signed a paper waiver on site; registering after the event"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Recorded on their shift with your name and the time. They still need to
+                      register before they can sign up for shifts themselves.
                     </p>
                   </div>
                 )}
@@ -1127,6 +1162,7 @@ export function EventRoster({
                   value={walkupForm.chapter}
                   onChange={(value) => setWalkupForm((prev) => ({ ...prev, chapter: value }))}
                   required={!walkupLookup?.hasChapterOnFile}
+                  chapters={chapters}
                 />
                 <RegistrationFieldInput
                   field={DIRECTORY_FIELD}
@@ -1417,12 +1453,16 @@ function RosterRow({
 
 function VolunteerRosterRow({
   person,
+  unregistered,
   answerSections,
   onToggleCheckIn,
   health,
   practicalCheck,
 }: {
   person: VolunteerRosterPerson;
+  /** Hasn't completed volunteer registration (this year's volunteer waiver
+   * is signed there). */
+  unregistered: boolean;
   /** The event's sections to show answers for (see rosterAnswerSections). */
   answerSections: RegistrationSection[];
   onToggleCheckIn: (person: VolunteerRosterPerson) => void;
@@ -1439,6 +1479,11 @@ function VolunteerRosterRow({
         <span className="font-medium">
           {personDisplayName(person)} · {person.role}
         </span>
+        {unregistered && (
+          <span className="w-fit text-sm font-medium text-amber-700 dark:text-amber-400">
+            Not registered — hasn&apos;t completed volunteer registration or signed this year&apos;s volunteer waiver
+          </span>
+        )}
         <span className="text-sm text-muted-foreground">{person.shiftLabel}</span>
         <span className="text-sm text-muted-foreground">{contact || "—"}</span>
         <span className="text-sm text-muted-foreground">Emergency: {emergency || "—"}</span>

@@ -8,11 +8,14 @@ import { ChapterTag } from "@/components/chapter-tag";
 import { ChapterFilterPills, FilterPill, filterHref } from "@/components/filter-pills";
 import { CopyEventButton, PostedToggle } from "@/components/admin/marketing-row-controls";
 import {
+  chapterFilterOptions,
   chapterSelectionLabel,
   chapterSelectionParam,
   isVirtualChapter,
+  loadChapters,
   matchesChapterSelection,
   parseChapterSelection,
+  type ChapterFilterOption,
   type ChapterSelection,
 } from "@/lib/chapters";
 import { cityStateZip } from "@/lib/event-location";
@@ -86,9 +89,10 @@ function plainText(e: MarketingEventRow): string {
 
 async function MarketingLoader({ searchParams }: { searchParams: Promise<MarketingSearchParams> }) {
   const { chapter: chapterParam, posted: postedParam } = await searchParams;
-  const selection = parseChapterSelection(chapterParam, null);
   const notPostedOnly = postedParam === "no";
   const supabase = await createClient();
+  const filterOptions = chapterFilterOptions(await loadChapters(supabase));
+  const selection = parseChapterSelection(chapterParam, null, filterOptions);
 
   const [{ data: events, error }, { data: roles }, { data: posts }] = await Promise.all([
     supabase
@@ -141,7 +145,7 @@ async function MarketingLoader({ searchParams }: { searchParams: Promise<Marketi
     !isPast(e) && e.status !== "cancelled" && !postByEvent.has(e.id);
 
   const rows = ((events ?? []) as MarketingEventRow[]).filter(
-    (e) => matchesChapterSelection(selection, e.chapter) && (!notPostedOnly || needsPosting(e)),
+    (e) => matchesChapterSelection(selection, e.chapter, filterOptions) && (!notPostedOnly || needsPosting(e)),
   );
   const upcoming = rows.filter((e) => !isPast(e)); // soonest first (query order)
   const past = rows.filter(isPast).reverse(); // most recent first
@@ -164,10 +168,10 @@ async function MarketingLoader({ searchParams }: { searchParams: Promise<Marketi
 
   return (
     <div className="flex flex-col gap-8">
-      <MarketingFilterBar selection={selection} notPostedOnly={notPostedOnly} />
+      <MarketingFilterBar selection={selection} options={filterOptions} notPostedOnly={notPostedOnly} />
       {rows.length === 0 ? (
         <p className="text-sm text-muted-foreground">
-          {notPostedOnly ? "Nothing left to post" : "No events"} for {chapterSelectionLabel(selection)}.
+          {notPostedOnly ? "Nothing left to post" : "No events"} for {chapterSelectionLabel(selection, filterOptions)}.
         </p>
       ) : (
         <>
@@ -193,9 +197,11 @@ async function MarketingLoader({ searchParams }: { searchParams: Promise<Marketi
 
 function MarketingFilterBar({
   selection,
+  options,
   notPostedOnly,
 }: {
   selection: ChapterSelection;
+  options: ChapterFilterOption[];
   notPostedOnly: boolean;
 }) {
   return (
@@ -204,6 +210,7 @@ function MarketingFilterBar({
         <span className="text-xs font-medium text-muted-foreground">Chapter</span>
         <ChapterFilterPills
           selection={selection}
+          options={options}
           basePath={BASE_PATH}
           otherParams={{ posted: notPostedOnly ? "no" : undefined }}
         />

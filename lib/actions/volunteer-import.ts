@@ -48,6 +48,7 @@ type ExistingProfile = {
 
 type ImportContext = {
   activeRoleTypes: { id: number; name: string }[];
+  activeChapterNames: string[];
   profileByEmail: Map<string, ExistingProfile>;
   volunteerIds: Set<string>;
 };
@@ -58,6 +59,8 @@ async function loadContext(supabase: ServerClient, emails: string[]): Promise<Im
     .select("id, name")
     .eq("active", true);
   if (roleError) return { error: roleError.message };
+  const { data: chapterRows, error: chapterError } = await supabase.from("chapters").select("name").eq("active", true);
+  if (chapterError) return { error: chapterError.message };
 
   // Emails are compared lowercased; profiles.email isn't guaranteed to be,
   // so this reads every profile's email (paged — PostgREST caps a response
@@ -92,6 +95,7 @@ async function loadContext(supabase: ServerClient, emails: string[]): Promise<Im
 
   return {
     activeRoleTypes: (roleTypes ?? []) as { id: number; name: string }[],
+    activeChapterNames: (chapterRows ?? []).map((c) => c.name as string),
     profileByEmail,
     volunteerIds,
   };
@@ -128,7 +132,7 @@ function profileFills(row: CheckedImportRow, profile: ExistingProfile) {
 function planRows(rows: ImportRowInput[], ctx: ImportContext): ImportPlanRow[] {
   const firstRowByEmail = new Map<string, number>();
   return rows.map((input) => {
-    const row = checkImportRow(input, ctx.activeRoleTypes);
+    const row = checkImportRow(input, ctx.activeRoleTypes, ctx.activeChapterNames);
     const plan: ImportPlanRow = { ...row, action: "problem", existingName: "", fills: [] };
     if (row.email) {
       const first = firstRowByEmail.get(row.email);

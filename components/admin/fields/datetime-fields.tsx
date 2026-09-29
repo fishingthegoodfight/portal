@@ -5,7 +5,6 @@ import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
-import { TIMEZONE_OPTIONS } from "@/lib/chapters";
 
 /**
  * The date/start-time/end-time/timezone block shared by the admin event
@@ -33,6 +32,7 @@ export function DateTimeFields({
   onChangeTimezone,
   timezoneDerived = false,
   onOverrideTimezone,
+  timezoneOptions,
 }: {
   idPrefix: string;
   date: string;
@@ -48,10 +48,12 @@ export function DateTimeFields({
    * that was auto-deriving `timezone` from something else (the create
    * wizard, from the chosen chapter) know to stop clobbering it. */
   onOverrideTimezone?: () => void;
+  /** The zones to offer (lib/chapters.ts timezoneOptions). */
+  timezoneOptions: { value: string; label: string }[];
 }) {
   const [overriding, setOverriding] = useState(false);
   const showSelect = !timezoneDerived || overriding;
-  const timezoneLabel = TIMEZONE_OPTIONS.find((tz) => tz.value === timezone)?.label ?? timezone;
+  const timezoneLabel = timezoneOptions.find((tz) => tz.value === timezone)?.label ?? timezone;
 
   // Each cell is `content-start`: the end-time cell is taller (it carries a
   // helper line), and grid items stretch to the row height, so without it the
@@ -79,7 +81,7 @@ export function DateTimeFields({
             value={timezone}
             onChange={(e) => onChangeTimezone(e.target.value)}
           >
-            {TIMEZONE_OPTIONS.map((tz) => (
+            {timezoneOptions.map((tz) => (
               <option key={tz.value} value={tz.value}>
                 {tz.label}
               </option>

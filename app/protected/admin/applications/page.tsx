@@ -7,11 +7,14 @@ import { ChapterFilterPills, FilterPill, filterHref } from "@/components/filter-
 import { ChapterTag } from "@/components/chapter-tag";
 import { Badge } from "@/components/ui/badge";
 import {
-  CHAPTER_FILTER_OPTIONS,
+  chapterFilterOptions,
   chapterSelectionFor,
   chapterSelectionLabel,
   chapterSelectionParam,
+  loadChapters,
   parseChapterSelection,
+  selectedChapterNames,
+  type ChapterFilterOption,
   type ChapterSelection,
 } from "@/lib/chapters";
 import { formatDateInZone } from "@/lib/format-date";
@@ -48,10 +51,12 @@ type StatusFilter = ApplicationStatus | "open" | "all";
 async function ApplicationsLoader({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const { status: statusParam, chapter: chapterParam } = await searchParams;
   const supabase = await createClient();
-  const access = await loadEventAdminAccess(supabase);
+  const [access, chapters] = await Promise.all([loadEventAdminAccess(supabase), loadChapters(supabase)]);
+  const filterOptions = chapterFilterOptions(chapters);
   const selection = parseChapterSelection(
     chapterParam,
-    access?.role === "chapter_lead" ? chapterSelectionFor(access.ledChapters) : null,
+    access?.role === "chapter_lead" ? chapterSelectionFor(access.ledChapters, filterOptions) : null,
+    filterOptions,
   );
   const status: StatusFilter =
     statusParam === "all" || isApplicationStatus(statusParam) ? (statusParam as StatusFilter) : "open";
@@ -79,9 +84,7 @@ async function ApplicationsLoader({ searchParams }: { searchParams: Promise<Sear
     ((attendanceRows ?? []) as { application_id: number; attended: number }[]).map((a) => [a.application_id, a.attended]),
   );
 
-  const selectedChapters = selection
-    ? CHAPTER_FILTER_OPTIONS.filter((o) => selection.includes(o.slug)).map((o) => o.chapter)
-    : null;
+  const selectedChapters = selectedChapterNames(selection, filterOptions);
   const rows = all.filter(
     (r) =>
       (!selectedChapters || r.chapters.some((c) => selectedChapters.includes(c))) &&
@@ -90,9 +93,9 @@ async function ApplicationsLoader({ searchParams }: { searchParams: Promise<Sear
 
   return (
     <div className="flex flex-col gap-6">
-      <FilterBar selection={selection} status={status} counts={countByStatus(all)} />
+      <FilterBar selection={selection} options={filterOptions} status={status} counts={countByStatus(all)} />
       {rows.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No applications here for {chapterSelectionLabel(selection)}.</p>
+        <p className="text-sm text-muted-foreground">No applications here for {chapterSelectionLabel(selection, filterOptions)}.</p>
       ) : (
         <ul className="flex flex-col gap-2">
           {rows.map((r) => {
@@ -158,10 +161,12 @@ function countByStatus(rows: Row[]): Partial<Record<ApplicationStatus, number>> 
 
 function FilterBar({
   selection,
+  options,
   status,
   counts,
 }: {
   selection: ChapterSelection;
+  options: ChapterFilterOption[];
   status: StatusFilter;
   counts: Partial<Record<ApplicationStatus, number>>;
 }) {
@@ -175,7 +180,12 @@ function FilterBar({
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-1.5">
         <span className="text-xs font-medium text-muted-foreground">Chapter</span>
-        <ChapterFilterPills selection={selection} basePath={BASE_PATH} otherParams={{ status: statusParam }} />
+        <ChapterFilterPills
+          selection={selection}
+          options={options}
+          basePath={BASE_PATH}
+          otherParams={{ status: statusParam }}
+        />
       </div>
       <div className="flex flex-col gap-1.5">
         <span className="text-xs font-medium text-muted-foreground">Status</span>

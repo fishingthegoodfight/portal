@@ -1,4 +1,4 @@
-import { NOT_LOCAL_CHAPTER } from "@/lib/chapters";
+import { activeChapters, chapterDisplayName, NOT_LOCAL_CHAPTER, type Chapter } from "@/lib/chapters";
 
 /**
  * Volunteer applications (table `volunteer_applications` — see the
@@ -65,18 +65,23 @@ export function isApplicationStatus(value: unknown): value is ApplicationStatus 
 }
 
 /** One chapter per application, stored as a one-element `chapters` array
- * (values as in lib/chapters.ts, so chapter leads' led_chapters match).
- * "No local chapter" matches no chapter lead, so only admins see those. */
-export const APPLICATION_CHAPTER_OPTIONS = [
-  { value: "Denver", label: "Denver" },
-  { value: "CO Springs", label: "Colorado Springs" },
-  { value: "Atlanta", label: "Atlanta" },
-  { value: "Rome", label: "Rome" },
-  { value: NOT_LOCAL_CHAPTER, label: "No local chapter — I'd travel or help remotely" },
-] as const;
+ * (chapter names, so chapter leads' led_chapters match). "No local chapter"
+ * matches no chapter lead, so only admins see those. */
+export type ApplicationChapterOption = { value: string; label: string };
 
-export function applicationChapterLabel(value: string): string {
-  return APPLICATION_CHAPTER_OPTIONS.find((o) => o.value === value)?.label ?? value;
+const NOT_LOCAL_APPLICATION_LABEL = "No local chapter — I'd travel or help remotely";
+
+/** The application form's chapter choices: every active chapter (by its
+ * longer label, e.g. "Colorado Springs"), then "No local chapter". */
+export function applicationChapterOptions(chapters: Chapter[]): ApplicationChapterOption[] {
+  return [
+    ...activeChapters(chapters).map((c) => ({ value: c.name, label: c.display_name ?? c.name })),
+    { value: NOT_LOCAL_CHAPTER, label: NOT_LOCAL_APPLICATION_LABEL },
+  ];
+}
+
+export function applicationChapterLabel(value: string, chapters: Chapter[]): string {
+  return value === NOT_LOCAL_CHAPTER ? NOT_LOCAL_APPLICATION_LABEL : chapterDisplayName(chapters, value);
 }
 
 /** Keep in step with the volunteer_applications_availability_check constraint. */
@@ -289,7 +294,11 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Every problem with an application, in form order — one rule for the form
  * and the server action. */
-export function applicationErrors(input: ApplicationInput): string[] {
+export function applicationErrors(
+  input: ApplicationInput,
+  /** The chapter values the form offered (applicationChapterOptions). */
+  chapterValues: string[],
+): string[] {
   const errors: string[] = [];
   const blank = (v: string) => !v.trim();
   const unanswered = (v: string) => v === "";
@@ -299,7 +308,7 @@ export function applicationErrors(input: ApplicationInput): string[] {
   if (!EMAIL_PATTERN.test(input.email.trim())) errors.push("A valid email is required");
   if (blank(input.phone)) errors.push("A phone number is required");
 
-  if (notOneOf(input.chapter, APPLICATION_CHAPTER_OPTIONS.map((o) => o.value))) {
+  if (notOneOf(input.chapter, chapterValues)) {
     errors.push("Choose the chapter you'd volunteer with");
   }
   if (blank(input.howConnected)) errors.push("Tell us how you first got connected to FTGF");

@@ -8,15 +8,18 @@ import { Button } from "@/components/ui/button";
 import { EventCard } from "@/components/event-card";
 import { formatEventDateRange } from "@/lib/format-date";
 import {
+  chapterFilterOptions,
   chapterSelectionLabel,
   chapterSelectionParam,
+  loadChapters,
   matchesChapterSelection,
   memberDefaultChapterSelection,
   parseChapterSelection,
+  type ChapterFilterOption,
   type ChapterSelection,
 } from "@/lib/chapters";
 import { ChapterFilterPills, FilterPill, filterHref } from "@/components/filter-pills";
-import { isApprovedVolunteer, loadOpenShiftsForVolunteer } from "@/lib/volunteer-signups";
+import { loadOpenShiftsForVolunteer, volunteerStanding } from "@/lib/volunteer-signups";
 import { loadManagedEventIds } from "@/lib/admin/require-admin";
 import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
 import { eventsNeedingHealthForm } from "@/lib/health-requirements";
@@ -59,14 +62,17 @@ async function ConfirmationBannerLoader({
   );
 }
 
-/** Chapter pills, plus — for approved volunteers only — a "Needs volunteers"
- * toggle that combines with whichever chapters are selected. */
+/** Chapter pills, plus — for approved, registered volunteers only — a
+ * "Needs volunteers" toggle that combines with whichever chapters are
+ * selected. */
 function EventsFilterBar({
   selection,
+  options,
   showVolunteerFilter,
   needsVolunteers,
 }: {
   selection: ChapterSelection;
+  options: ChapterFilterOption[];
   showVolunteerFilter: boolean;
   needsVolunteers: boolean;
 }) {
@@ -74,6 +80,7 @@ function EventsFilterBar({
     <div className="flex flex-col gap-2">
       <ChapterFilterPills
         selection={selection}
+        options={options}
         basePath="/protected/events"
         otherParams={{ volunteers: needsVolunteers ? "1" : undefined }}
       />
@@ -109,11 +116,11 @@ async function EventsListLoader({
 
   const userId = data.claims.sub as string;
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("chapter")
-    .eq("id", userId)
-    .maybeSingle();
+  const [{ data: profile }, chapters] = await Promise.all([
+    supabase.from("profiles").select("chapter").eq("id", userId).maybeSingle(),
+    loadChapters(supabase),
+  ]);
+  const filterOptions = chapterFilterOptions(chapters);
   // "Manage" shows on exactly the events this person can manage
   // (can_manage_event) — every event for an admin, their chapters' for a
   // chapter lead, the ones they lead for an event lead.
@@ -123,7 +130,8 @@ async function EventsListLoader({
   // Virtual (or All if they have no local chapter).
   const selection = parseChapterSelection(
     chapterParam,
-    memberDefaultChapterSelection(profile?.chapter),
+    memberDefaultChapterSelection(profile?.chapter, filterOptions),
+    filterOptions,
   );
 
   const { data: events, error: eventsError } = await supabase
@@ -152,11 +160,12 @@ async function EventsListLoader({
     );
   }
 
-  const chapterEvents = events.filter((event) => matchesChapterSelection(selection, event.chapter));
+  const chapterEvents = events.filter((event) => matchesChapterSelection(selection, event.chapter, filterOptions));
 
-  // Approved volunteers only: events with an open shift in a role they're
-  // approved for — the "Needs volunteers" badge and filter.
-  const isVolunteer = await isApprovedVolunteer(supabase, userId);
+  // Approved, registered volunteers only: events with an open shift in a
+  // role they're approved for — the "Needs volunteers" badge and filter.
+  const standing = await volunteerStanding(supabase, userId);
+  const isVolunteer = standing.approved && standing.registered;
   const openShifts = isVolunteer
     ? await loadOpenShiftsForVolunteer(supabase, userId, {
         eventIds: chapterEvents.map((event) => event.id),
@@ -202,6 +211,7 @@ async function EventsListLoader({
     <div className="flex flex-col gap-4">
       <EventsFilterBar
         selection={selection}
+        options={filterOptions}
         showVolunteerFilter={isVolunteer}
         needsVolunteers={needsVolunteersFilter}
       />
@@ -209,8 +219,8 @@ async function EventsListLoader({
       {shownEvents.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           {needsVolunteersFilter
-            ? `No upcoming events for ${chapterSelectionLabel(selection)} need volunteers in your roles right now.`
-            : `No upcoming events for ${chapterSelectionLabel(selection)}.`}
+            ? `No upcoming events for ${chapterSelectionLabel(selection, filterOptions)} need volunteers in your roles right now.`
+            : `No upcoming events for ${chapterSelectionLabel(selection, filterOptions)}.`}
         </p>
       ) : (
         shownEvents.map((event) => {

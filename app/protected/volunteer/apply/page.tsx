@@ -3,10 +3,12 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
+import { loadChapters } from "@/lib/chapters";
 import { formatDateInZone } from "@/lib/format-date";
 import { formatPhoneNumber } from "@/lib/phone";
 import {
   APPLICATION_STATUS_FOR_APPLICANT,
+  applicationChapterOptions,
   CLOSED_STATUSES,
   type ApplicationStatus,
   type InterestArea,
@@ -55,7 +57,7 @@ async function ApplyLoader() {
     );
   }
 
-  const [{ data: profile }, { data: interestAreas }, { data: attendedRows }, { data: total }, { data: settings }] =
+  const [{ data: profile }, { data: interestAreas }, { data: attendedRows }, { data: total }, { data: settings }, chapters] =
     await Promise.all([
       supabase.from("profiles").select("first_name, last_name, email, phone").eq("id", userId).maybeSingle(),
       supabase
@@ -70,6 +72,7 @@ async function ApplyLoader() {
         .not("checked_in_at", "is", null),
       supabase.rpc("my_attendance_total"),
       supabase.from("app_settings").select("min_events_before_screening").maybeSingle(),
+      loadChapters(supabase),
     ]);
 
   const attended = ((attendedRows ?? []) as unknown as {
@@ -129,6 +132,7 @@ async function ApplyLoader() {
         key={`${contact.fullName}|${contact.email}|${contact.phone}`}
         interestAreas={(interestAreas ?? []) as Pick<InterestArea, "id" | "kind" | "label" | "description">[]}
         contact={contact}
+        chapterOptions={applicationChapterOptions(chapters)}
       />
     </div>
   );

@@ -5,10 +5,11 @@ import { EventTemplatesManager } from "@/components/admin/event-templates-manage
 import { TEMPLATE_WITH_ROLES_COLUMNS, type EventTemplateWithRoles } from "@/lib/event-templates";
 import type { EventTypeOption } from "@/lib/event-types";
 import { VENUE_COLUMNS, type Venue } from "@/lib/venues";
+import { loadChapters } from "@/lib/chapters";
 
 async function EventTemplatesLoader() {
   const supabase = await createClient();
-  const [{ data: templates, error }, { data: roleTypes }, { data: eventTypes }, { data: venues }] = await Promise.all([
+  const [{ data: templates, error }, { data: roleTypes }, { data: eventTypes }, { data: venues }, chapters] = await Promise.all([
     supabase.from("event_templates").select(TEMPLATE_WITH_ROLES_COLUMNS).order("name", { ascending: true }),
     supabase
       .from("volunteer_role_types")
@@ -21,6 +22,7 @@ async function EventTemplatesLoader() {
       .select("id, key, name, default_registration_sections, requires_health_history, sort_order, active")
       .order("sort_order", { ascending: true }),
     supabase.from("venues").select(VENUE_COLUMNS).eq("active", true).order("name", { ascending: true }),
+    loadChapters(supabase),
   ]);
 
   if (error) {
@@ -33,6 +35,7 @@ async function EventTemplatesLoader() {
       roleTypes={roleTypes ?? []}
       eventTypes={(eventTypes ?? []) as EventTypeOption[]}
       venues={(venues ?? []) as Venue[]}
+      chapters={chapters}
     />
   );
 }

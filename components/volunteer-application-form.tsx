@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 
 import { submitVolunteerApplicationAction } from "@/lib/actions/volunteer-applications";
 import {
-  APPLICATION_CHAPTER_OPTIONS,
   applicationErrors,
   EMPTY_APPLICATION,
   HOW_LONG_ATTENDING_OPTIONS,
@@ -13,6 +12,7 @@ import {
   interestAreaLabel,
   RETREAT_COMMITMENTS,
   RETREAT_QUESTION,
+  type ApplicationChapterOption,
   type ApplicationInput,
   type InterestArea,
   type YesNo,
@@ -33,8 +33,11 @@ import { Input } from "@/components/ui/input";
 export function VolunteerApplicationForm({
   contact,
   interestAreas,
+  chapterOptions,
 }: {
   contact: Pick<ApplicationInput, "fullName" | "email" | "phone">;
+  /** applicationChapterOptions(chapters). */
+  chapterOptions: ApplicationChapterOption[];
   /** Active interest areas (both lists), in their Setup order. */
   interestAreas: Pick<InterestArea, "id" | "kind" | "label" | "description">[];
 }) {
@@ -55,7 +58,10 @@ export function VolunteerApplicationForm({
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const problems = applicationErrors(form);
+    const problems = applicationErrors(
+      form,
+      chapterOptions.map((o) => o.value),
+    );
     setErrors(problems);
     if (problems.length > 0) return;
     setSaving(true);
@@ -90,7 +96,7 @@ export function VolunteerApplicationForm({
           <fieldset className="grid gap-2">
             <legend className="mb-1 text-sm font-medium">Which chapter would you volunteer with?</legend>
             <div className="flex flex-col gap-2 text-sm">
-              {APPLICATION_CHAPTER_OPTIONS.map((option) => (
+              {chapterOptions.map((option) => (
                 <label key={option.value} className="flex items-center gap-2">
                   <input
                     type="radio"

@@ -27,7 +27,7 @@ import { MarketingBoostField } from "@/components/admin/fields/marketing-boost-f
 import { RequiresHealthHistoryField } from "@/components/admin/fields/requires-health-history-field";
 import { LocationFields } from "@/components/admin/fields/location-fields";
 import { VirtualEventFields } from "@/components/admin/fields/virtual-event-fields";
-import { isVirtualChapter } from "@/lib/chapters";
+import { isVirtualChapter, timezoneOptions, type Chapter } from "@/lib/chapters";
 import { RegistrationSectionsFields } from "@/components/admin/fields/registration-sections-fields";
 import {
   VolunteerRoleFields,
@@ -138,6 +138,7 @@ export function EventEditForm({
   signedUpByRoleId,
   allowedChapters,
   venues,
+  chapters,
 }: {
   eventId: number;
   /** "https://…/events/" — shown in front of the slug field. */
@@ -146,7 +147,7 @@ export function EventEditForm({
   isCancelled: boolean;
   /** Free-text location of an event that predates the structured fields. */
   legacyLocation: string | null;
-  /** "Colorado" / "Georgia" — always derived from the chapter; every event requires it. */
+  /** "Colorado", "Georgia" … — always derived from the chapter; every event requires it. */
   waiverLabel: string | null;
   /** Set when the event was created as one of a repeating series — saving
    * then asks "This event only" vs "This and all future events". */
@@ -163,6 +164,8 @@ export function EventEditForm({
   allowedChapters: string[];
   /** Active saved venues, for the venue picker. */
   venues: Venue[];
+  /** Every chapter (loadChapters) — the chapter picker and timezones. */
+  chapters: Chapter[];
 }) {
   const router = useRouter();
   const [form, setForm] = useState<EventEditInput>(initial);
@@ -391,6 +394,7 @@ export function EventEditForm({
                 value={form.chapter}
                 onChange={setField("chapter")}
                 allowed={allowedChapters}
+                chapters={chapters}
               />
               <EventTypeField
                 idPrefix="edit"
@@ -420,6 +424,7 @@ export function EventEditForm({
               onChangeTime={setField("time")}
               onChangeEndTime={setField("endTime")}
               onChangeTimezone={setField("timezone")}
+              timezoneOptions={timezoneOptions(chapters, form.timezone)}
             />
             {problemFor("date", "time", "timezone")}
 

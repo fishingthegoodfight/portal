@@ -5,7 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { VolunteerRegistrationForm } from "@/components/volunteer-registration-form";
 import { formatPhoneNumber } from "@/lib/phone";
 import { formatDateInZone } from "@/lib/format-date";
-import { homeChapterOption } from "@/lib/chapters";
+import { homeChapterOption, loadChapters, type Chapter } from "@/lib/chapters";
 import {
   EMPTY_EXPERIENCE,
   experienceFromRow,
@@ -22,10 +22,11 @@ async function RegisterLoader() {
   }
   const userId = data.claims.sub as string;
 
-  const [{ data: volunteer }, { data: profile }, { data: details }] = await Promise.all([
+  const [{ data: volunteer }, { data: profile }, { data: details }, chapters] = await Promise.all([
     supabase.from("volunteers").select("status, registered_at").eq("user_id", userId).maybeSingle(),
     supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
     supabase.from("volunteer_registration_details").select("*").eq("volunteer_id", userId).maybeSingle(),
+    loadChapters(supabase),
   ]);
 
   // Only reachable by someone with a volunteers row — anyone else (a
@@ -47,7 +48,7 @@ async function RegisterLoader() {
     );
   }
 
-  const prefill = await loadPrefill(supabase, volunteer.registered_at as string | null);
+  const prefill = await loadPrefill(supabase, volunteer.registered_at as string | null, chapters);
 
   return (
     <>
@@ -79,7 +80,7 @@ async function RegisterLoader() {
           emergency_phone_2: formatPhoneNumber(profile?.emergency_phone_2 ?? ""),
           emergency_contact_2_relationship: profile?.emergency_contact_2_relationship ?? "",
           // The profile's, else the chapter on their approved application.
-          chapter: homeChapterOption(profile?.chapter) || prefill?.chapter || "",
+          chapter: homeChapterOption(profile?.chapter, chapters) || prefill?.chapter || "",
           tshirt_size: profile?.tshirt_size ?? "",
           favorite_snack: profile?.favorite_snack ?? "",
           favorite_na_beverage: profile?.favorite_na_beverage ?? "",
@@ -91,6 +92,7 @@ async function RegisterLoader() {
           prefill?.experience ?? (details ? experienceFromRow(details as ExperienceRow) : EMPTY_EXPERIENCE)
         }
         prefilledFrom={prefill ? { appliedOn: prefill.appliedOn } : null}
+        chapters={chapters}
       />
     </>
   );
@@ -104,6 +106,7 @@ async function RegisterLoader() {
 async function loadPrefill(
   supabase: Awaited<ReturnType<typeof createClient>>,
   registeredAt: string | null,
+  chapters: Chapter[],
 ): Promise<RegistrationPrefill | null> {
   const { data: applications } = await supabase.rpc("my_volunteer_applications");
   const approved = ((applications ?? []) as { id: number; status: string; status_changed_at: string }[])
@@ -120,7 +123,7 @@ async function loadPrefill(
   const app = ((rows ?? []) as Parameters<typeof prefillFromApplication>[0][])[0];
   if (!app) return null;
   return {
-    ...prefillFromApplication(app, (areas ?? []) as Pick<InterestArea, "id" | "kind" | "label">[]),
+    ...prefillFromApplication(app, (areas ?? []) as Pick<InterestArea, "id" | "kind" | "label">[], chapters),
     appliedOn: formatDateInZone(app.submitted_at, "America/Denver"),
   };
 }

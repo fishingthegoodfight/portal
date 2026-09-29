@@ -36,13 +36,13 @@ import type { EventChangeDiffEntry } from "@/lib/email/templates";
 import { expireExcessOffers, offerFreeSpots } from "@/lib/waitlist";
 import { capacityError, parseCapacity } from "@/lib/event-capacity";
 import { composeLocation, isLocationEmpty, locationErrors } from "@/lib/event-location";
-import { CHAPTERS, isVirtualChapter } from "@/lib/chapters";
+import { isChapterName, isVirtualChapter, loadChapters, type Chapter } from "@/lib/chapters";
 import { friendlyEventDbError, type EventFormField } from "@/lib/event-db-errors";
 import {
   isWaiverState,
   resolveEventWaiver,
   waiverStateForChapter,
-  WAIVER_STATES,
+  waiverStateName,
 } from "@/lib/waivers";
 
 type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
@@ -178,12 +178,12 @@ async function waiverChangeImpact(
 
   const oldRequirement = await resolveEventWaiver(supabase, before);
   const newRequirement = await resolveEventWaiver(supabase, after);
-  const oldState = waiverStateForChapter(before.chapter) ?? before.waiver_state;
+  const oldState = waiverStateForChapter(before.chapter, await loadChapters(supabase)) ?? before.waiver_state;
   const newState = after.waiver_state;
 
   return {
-    oldStateName: isWaiverState(oldState) ? WAIVER_STATES[oldState] : "previous",
-    newStateName: isWaiverState(newState) ? WAIVER_STATES[newState] : "new",
+    oldStateName: isWaiverState(oldState) ? waiverStateName(oldState) : "previous",
+    newStateName: isWaiverState(newState) ? waiverStateName(newState) : "new",
     registeredCount: userIds.length,
     signedOldCount: await countSignatures(
       supabase,
@@ -293,7 +293,7 @@ function buildDiff(before: EventRow, after: EventRow): EventChangeDiffEntry[] {
     after.requires_health_history ? "Yes" : "No",
   );
   const stateLabel = (code: string | null) =>
-    isWaiverState(code) ? WAIVER_STATES[code] : "";
+    isWaiverState(code) ? waiverStateName(code) : "";
   push("Waiver state", stateLabel(before.waiver_state), stateLabel(after.waiver_state));
   push(
     "When",
@@ -480,6 +480,7 @@ function applyToLaterOccurrence(
   before: EventRow,
   after: EventRow,
   applyOccurrenceNote: boolean,
+  chapters: Chapter[],
 ): EventRow {
   const next: EventRow = { ...occurrence };
   // Arrays (registration_sections) compare as sets — reordering isn't a change.
@@ -503,7 +504,7 @@ function applyToLaterOccurrence(
   // chapters (see isSeriesSafeChapterChange) — and only onto an occurrence
   // that's itself a physical chapter in that state, so an occurrence that was
   // individually moved elsewhere never has its waiver or format changed.
-  if (changed("chapter") && isSeriesSafeChapterChange(occurrence.chapter, after.chapter)) {
+  if (changed("chapter") && isSeriesSafeChapterChange(occurrence.chapter, after.chapter, chapters)) {
     next.chapter = after.chapter;
     next.waiver_state = after.waiver_state;
   }
@@ -537,10 +538,10 @@ function applyToLaterOccurrence(
 /** Whether a chapter change leaves everything derived from the chapter alone
  * — same waiver state, and physical on both sides — so it's safe to apply
  * across a series. */
-function isSeriesSafeChapterChange(from: string | null, to: string | null): boolean {
+function isSeriesSafeChapterChange(from: string | null, to: string | null, chapters: Chapter[]): boolean {
   if (isVirtualChapter(from) || isVirtualChapter(to)) return false;
-  const fromState = waiverStateForChapter(from);
-  return fromState != null && fromState === waiverStateForChapter(to);
+  const fromState = waiverStateForChapter(from, chapters);
+  return fromState != null && fromState === waiverStateForChapter(to, chapters);
 }
 
 /** A changed date/time, location, chapter, or meeting link — what attendees
@@ -702,10 +703,11 @@ export async function updateEventAction(
 
   // The chapter also decides the waiver: its state is never a separate
   // choice, it always follows the chapter.
-  if (!CHAPTERS.some((c) => c.name === input.chapter) && !isVirtualChapter(input.chapter)) {
+  const chapters = await loadChapters(supabase);
+  if (!isChapterName(chapters, input.chapter) && !isVirtualChapter(input.chapter)) {
     return { ok: false, error: "Choose a chapter" };
   }
-  const waiverState = waiverStateForChapter(input.chapter);
+  const waiverState = waiverStateForChapter(input.chapter, chapters);
   const isVirtual = isVirtualChapter(input.chapter);
 
   // Same fields and rule as the create wizard. An older event that only
@@ -827,7 +829,7 @@ export async function updateEventAction(
     // neither, so it can carry across the series. Crossing states or moving
     // to/from Virtual would change the waiver or the format for everyone
     // already registered on every later date, so that stays per-event.
-    if (chapterChanged && !isSeriesSafeChapterChange(before.chapter, after.chapter)) {
+    if (chapterChanged && !isSeriesSafeChapterChange(before.chapter, after.chapter, chapters)) {
       const crossesVirtual = isVirtualChapter(before.chapter) || isVirtualChapter(after.chapter);
       return {
         ok: false,
@@ -837,7 +839,7 @@ export async function updateEventAction(
       };
     }
     for (const occurrence of await loadLaterOccurrences(supabase, before)) {
-      const next = applyToLaterOccurrence(occurrence, before, after, options.applyOccurrenceNote);
+      const next = applyToLaterOccurrence(occurrence, before, after, options.applyOccurrenceNote, chapters);
       if (next.ends_at && new Date(next.ends_at).getTime() <= new Date(next.starts_at).getTime()) {
         return {
           ok: false,
@@ -885,7 +887,7 @@ export async function updateEventAction(
     const warnings: EditWarning[] = [];
     const registrants = await loadRegistrants(supabase, eventId);
 
-    // Moving to a chapter in the other state (CO <-> GA) swaps the waiver:
+    // Moving to a chapter in another state (e.g. CO -> GA) swaps the waiver:
     // registered people signed the old state's, so they'll need to sign the new
     // one. Within the same state (Denver -> CO Springs) nothing changes for them.
     if (before.waiver_state !== after.waiver_state) {
@@ -1116,7 +1118,7 @@ async function notifyRescheduled(
     }
     const newWaiverStateName =
       waiverStateChanged && isWaiverState(after.waiver_state)
-        ? WAIVER_STATES[after.waiver_state]
+        ? waiverStateName(after.waiver_state)
         : undefined;
 
     for (const { userId, email: toEmail } of attendees) {

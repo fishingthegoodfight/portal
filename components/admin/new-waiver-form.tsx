@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { WAIVER_STATES } from "@/lib/waivers";
+import { waiverStateName } from "@/lib/waivers";
 
 /**
  * Adds a new waiver version. Existing versions are never edited — the form
@@ -19,8 +19,12 @@ import { WAIVER_STATES } from "@/lib/waivers";
  */
 export function NewWaiverForm({
   latestByState,
+  states,
 }: {
   latestByState: Record<string, { title: string; bodyMarkdown: string }>;
+  /** The states a waiver can be written for — every chapter's state
+   * (waiverStatesForChapters). */
+  states: string[];
 }) {
   const router = useRouter();
   const [state, setState] = useState("");
@@ -78,9 +82,9 @@ export function NewWaiverForm({
                 onChange={(e) => setState(e.target.value)}
               >
                 <option value="">Choose a state</option>
-                {Object.entries(WAIVER_STATES).map(([code, name]) => (
+                {states.map((code) => (
                   <option key={code} value={code}>
-                    {name} ({code})
+                    {waiverStateName(code)} ({code})
                   </option>
                 ))}
               </Select>

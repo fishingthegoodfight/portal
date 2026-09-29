@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendReferenceRequestEmail } from "@/lib/email/send";
-import { lookupReferenceToken } from "@/lib/reference-form";
+import { lookupReferenceToken, referenceChapterOptions } from "@/lib/reference-form";
 import {
   referenceAnswersPayload,
   referenceByDate,
@@ -195,7 +195,7 @@ export async function submitReferenceAction(token: string, input: ReferenceInput
     return { ok: false, closed: true, error: "This link isn't active any more, so we can't take answers through it." };
   }
   const shape = { slot: lookup.slot, fishingQuestions: lookup.fishingQuestions };
-  const errors = referenceErrors(input, shape);
+  const errors = referenceErrors(input, shape, await referenceChapterOptions());
   if (errors.length > 0) return { ok: false, error: errors[0] };
 
   const { data, error } = await createAdminClient().rpc("reference_form_submit", {

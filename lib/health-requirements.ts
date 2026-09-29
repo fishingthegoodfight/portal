@@ -1,5 +1,5 @@
 import type { createClient } from "@/lib/supabase/server";
-import { timezoneForChapter } from "@/lib/chapters";
+import { loadChapters, timezoneForChapter, type Chapter } from "@/lib/chapters";
 import { currentYearInZone, eventYear } from "@/lib/waivers";
 import { formatEventDateRange } from "@/lib/format-date";
 import { loadMyHealthHistoryList } from "@/lib/health-access";
@@ -22,8 +22,8 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
 
 /** The year a form signed now counts for: the current calendar year in the
  * person's home chapter's timezone (same default as the volunteer waiver). */
-export function healthFormYearFor(profileChapter: string | null | undefined): number {
-  return currentYearInZone(timezoneForChapter(profileChapter));
+export function healthFormYearFor(profileChapter: string | null | undefined, chapters: Chapter[]): number {
+  return currentYearInZone(timezoneForChapter(profileChapter, chapters));
 }
 
 /** The years the signed-in person has a form on file for. */
@@ -74,13 +74,14 @@ export async function eventsNeedingHealthForm(
     .eq("user_id", userId)
     .eq("status", "confirmed");
 
-  const [{ data: rsvps }, { data: shifts }, years, { data: profile }] = await Promise.all([
+  const [{ data: rsvps }, { data: shifts }, years, { data: profile }, chapters] = await Promise.all([
     rsvpQuery,
     shiftQuery,
     myHealthFormYears(supabase),
     supabase.from("profiles").select("chapter").eq("id", userId).maybeSingle(),
+    loadChapters(supabase),
   ]);
-  const signingYear = healthFormYearFor(profile?.chapter as string | null | undefined);
+  const signingYear = healthFormYearFor(profile?.chapter as string | null | undefined, chapters);
 
   // Every event they're on, as a participant or a volunteer — then the one
   // rule, applied the same way to both.

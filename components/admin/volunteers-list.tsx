@@ -5,7 +5,6 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { sendPortalInvitesAction, type PortalInviteOutcome } from "@/lib/actions/volunteer-invite";
-import { timezoneForChapter } from "@/lib/chapters";
 import { formatDateInZone } from "@/lib/format-date";
 import {
   PORTAL_INVITE_BATCH_LIMIT,
@@ -25,6 +24,11 @@ export type VolunteerListItem = {
   lastName: string;
   email: string;
   chapter: string;
+  /** The home chapter's timezone, for dates shown on the row. */
+  timeZone: string;
+  /** Has completed volunteer registration (registered_at). An approved
+   * volunteer who hasn't can't take a shift. */
+  registered: boolean;
   roles: string[];
   certMissingOrExpired: boolean;
   /** null when account states couldn't be loaded. */
@@ -169,11 +173,20 @@ export function VolunteersList({ volunteers }: { volunteers: VolunteerListItem[]
               </Link>
               <CollapsibleTags
                 tags={v.roles}
-                leading={<Badge variant="outline">{VOLUNTEER_STATUS_LABELS[v.status]}</Badge>}
+                leading={
+                  <>
+                    <Badge variant="outline">{VOLUNTEER_STATUS_LABELS[v.status]}</Badge>
+                    {v.status === "approved" && !v.registered && (
+                      <Badge className="border-transparent bg-amber-500/15 text-amber-700 hover:bg-amber-500/15 dark:text-amber-400">
+                        Not registered
+                      </Badge>
+                    )}
+                  </>
+                }
                 trailing={v.certMissingOrExpired && <Badge variant="destructive">Cert missing/expired</Badge>}
               />
               <div className="flex flex-wrap items-center gap-2 text-xs md:flex-col md:items-end md:gap-1">
-                <AccountStateLabel account={v.account} chapter={v.chapter} />
+                <AccountStateLabel account={v.account} timeZone={v.timeZone} />
                 {invitable && (
                   <Button
                     type="button"
@@ -198,13 +211,13 @@ export function VolunteersList({ volunteers }: { volunteers: VolunteerListItem[]
   );
 }
 
-export function AccountStateLabel({ account, chapter }: { account: AccountState | null; chapter: string }) {
+export function AccountStateLabel({ account, timeZone }: { account: AccountState | null; timeZone: string }) {
   if (!account) return <span className="text-muted-foreground">Account: unknown</span>;
   if (account.kind === "active") return <span className="text-green-700 dark:text-green-400">Active</span>;
   if (account.kind === "invited") {
     return (
       <span className="text-amber-700 dark:text-amber-400">
-        Invited {formatDateInZone(account.invitedAt, timezoneForChapter(chapter))}
+        Invited {formatDateInZone(account.invitedAt, timeZone)}
       </span>
     );
   }

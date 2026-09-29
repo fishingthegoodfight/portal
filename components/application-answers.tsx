@@ -7,6 +7,7 @@ import {
   type ApplicationRecord,
   type ExperienceRow,
 } from "@/lib/volunteer-applications";
+import type { Chapter } from "@/lib/chapters";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -34,9 +35,12 @@ export function ApplicationAnswers({
   app,
   interestAreaNames,
   reviewer,
+  chapters,
 }: {
   app: ApplicationAnswersData;
   interestAreaNames: string[];
+  /** Every chapter (loadChapters), for the chapter's label. */
+  chapters: Chapter[];
   reviewer?: { ref1Matched: boolean; legacyRoleNames: string[] };
 }) {
   return (
@@ -48,7 +52,7 @@ export function ApplicationAnswers({
       </Section>
 
       <Section title="About you">
-        <Row label="Chapter" value={app.chapters.map(applicationChapterLabel).join(", ")} />
+        <Row label="Chapter" value={app.chapters.map((c) => applicationChapterLabel(c, chapters)).join(", ")} />
         <Row label="How you got connected" value={app.how_connected} />
         <Row label="How long coming to events" value={app.how_long_attending} />
       </Section>

@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { formatPhoneNumber } from "@/lib/phone";
 import { healthFormYearFor } from "@/lib/health-requirements";
+import { loadChapters } from "@/lib/chapters";
 import {
   conditionsNeedingExplanation,
   followUpsFor,
@@ -34,7 +35,7 @@ export async function submitHealthHistoryAction(input: HealthHistoryInput): Prom
   const userId = claims.claims.sub as string;
 
   const { data: profile } = await supabase.from("profiles").select("chapter").eq("id", userId).maybeSingle();
-  const year = healthFormYearFor(profile?.chapter as string | null | undefined);
+  const year = healthFormYearFor(profile?.chapter as string | null | undefined, await loadChapters(supabase));
   const today = new Date().toISOString().slice(0, 10);
 
   const errors = healthHistoryErrors(input, today);

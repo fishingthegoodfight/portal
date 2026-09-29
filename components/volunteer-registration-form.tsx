@@ -11,6 +11,7 @@ import {
   type SubmitVolunteerRegistrationInput,
 } from "@/lib/actions/volunteer-register";
 import { HomeChapterField } from "@/components/chapter-select";
+import type { Chapter } from "@/lib/chapters";
 import { EmergencyContactFields } from "@/components/emergency-contact-fields";
 import { US_STATES } from "@/lib/us-states";
 import { formatPhoneNumber, formatPostalCode } from "@/lib/phone";
@@ -56,6 +57,7 @@ export function VolunteerRegistrationForm({
   initialProfile,
   initialExperience,
   prefilledFrom,
+  chapters,
 }: {
   userId: string;
   /** True once they've submitted this form before (registered_at is set) —
@@ -67,6 +69,8 @@ export function VolunteerRegistrationForm({
   initialExperience: ExperienceInput;
   /** Set when skills, programs and experience came from their application. */
   prefilledFrom: { appliedOn: string } | null;
+  /** Every chapter (loadChapters), for the home chapter dropdown. */
+  chapters: Chapter[];
 }) {
   const router = useRouter();
   const [profile, setProfile] = useState<ProfileData>(initialProfile);
@@ -332,6 +336,7 @@ export function VolunteerRegistrationForm({
             idPrefix="v"
             value={profile.chapter}
             onChange={(value) => setProfile((prev) => ({ ...prev, chapter: value }))}
+            chapters={chapters}
           />
           <div className="grid grid-cols-3 gap-4">
             <div className="grid gap-2">

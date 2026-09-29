@@ -10,6 +10,11 @@ const SETUP_LINKS = [
     description: "Make someone an admin or a chapter lead, and pick which chapters a lead covers.",
   },
   {
+    href: "/protected/admin/setup/chapters",
+    title: "Regions & chapters",
+    description: "Add, rename, reorder and deactivate chapters, and the regions they're grouped into.",
+  },
+  {
     href: "/protected/admin/event-types",
     title: "Event types",
     description: "Add, rename, reorder, and deactivate the types offered when creating an event.",
@@ -28,6 +33,11 @@ const SETUP_LINKS = [
     href: "/protected/admin/setup/applications",
     title: "Volunteer applications",
     description: "How many events someone attends before a screening call, and the link applicants use to book one.",
+  },
+  {
+    href: "/protected/admin/setup/opportunities-email",
+    title: "Volunteer opportunities email",
+    description: "The every-other-week email of open volunteer roles: on or off, and which day it goes out.",
   },
   {
     href: "/protected/admin/setup/interest-areas",

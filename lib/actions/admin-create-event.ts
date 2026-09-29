@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import { createClient } from "@/lib/supabase/server";
 import { actorLabel, requireChapterManager } from "@/lib/admin/require-admin";
-import { CHAPTERS, isVirtualChapter, timezoneForChapter } from "@/lib/chapters";
+import { activeChapters, isChapterName, isVirtualChapter, loadChapters, timezoneForChapter } from "@/lib/chapters";
 import { formatEventDateRange } from "@/lib/format-date";
 import { generateRecurrenceDates, type RecurrenceFrequency } from "@/lib/admin/recurrence";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
@@ -122,7 +122,9 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
   // --- Step 1: Basics ---
   const title = input.title.trim();
   if (!title) return fail("Event title is required", 1, "title");
-  if (!CHAPTERS.some((c) => c.name === input.chapter) && !isVirtualChapter(input.chapter)) {
+  // A new event goes in an active chapter (or Virtual).
+  const chapters = await loadChapters(supabase);
+  if (!isChapterName(activeChapters(chapters), input.chapter) && !isVirtualChapter(input.chapter)) {
     return fail("Choose a chapter", 1, "chapter");
   }
   // Admins, and chapter leads for their own chapters (can_manage_chapter).
@@ -158,7 +160,7 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
   if (!input.date || !input.time) {
     return fail("Date and start time are required", 1, "date");
   }
-  const timezone = input.timezone || timezoneForChapter(input.chapter);
+  const timezone = input.timezone || timezoneForChapter(input.chapter, chapters);
 
   const firstStarts = zonedDateTimeToUtc(input.date, input.time, timezone);
   if (input.endTime) {
@@ -196,7 +198,7 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
   // Never a choice: the waiver state always follows the chapter. A virtual
   // event resolves to Colorado — see the deliberate-default comment on
   // waiverStateForChapter in lib/waivers.ts.
-  const waiverState = waiverStateForChapter(input.chapter);
+  const waiverState = waiverStateForChapter(input.chapter, chapters);
   const location = isVirtual ? null : composeLocation(input);
 
   // --- Step 3: Volunteers ---

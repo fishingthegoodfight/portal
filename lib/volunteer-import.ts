@@ -1,4 +1,4 @@
-import { CHAPTERS, NOT_LOCAL_CHAPTER } from "@/lib/chapters";
+import { NOT_LOCAL_CHAPTER } from "@/lib/chapters";
 
 /**
  * Volunteer roster import (the "Import volunteers" screen): CSV parsing and
@@ -47,7 +47,6 @@ export type CheckedImportRow = {
 };
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const CHAPTER_NAMES = [...CHAPTERS.map((c) => c.name), NOT_LOCAL_CHAPTER];
 
 /** Case, spacing and curly apostrophes (Word/Excel autocorrect) don't count
  * as a difference — anything else does. */
@@ -63,6 +62,8 @@ export function normalizeName(value: string): string {
 export function checkImportRow(
   row: ImportRowInput,
   activeRoleTypes: { id: number; name: string }[],
+  /** The active chapters' names. */
+  chapterNames: string[],
 ): CheckedImportRow {
   const problems: string[] = [];
 
@@ -82,7 +83,7 @@ export function checkImportRow(
   let chapter = "";
   const chapterRaw = row.chapter.trim();
   if (chapterRaw) {
-    const match = CHAPTER_NAMES.find((c) => normalizeName(c) === normalizeName(chapterRaw));
+    const match = [...chapterNames, NOT_LOCAL_CHAPTER].find((c) => normalizeName(c) === normalizeName(chapterRaw));
     if (match) chapter = match;
     else problems.push(`Home chapter "${chapterRaw}" doesn't match a chapter`);
   }
@@ -236,10 +237,11 @@ export function templateCsv(): string {
  * volunteer on import, and neither Excel nor Google Sheets has a CSV comment
  * syntax. Two columns, side by side.
  */
-export function validValuesCsv(roleNames: string[]): string {
+export function validValuesCsv(roleNames: string[], chapterNames: string[]): string {
+  const homeChapters = [...chapterNames, NOT_LOCAL_CHAPTER];
   const rows: string[][] = [["Approved roles (separate several with ;)", "Home chapter"]];
-  for (let i = 0; i < Math.max(roleNames.length, CHAPTER_NAMES.length); i++) {
-    rows.push([roleNames[i] ?? "", CHAPTER_NAMES[i] ?? ""]);
+  for (let i = 0; i < Math.max(roleNames.length, homeChapters.length); i++) {
+    rows.push([roleNames[i] ?? "", homeChapters[i] ?? ""]);
   }
   return toCsv(rows);
 }

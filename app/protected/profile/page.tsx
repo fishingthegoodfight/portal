@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
-import { homeChapterOption } from "@/lib/chapters";
+import { homeChapterOption, loadChapters } from "@/lib/chapters";
 import { ProfileForm } from "@/components/profile-form";
 import { formatPhoneNumber } from "@/lib/phone";
 import {
@@ -39,11 +39,11 @@ async function ProfileFormLoader({
   // select("*") rather than an explicit column list so a new registration
   // section's profile column (see lib/registration-sections.ts) is picked up
   // here automatically, same as the RSVP page loader does.
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("*")
-    .eq("id", userId)
-    .maybeSingle();
+  const [{ data: profile }, { data: volunteer }, chapters] = await Promise.all([
+    supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
+    supabase.from("volunteers").select("status").eq("user_id", userId).maybeSingle(),
+    loadChapters(supabase),
+  ]);
 
   // Every registration field's current value, keyed by its profile column —
   // formatted (e.g. the phone mask) in case a stored value predates that
@@ -67,7 +67,7 @@ async function ProfileFormLoader({
         // pasted or entered before this field forced a format) so the
         // display is always standardized, not just newly-typed input.
         phone: formatPhoneNumber(profile?.phone ?? ""),
-        chapter: homeChapterOption(profile?.chapter),
+        chapter: homeChapterOption(profile?.chapter, chapters),
         address_line1: profile?.address_line1 ?? "",
         address_line2: profile?.address_line2 ?? "",
         city: profile?.city ?? "",
@@ -75,6 +75,12 @@ async function ProfileFormLoader({
         postal_code: profile?.postal_code ?? "",
       }}
       initialRegistrationFields={registrationFields}
+      chapters={chapters}
+      // Only approved volunteers are sent the opportunities email (or the
+      // finish-registration nudge), so only they see the setting.
+      initialOpportunitiesEmail={
+        volunteer?.status === "approved" ? profile?.volunteer_opportunities_email !== false : null
+      }
     />
   );
 }

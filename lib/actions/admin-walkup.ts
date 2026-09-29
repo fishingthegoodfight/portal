@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireEventManager } from "@/lib/admin/require-admin";
-import { CHAPTERS, NOT_LOCAL_CHAPTER } from "@/lib/chapters";
+import { activeChapters, isChapterName, loadChapters, NOT_LOCAL_CHAPTER } from "@/lib/chapters";
 import { waiverInfoForUser } from "@/lib/waivers";
 import { formatEventDateRange } from "@/lib/format-date";
 import { confirmedShiftsAtEvent } from "@/lib/volunteer-signups";
@@ -108,7 +108,9 @@ export async function addWalkupRsvpAction(input: {
   // (a hand-rolled request) is silently dropped rather than rejected, same
   // as leaving the field blank.
   const chapter =
-    input.chapter && (CHAPTERS.some((c) => c.name === input.chapter) || input.chapter === NOT_LOCAL_CHAPTER)
+    input.chapter &&
+    (isChapterName(activeChapters(await loadChapters(supabase)), input.chapter) ||
+      input.chapter === NOT_LOCAL_CHAPTER)
       ? input.chapter
       : null;
 

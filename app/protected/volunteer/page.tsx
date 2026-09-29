@@ -217,7 +217,11 @@ async function VolunteerHomeLoader({
             <CardTitle>Open shifts you can fill</CardTitle>
           </CardHeader>
           <CardContent>
-            {openShifts.length === 0 ? (
+            {!volunteer.registered_at ? (
+              <p className="text-sm text-muted-foreground">
+                Open shifts in your roles show here once you&apos;ve completed your registration.
+              </p>
+            ) : openShifts.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 No open shifts in your roles right now — check back soon.
               </p>

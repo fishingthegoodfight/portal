@@ -1543,3 +1543,152 @@ export function adminDigestEmail({ sections }: { sections: AdminDigestSection[] 
   ].join("\n");
   return { subject, html, text };
 }
+
+/** One event in the volunteer opportunities email, pre-formatted. */
+export type OpportunitiesEmailEvent = {
+  name: string;
+  /** In the event's own timezone — see lib/format-date.ts. */
+  dateRange: string;
+  /** "Denver chapter", or "Virtual". */
+  chapterLabel: string;
+  /** Venue and city, the free-text location, or "Online". */
+  venue: string;
+  /** The event page, where the Volunteer section's sign-up buttons are. */
+  url: string;
+  roles: { role: string; shiftRange: string; openSlots: number }[];
+};
+
+/** The unsubscribe footer on both opportunities emails. */
+function opportunitiesFooterHtml(unsubscribeUrl: string, profileUrl: string): string {
+  return `<p style="margin:24px 0 0;font-size:12px;color:#78716c;">You're getting this because you're an approved ${ORG_NAME} volunteer. <a href="${escapeHtml(unsubscribeUrl)}" style="color:#78716c;">Unsubscribe</a> from these emails, or change it any time on <a href="${escapeHtml(profileUrl)}" style="color:#78716c;">your profile</a>.</p>`;
+}
+
+function opportunitiesFooterText(unsubscribeUrl: string, profileUrl: string): string {
+  return [
+    `You're getting this because you're an approved ${ORG_NAME} volunteer.`,
+    `Unsubscribe: ${unsubscribeUrl}`,
+    `Or change it on your profile: ${profileUrl}`,
+  ].join("\n");
+}
+
+const slotsLabel = (n: number) => `${n} ${n === 1 ? "spot" : "spots"} open`;
+
+/**
+ * Every other week, to an approved, registered volunteer: open roles they're
+ * approved for at events in their region over the next six weeks (every
+ * region for someone with no local chapter). Only sent when there's at least
+ * one — see lib/volunteer-opportunities-email.ts.
+ */
+export function volunteerOpportunitiesEmail({
+  recipientName,
+  events,
+  weeks,
+  unsubscribeUrl,
+  profileUrl,
+}: {
+  recipientName: string | null;
+  events: OpportunitiesEmailEvent[];
+  weeks: number;
+  unsubscribeUrl: string;
+  profileUrl: string;
+}): RenderedEmail {
+  const roleCount = events.reduce((n, e) => n + e.roles.length, 0);
+  const subject = `Volunteer opportunities: ${roleCount} open ${roleCount === 1 ? "role" : "roles"} in the next ${weeks} weeks`;
+  const greeting = recipientName ? `Hi ${escapeHtml(recipientName)},` : "Hi,";
+  const greetingText = recipientName ? `Hi ${recipientName},` : "Hi,";
+  const intro = `Here's where we could use you over the next ${weeks} weeks — open roles you're approved for. Tap an event to sign up.`;
+
+  const eventHtml = (e: OpportunitiesEmailEvent) =>
+    [
+      `<div style="margin:0 0 20px;padding:12px 14px;border:1px solid #e7e5e4;border-radius:6px;">`,
+      `<p style="margin:0 0 4px;font-weight:600;"><a href="${escapeHtml(e.url)}" style="color:#166534;">${escapeHtml(e.name)}</a></p>`,
+      `<p style="margin:0 0 2px;font-size:14px;">${escapeHtml(e.dateRange)}</p>`,
+      `<p style="margin:0 0 10px;font-size:14px;color:#57534e;">${escapeHtml(e.chapterLabel)} · ${escapeHtml(e.venue)}</p>`,
+      `<ul style="margin:0 0 10px;padding-left:20px;font-size:14px;">${e.roles
+        .map(
+          (r) =>
+            `<li style="margin:0 0 4px;"><strong>${escapeHtml(r.role)}</strong> — ${escapeHtml(r.shiftRange)} · ${slotsLabel(r.openSlots)}</li>`,
+        )
+        .join("")}</ul>`,
+      `<p style="margin:0;"><a href="${escapeHtml(e.url)}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:8px 14px;border-radius:6px;font-size:14px;font-weight:600;">Sign up</a></p>`,
+      `</div>`,
+    ].join("");
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">Volunteer opportunities</p>`,
+      `<p style="margin:0 0 16px;">${greeting}</p>`,
+      `<p style="margin:0 0 20px;">${escapeHtml(intro)}</p>`,
+      ...events.map(eventHtml),
+      `<p style="margin:0;font-size:13px;color:#57534e;">Questions? Just reply to this email.</p>`,
+      opportunitiesFooterHtml(unsubscribeUrl, profileUrl),
+    ].join("\n"),
+  );
+
+  const text = [
+    "Volunteer opportunities",
+    "",
+    greetingText,
+    "",
+    intro,
+    "",
+    ...events.flatMap((e) => [
+      e.name,
+      e.dateRange,
+      `${e.chapterLabel} · ${e.venue}`,
+      ...e.roles.map((r) => `- ${r.role} — ${r.shiftRange} · ${slotsLabel(r.openSlots)}`),
+      `Sign up: ${e.url}`,
+      "",
+    ]),
+    "Questions? Just reply to this email.",
+    "",
+    opportunitiesFooterText(unsubscribeUrl, profileUrl),
+  ].join("\n");
+  return { subject, html, text };
+}
+
+/**
+ * Same schedule, to an approved volunteer who hasn't completed volunteer
+ * registration: a short nudge with the link. They can't take a shift until
+ * they do (registration is where this year's volunteer waiver is signed).
+ */
+export function finishRegistrationEmail({
+  recipientName,
+  registerUrl,
+  unsubscribeUrl,
+  profileUrl,
+}: {
+  recipientName: string | null;
+  registerUrl: string;
+  unsubscribeUrl: string;
+  profileUrl: string;
+}): RenderedEmail {
+  const subject = "Finish your volunteer registration";
+  const greeting = recipientName ? `Hi ${escapeHtml(recipientName)},` : "Hi,";
+  const greetingText = recipientName ? `Hi ${recipientName},` : "Hi,";
+  const body =
+    "You're approved to volunteer with Fishing the Good Fight — thank you. There's one step left before you can sign up for shifts: your volunteer registration. It's a few details, this year's volunteer waiver, and a check of your availability and certifications.";
+  const buttonLabel = "Complete your registration";
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;">${greeting}</p>`,
+      `<p style="margin:0 0 16px;">${escapeHtml(body)}</p>`,
+      `<p style="margin:16px 0 8px;"><a href="${escapeHtml(registerUrl)}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Questions? Just reply to this email.</p>`,
+      opportunitiesFooterHtml(unsubscribeUrl, profileUrl),
+    ].join("\n"),
+  );
+  const text = [
+    greetingText,
+    "",
+    body,
+    "",
+    `${buttonLabel}: ${registerUrl}`,
+    "",
+    "Questions? Just reply to this email.",
+    "",
+    opportunitiesFooterText(unsubscribeUrl, profileUrl),
+  ].join("\n");
+  return { subject, html, text };
+}

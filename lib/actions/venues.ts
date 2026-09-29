@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { requireAdmin, requireChapterManager } from "@/lib/admin/require-admin";
 import type { DeleteResult, UsageResult } from "@/lib/admin/usage";
-import { CHAPTERS, isVirtualChapter } from "@/lib/chapters";
+import { isChapterName, isVirtualChapter, loadChapters, type Chapter } from "@/lib/chapters";
 import { locationErrors, type LocationFieldsValue } from "@/lib/event-location";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
@@ -13,8 +13,8 @@ export type VenueInput = LocationFieldsValue & {
   chapter: string;
 };
 
-function validate(input: VenueInput): string | null {
-  if (input.chapter && !CHAPTERS.some((c) => c.name === input.chapter)) {
+function validate(input: VenueInput, chapters: Chapter[]): string | null {
+  if (input.chapter && !isChapterName(chapters, input.chapter)) {
     return "Choose a chapter, or leave it as all chapters";
   }
   // Same rule as an event's own address — a saved venue fills those fields.
@@ -40,7 +40,7 @@ export async function createVenueAction(input: VenueInput): Promise<ActionResult
   const adminCheck = await requireAdmin(supabase);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
 
-  const problem = validate(input);
+  const problem = validate(input, await loadChapters(supabase));
   if (problem) return { ok: false, error: problem };
 
   const { error } = await supabase.from("venues").insert(venueColumns(input));
@@ -55,7 +55,7 @@ export async function updateVenueAction(id: number, input: VenueInput): Promise<
   const adminCheck = await requireAdmin(supabase);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
 
-  const problem = validate(input);
+  const problem = validate(input, await loadChapters(supabase));
   if (problem) return { ok: false, error: problem };
 
   const { error } = await supabase.from("venues").update(venueColumns(input)).eq("id", id);
@@ -106,7 +106,7 @@ export async function saveVenueFromEventAction(input: VenueInput): Promise<Actio
   const gate = await requireChapterManager(supabase, input.chapter);
   if ("error" in gate) return { ok: false, error: "You can only save venues for a chapter you lead" };
 
-  const problem = validate(input);
+  const problem = validate(input, await loadChapters(supabase));
   if (problem) return { ok: false, error: problem };
 
   const { error } = await supabase.from("venues").insert(venueColumns(input));

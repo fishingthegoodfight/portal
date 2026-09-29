@@ -7,7 +7,7 @@ import { authConfirmUrl, buildConfirmUrl } from "@/lib/auth-confirm-link";
 import { sendPersonInviteEmail } from "@/lib/email/send";
 import { setDataAccessAction, setUserRoleAction } from "@/lib/actions/roles";
 import type { Role } from "@/lib/roles";
-import { CHAPTERS, VIRTUAL_CHAPTER } from "@/lib/chapters";
+import { isChapterName, loadChapters, VIRTUAL_CHAPTER } from "@/lib/chapters";
 
 // Set a password, then their profile — the volunteer invite's account setup
 // without the registration form. The /auth/update-password prefix is also
@@ -16,7 +16,6 @@ const PROFILE_PATH = "/protected/profile";
 const SET_PASSWORD_NEXT = `/auth/update-password?next=${encodeURIComponent(PROFILE_PATH)}`;
 
 const ROLES: Role[] = ["participant", "chapter_lead", "admin"];
-const CHAPTER_NAMES = new Set([...CHAPTERS.map((c) => c.name), VIRTUAL_CHAPTER]);
 
 export type InvitePersonInput = {
   email: string;
@@ -69,7 +68,10 @@ export async function invitePersonAction(input: InvitePersonInput): Promise<Invi
   // half-set-up invite behind.
   if (!ROLES.includes(input.role)) return { ok: false, error: "Choose a role" };
   const ledChapters = input.role === "chapter_lead" ? [...new Set(input.ledChapters)] : [];
-  if (ledChapters.some((c) => !CHAPTER_NAMES.has(c))) return { ok: false, error: "Unknown chapter" };
+  const known = await loadChapters(supabase);
+  if (ledChapters.some((c) => c !== VIRTUAL_CHAPTER && !isChapterName(known, c))) {
+    return { ok: false, error: "Unknown chapter" };
+  }
   if (input.role === "chapter_lead" && ledChapters.length === 0) {
     return { ok: false, error: "Pick at least one chapter for a chapter lead" };
   }

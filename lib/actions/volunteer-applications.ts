@@ -5,6 +5,7 @@ import { requireAdmin } from "@/lib/admin/require-admin";
 import { formatPhoneNumber } from "@/lib/phone";
 import {
   applicationChapterLabel,
+  applicationChapterOptions,
   applicationErrors,
   experienceToRow,
   type ApplicationInput,
@@ -16,7 +17,7 @@ import {
   sendApplicationInviteToScheduleEmail,
 } from "@/lib/email/send";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { NOT_LOCAL_CHAPTER } from "@/lib/chapters";
+import { loadChapters, NOT_LOCAL_CHAPTER } from "@/lib/chapters";
 
 export type ApplicationActionResult = { ok: true } | { ok: false; error: string };
 
@@ -35,7 +36,11 @@ export async function submitVolunteerApplicationAction(input: ApplicationInput):
   const { data: claims, error: authError } = await supabase.auth.getClaims();
   if (authError || !claims?.claims) return { ok: false, error: "Not authenticated" };
 
-  const errors = applicationErrors(input);
+  const chapters = await loadChapters(supabase);
+  const errors = applicationErrors(
+    input,
+    applicationChapterOptions(chapters).map((o) => o.value),
+  );
   if (errors.length > 0) return { ok: false, error: errors[0] };
 
   const { data: areas } = await supabase.from("volunteer_interest_areas").select("id").eq("active", true);
@@ -125,7 +130,7 @@ export async function submitVolunteerApplicationAction(input: ApplicationInput):
 async function notifyAdminsOfApplication(userId: string): Promise<void> {
   try {
     const admin = createAdminClient();
-    const [{ data: app, error }, { data: settings }] = await Promise.all([
+    const [{ data: app, error }, { data: settings }, chapters] = await Promise.all([
       admin
         .from("volunteer_applications")
         .select("id, full_name, chapters, status, attendance_at_submission")
@@ -134,6 +139,7 @@ async function notifyAdminsOfApplication(userId: string): Promise<void> {
         .limit(1)
         .maybeSingle(),
       admin.from("app_settings").select("min_events_before_screening").maybeSingle(),
+      loadChapters(admin),
     ]);
     if (error || !app) throw new Error(error?.message ?? "the new application wasn't found");
     await sendAdminNewApplicationEmail({
@@ -141,7 +147,7 @@ async function notifyAdminsOfApplication(userId: string): Promise<void> {
       applicantName: app.full_name as string,
       chapterLabel:
         ((app.chapters as string[]) ?? [])
-          .map((c) => (c === NOT_LOCAL_CHAPTER ? c : applicationChapterLabel(c)))
+          .map((c) => (c === NOT_LOCAL_CHAPTER ? c : applicationChapterLabel(c, chapters)))
           .join(", ") || "No chapter",
       attended: app.attendance_at_submission as number,
       target: (settings?.min_events_before_screening as number | undefined) ?? 2,

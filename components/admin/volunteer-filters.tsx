@@ -3,8 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { CHAPTERS } from "@/lib/chapters";
-import { VOLUNTEER_STATUSES, VOLUNTEER_STATUS_LABELS } from "@/lib/volunteers";
+import type { Chapter } from "@/lib/chapters";
+import { NOT_REGISTERED_FILTER, VOLUNTEER_STATUSES, VOLUNTEER_STATUS_LABELS } from "@/lib/volunteers";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 
@@ -16,12 +16,15 @@ export function VolunteerFilters({
   role,
   q,
   roleTypes,
+  chapters,
 }: {
   status: string;
   chapter: string;
   role: string;
   q: string;
   roleTypes: VolunteerRoleTypeOption[];
+  /** Every chapter (loadChapters). */
+  chapters: Chapter[];
 }) {
   const router = useRouter();
   const [search, setSearch] = useState(q);
@@ -52,6 +55,7 @@ export function VolunteerFilters({
               {VOLUNTEER_STATUS_LABELS[s]}
             </option>
           ))}
+          <option value={NOT_REGISTERED_FILTER}>Approved, not registered</option>
         </Select>
       </div>
       <div className="grid gap-1">
@@ -60,7 +64,7 @@ export function VolunteerFilters({
         </label>
         <Select id="vf_chapter" value={chapter} onChange={(e) => navigate({ chapter: e.target.value })}>
           <option value="">All chapters</option>
-          {CHAPTERS.map((c) => (
+          {chapters.map((c) => (
             <option key={c.name} value={c.name}>
               {c.name}, {c.state}
             </option>

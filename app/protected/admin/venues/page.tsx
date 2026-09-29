@@ -3,19 +3,20 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/supabase/server";
 import { VenuesManager } from "@/components/admin/venues-manager";
 import { VENUE_COLUMNS, type Venue } from "@/lib/venues";
+import { loadChapters } from "@/lib/chapters";
 
 async function VenuesLoader() {
   const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("venues")
-    .select(VENUE_COLUMNS)
-    .order("name", { ascending: true });
+  const [{ data, error }, chapters] = await Promise.all([
+    supabase.from("venues").select(VENUE_COLUMNS).order("name", { ascending: true }),
+    loadChapters(supabase),
+  ]);
 
   if (error) {
     return <p className="text-sm text-red-500">Couldn&apos;t load venues: {error.message}</p>;
   }
 
-  return <VenuesManager venues={(data ?? []) as Venue[]} />;
+  return <VenuesManager venues={(data ?? []) as Venue[]} chapters={chapters} />;
 }
 
 export default function AdminVenuesPage() {

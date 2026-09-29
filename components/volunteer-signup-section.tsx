@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 
 import {
   cancelVolunteerSignupAction,
@@ -47,6 +48,7 @@ const RSVP_STATUS_PHRASES: Record<string, string> = {
 export function VolunteerSignupSection({
   eventId,
   isApprovedVolunteer,
+  isRegistered,
   eligibleRoles,
   waiver,
   registrationSectionIds,
@@ -56,6 +58,9 @@ export function VolunteerSignupSection({
 }: {
   eventId: number;
   isApprovedVolunteer: boolean;
+  /** They've completed volunteer registration (volunteers.registered_at) —
+   * needed, as well as approval, to take a shift. */
+  isRegistered: boolean;
   /** Roles at this event the caller is role-eligible for — already filtered
    * server-side (see lib/volunteer-signups.ts#eligibleOpportunities). */
   eligibleRoles: EligibleVolunteerRole[];
@@ -102,6 +107,28 @@ export function VolunteerSignupSection({
             </a>{" "}
             to get started.
           </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!isRegistered) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Volunteer</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <p className="text-sm text-muted-foreground">
+            {eligibleRoles.length > 0
+              ? `There ${eligibleRoles.length === 1 ? "is a role" : "are roles"} here you're approved for, but you need to complete your volunteer registration before signing up for a shift. It's where this year's volunteer waiver is signed.`
+              : "Complete your volunteer registration before signing up for a shift. It's where this year's volunteer waiver is signed."}
+          </p>
+          <div>
+            <Button asChild size="sm">
+              <Link href="/protected/volunteer/register">Complete your registration</Link>
+            </Button>
+          </div>
         </CardContent>
       </Card>
     );

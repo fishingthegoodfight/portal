@@ -1,7 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
-import { CHAPTERS, NOT_LOCAL_CHAPTER, timezoneForChapter } from "@/lib/chapters";
+import { isChapterName, loadChapters, NOT_LOCAL_CHAPTER, timezoneForChapter } from "@/lib/chapters";
 import { formatPhoneNumber, formatPostalCode } from "@/lib/phone";
 import {
   resolveVolunteerWaiver,
@@ -22,7 +22,7 @@ export async function loadVolunteerWaiverInfoAction(homeChapter: string): Promis
   if (authError || !claims?.claims) return { ok: false, error: "Not authenticated" };
   const userId = claims.claims.sub as string;
 
-  const timezone = timezoneForChapter(homeChapter);
+  const timezone = timezoneForChapter(homeChapter, await loadChapters(supabase));
   const info = await waiverInfoForVolunteer(supabase, homeChapter, timezone, userId);
   return { ok: true, info };
 }
@@ -116,7 +116,8 @@ export async function submitVolunteerRegistrationAction(
   if (!contacts.name2 || !contacts.phone2 || !contacts.relationship2) {
     return { ok: false, error: "Second emergency contact needs a name, phone and relationship" };
   }
-  if (!CHAPTERS.some((c) => c.name === homeChapter) && homeChapter !== NOT_LOCAL_CHAPTER) {
+  const chapters = await loadChapters(supabase);
+  if (!isChapterName(chapters, homeChapter) && homeChapter !== NOT_LOCAL_CHAPTER) {
     return { ok: false, error: "Choose a home chapter" };
   }
   if (!TSHIRT_SIZES.includes(tshirtSize as (typeof TSHIRT_SIZES)[number])) {
@@ -143,7 +144,7 @@ export async function submitVolunteerRegistrationAction(
     PROGRAM_INTERESTS.includes(p as never),
   );
 
-  const timezone = timezoneForChapter(homeChapter);
+  const timezone = timezoneForChapter(homeChapter, chapters);
   const requirement = await resolveVolunteerWaiver(supabase, homeChapter, timezone);
   if (requirement.kind !== "ok") {
     return { ok: false, error: "No volunteer waiver is available for your home chapter yet." };

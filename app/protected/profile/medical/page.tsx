@@ -5,6 +5,7 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/supabase/server";
 import { loadMyHealthHistoryList } from "@/lib/health-access";
 import { eventsNeedingHealthForm, healthFormYearFor } from "@/lib/health-requirements";
+import { loadChapters } from "@/lib/chapters";
 import { HEALTH_FORM_INTRO } from "@/lib/health-history";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,12 +24,13 @@ async function MedicalLoader() {
   if (error || !data?.claims) redirect("/auth/login");
   const userId = data.claims.sub as string;
 
-  const [{ data: profile }, submissions, needed] = await Promise.all([
+  const [{ data: profile }, submissions, needed, chapters] = await Promise.all([
     supabase.from("profiles").select("chapter").eq("id", userId).maybeSingle(),
     loadMyHealthHistoryList(supabase),
     eventsNeedingHealthForm(supabase, userId),
+    loadChapters(supabase),
   ]);
-  const year = healthFormYearFor(profile?.chapter as string | null | undefined);
+  const year = healthFormYearFor(profile?.chapter as string | null | undefined, chapters);
   const current = submissions.find((s) => s.year === year);
   const neededNow = needed.filter((e) => !e.opensLater);
   const neededLater = needed.filter((e) => e.opensLater);

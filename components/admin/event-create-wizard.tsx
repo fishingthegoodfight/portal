@@ -9,7 +9,7 @@ import {
   type VolunteerRoleInput,
 } from "@/lib/actions/admin-create-event";
 import { generateRecurrenceDates, type RecurrenceFrequency } from "@/lib/admin/recurrence";
-import { timezoneForChapter } from "@/lib/chapters";
+import { timezoneForChapter, timezoneOptions, type Chapter } from "@/lib/chapters";
 import {
   CapacityField,
   CustomEmailNoteField,
@@ -259,8 +259,12 @@ export function EventCreateWizard({
   templates,
   allowedChapters,
   venues,
+  chapters,
 }: {
   adminPrefill: AdminPrefill;
+  /** Every chapter (loadChapters) — the chapter picker, and each one's
+   * default timezone. */
+  chapters: Chapter[];
   /** The chapters this person may create events in (manageable_chapters). */
   allowedChapters: string[];
   /** Active volunteer_role_types with for_chapter_events true — the only
@@ -361,7 +365,7 @@ export function EventCreateWizard({
     setForm((prev) => ({
       ...prev,
       chapter: value,
-      timezone: timezoneOverridden ? prev.timezone : timezoneForChapter(value),
+      timezone: timezoneOverridden ? prev.timezone : timezoneForChapter(value, chapters),
     }));
 
   const defaultSectionsFor = (eventType: string): string[] =>
@@ -495,7 +499,7 @@ export function EventCreateWizard({
       ...(template.chapter && template.chapter !== prev.chapter
         ? {
             chapter: template.chapter,
-            timezone: timezoneOverridden ? prev.timezone : timezoneForChapter(template.chapter),
+            timezone: timezoneOverridden ? prev.timezone : timezoneForChapter(template.chapter, chapters),
           }
         : {}),
       eventType: template.event_type,
@@ -821,6 +825,7 @@ export function EventCreateWizard({
                 value={form.chapter}
                 onChange={updateChapter}
                 allowed={allowedChapters}
+                chapters={chapters}
               />
               <EventTypeField
                 idPrefix="create"
@@ -844,6 +849,7 @@ export function EventCreateWizard({
                 onChangeTimezone={setField("timezone")}
                 timezoneDerived
                 onOverrideTimezone={() => setTimezoneOverridden(true)}
+                timezoneOptions={timezoneOptions(chapters, form.timezone)}
               />
             ) : (
               <p className="rounded-md border border-dashed p-3 text-sm text-muted-foreground">

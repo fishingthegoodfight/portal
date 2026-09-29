@@ -18,6 +18,8 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { RegistrationFieldInput } from "@/components/registration-fields";
 import { HomeChapterField } from "@/components/chapter-select";
+import { Checkbox } from "@/components/ui/checkbox";
+import type { Chapter } from "@/lib/chapters";
 import { formatPhoneNumber, formatPostalCode } from "@/lib/phone";
 import {
   columnValuesFromProfile,
@@ -52,9 +54,16 @@ export function ProfileForm({
   initialProfile,
   initialRegistrationFields,
   returnTo,
+  chapters,
+  initialOpportunitiesEmail,
 }: {
   userId: string;
   initialProfile: ProfileData;
+  /** Every chapter (loadChapters), for the home chapter dropdown. */
+  chapters: Chapter[];
+  /** profiles.volunteer_opportunities_email for an approved volunteer; null
+   * for anyone else, who isn't sent that email and doesn't see the setting. */
+  initialOpportunitiesEmail: boolean | null;
   /** Every registration section field's current value, keyed by its profile
    * column (see lib/registration-sections.ts). Rendered generically below so
    * a future section needs no changes here. */
@@ -66,6 +75,7 @@ export function ProfileForm({
   const [registrationFields, setRegistrationFields] = useState<
     Record<string, string>
   >(initialRegistrationFields);
+  const [opportunitiesEmail, setOpportunitiesEmail] = useState<boolean | null>(initialOpportunitiesEmail);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -220,6 +230,7 @@ export function ProfileForm({
         .update({
           ...profile,
           ...columnValuesFromProfile(withHiddenFieldsCleared(registrationFields)),
+          ...(opportunitiesEmail === null ? {} : { volunteer_opportunities_email: opportunitiesEmail }),
         })
         .eq("id", userId)
         .select()
@@ -310,7 +321,7 @@ export function ProfileForm({
           </div>
           {/* Phone and chapter are core profile (lib/core-profile.ts), like the
               name and emergency contact: required, so they can't be cleared. */}
-          <HomeChapterField idPrefix="profile" value={profile.chapter} onChange={updateChapter} />
+          <HomeChapterField idPrefix="profile" value={profile.chapter} onChange={updateChapter} chapters={chapters} />
           <div className="grid gap-2">
             <Label htmlFor="address_line1">Address line 1</Label>
             <Input
@@ -419,15 +430,41 @@ export function ProfileForm({
         <CardHeader>
           <CardTitle>Volunteering</CardTitle>
         </CardHeader>
-        <CardContent className="flex flex-col gap-2">
-          <p className="text-sm text-muted-foreground">
-            Want to help run events? Apply to join the volunteer team, or check on an
-            application you&apos;ve sent.
-          </p>
-          <Link href="/protected/volunteer/apply" className="text-sm underline underline-offset-4">
-            Apply to volunteer
-          </Link>
-        </CardContent>
+        {opportunitiesEmail === null ? (
+          <CardContent className="flex flex-col gap-2">
+            <p className="text-sm text-muted-foreground">
+              Want to help run events? Apply to join the volunteer team, or check on an
+              application you&apos;ve sent.
+            </p>
+            <Link href="/protected/volunteer/apply" className="text-sm underline underline-offset-4">
+              Apply to volunteer
+            </Link>
+          </CardContent>
+        ) : (
+          <CardContent className="flex flex-col gap-3">
+            <label htmlFor="volunteer_opportunities_email" className="flex items-start gap-2 text-sm">
+              <Checkbox
+                id="volunteer_opportunities_email"
+                className="mt-0.5"
+                checked={opportunitiesEmail}
+                onCheckedChange={(checked) => {
+                  setOpportunitiesEmail(checked === true);
+                  setSuccess(false);
+                }}
+              />
+              <span className="flex flex-col gap-1">
+                <span>Send me the volunteer opportunities email</span>
+                <span className="text-muted-foreground">
+                  Every two weeks: open volunteer roles you&apos;re approved for at events in your region
+                  over the next six weeks. Nothing is sent when there&apos;s nothing to show.
+                </span>
+              </span>
+            </label>
+            <Link href="/protected/volunteer" className="text-sm underline underline-offset-4">
+              Your volunteer page
+            </Link>
+          </CardContent>
+        )}
       </Card>
 
       <div className="flex flex-col gap-3">

@@ -5,7 +5,7 @@ import {
   type InterestArea,
 } from "@/lib/volunteer-applications";
 import { PROGRAM_INTERESTS, SKILL_INTERESTS } from "@/lib/volunteers";
-import { homeChapterOption } from "@/lib/chapters";
+import { homeChapterOption, type Chapter } from "@/lib/chapters";
 
 /**
  * Registration answers carried over from an approved application (phase 4):
@@ -39,6 +39,7 @@ export function prefillFromApplication(
     chapters: string[];
   },
   areas: Pick<InterestArea, "id" | "kind" | "label">[],
+  chapters: Chapter[],
 ): Omit<RegistrationPrefill, "appliedOn"> {
   const picked = areas.filter((a) => (app.interest_area_ids ?? []).includes(a.id));
   const pickedLabels = (kind: InterestArea["kind"]) => new Set(picked.filter((a) => a.kind === kind).map((a) => a.label));
@@ -53,7 +54,7 @@ export function prefillFromApplication(
   );
   return {
     applicationId: app.id,
-    chapter: homeChapterOption(app.chapters?.[0]),
+    chapter: homeChapterOption(app.chapters?.[0], chapters),
     skillInterests,
     skillInterestsOther: other,
     programInterests,

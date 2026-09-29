@@ -41,7 +41,14 @@ function download(fileName: string, csv: string) {
 
 /** Upload → map columns → preview → import → summary. See
  * lib/actions/volunteer-import.ts for what a row writes. */
-export function VolunteerImport({ activeRoleNames }: { activeRoleNames: string[] }) {
+export function VolunteerImport({
+  activeRoleNames,
+  activeChapterNames,
+}: {
+  activeRoleNames: string[];
+  /** The active chapters' names, in display order. */
+  activeChapterNames: string[];
+}) {
   const [step, setStep] = useState<Step>("upload");
   const [parsed, setParsed] = useState<Parsed | null>(null);
   const [mapping, setMapping] = useState<(ImportFieldKey | "")[]>([]);
@@ -192,7 +199,7 @@ export function VolunteerImport({ activeRoleNames }: { activeRoleNames: string[]
               <button
                 type="button"
                 className="underline underline-offset-4"
-                onClick={() => download("volunteer-import-valid-values.csv", validValuesCsv(activeRoleNames))}
+                onClick={() => download("volunteer-import-valid-values.csv", validValuesCsv(activeRoleNames, activeChapterNames))}
               >
                 Download valid role and chapter names
               </button>

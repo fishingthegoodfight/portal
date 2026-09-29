@@ -3,7 +3,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/server";
-import { homeChapterOption } from "@/lib/chapters";
+import { homeChapterOption, loadChapters } from "@/lib/chapters";
 import { RsvpForm } from "@/components/rsvp-form";
 import { EventCard } from "@/components/event-card";
 import { VolunteerSignupSection, type EligibleVolunteerRole } from "@/components/volunteer-signup-section";
@@ -14,7 +14,7 @@ import {
   approvedRoleTypeIds,
   confirmedShiftsAtEvent,
   eligibleOpportunities,
-  isApprovedVolunteer,
+  volunteerStanding,
   type VolunteerOpportunity,
 } from "@/lib/volunteer-signups";
 import {
@@ -91,11 +91,10 @@ async function RsvpLoader({
   // select("*") rather than an explicit column list so a new registration
   // section's profile column (see lib/registration-sections.ts) is picked up
   // here automatically, with no loader edit needed.
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("*")
-    .eq("id", userId)
-    .maybeSingle();
+  const [{ data: profile }, chapters] = await Promise.all([
+    supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
+    loadChapters(supabase),
+  ]);
 
   const { data: existingRsvp } = await supabase
     .from("rsvps")
@@ -163,7 +162,8 @@ async function RsvpLoader({
 
   let volunteerSection: React.ReactNode = null;
   if (opportunities && opportunities.length > 0) {
-    const approvedVolunteer = await isApprovedVolunteer(supabase, userId);
+    const standing = await volunteerStanding(supabase, userId);
+    const approvedVolunteer = standing.approved;
     let eligibleRoles: EligibleVolunteerRole[] = [];
     let volunteerWaiver: WaiverInfo = { status: "unavailable", message: "" };
 
@@ -202,6 +202,7 @@ async function RsvpLoader({
       <VolunteerSignupSection
         eventId={event.id}
         isApprovedVolunteer={approvedVolunteer}
+        isRegistered={standing.registered}
         eligibleRoles={eligibleRoles}
         waiver={volunteerWaiver}
         registrationSectionIds={event.registration_sections ?? []}
@@ -254,7 +255,7 @@ async function RsvpLoader({
         last_name: profile?.last_name ?? "",
         email: profile?.email ?? "",
         phone: profile?.phone ?? "",
-        chapter: homeChapterOption(profile?.chapter),
+        chapter: homeChapterOption(profile?.chapter, chapters),
       }}
       profileFields={profileFields}
       initialRsvp={
@@ -274,6 +275,7 @@ async function RsvpLoader({
       offerLapsed={offerLapsed}
       waiver={waiver}
       volunteerShifts={volunteerShifts}
+      chapters={chapters}
     />
     {volunteerSection}
     {!activeRsvp && healthPrompt}

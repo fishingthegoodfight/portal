@@ -51,3 +51,8 @@ export function practicalCheckSummary(latest: Pick<PracticalCheck, "outcome" | "
 export function sortChecks(checks: PracticalCheck[]): PracticalCheck[] {
   return [...checks].sort((a, b) => b.checked_on.localeCompare(a.checked_on) || b.recorded_at.localeCompare(a.recorded_at));
 }
+
+/** The role types a practical check applies to — at an event that requires
+ * health history. Same list as volunteer_signups_practical_check_guard in
+ * the database. */
+export const PRACTICAL_CHECK_ROLE_KEYS = ["fishing_instructor", "lead_fly_fishing_instructor"];

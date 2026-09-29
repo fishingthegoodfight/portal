@@ -11224,3 +11224,564 @@ begin
     )
   );
 end $function$;
+
+-- =============================================================================
+-- 2026-09-29 — Regions and chapters as data; volunteer registration gate;
+--              biweekly volunteer opportunities email
+-- =============================================================================
+-- Run 2026-09-29, before the matching code was pushed to main: the code
+-- reads public.chapters and fails without it. Everything here is additive
+-- or kept the same behaviour for the code deployed before it.
+--
+-- 1. regions and chapters: the chapter list moves out of lib/chapters.ts
+--    (and out of the SQL functions that listed 'Denver', 'CO Springs',
+--    'Atlanta', 'Rome' inline) into two tables managed in Setup. Seeded
+--    with Colorado (Denver, CO Springs) and Georgia (Atlanta, Rome).
+--    events.chapter, profiles.chapter, led_chapters, templates, venues,
+--    applications and reference answers still hold the chapter NAME as
+--    plain text, as before. So renaming goes through admin_rename_chapter(),
+--    which rewrites every stored copy in one transaction; authenticated has
+--    no UPDATE grant on chapters.name, so a plain update can't skip that.
+--    Regions are for internal grouping and the opportunities email only.
+--    The participant chapter filter is unchanged.
+--
+-- 2. Waiver state now comes from the chapter's own state (chapters.state)
+--    instead of a hard-coded CO/GA mapping, so a chapter in a new state
+--    works once that state has a published waiver. events.waiver_state's
+--    CHECK (in ('CO', 'GA')) becomes "two capital letters". Virtual events
+--    and "No local chapter" keep the deliberate CO default.
+--
+-- 3. Volunteer registration gate. volunteer_signup_blocker now also returns
+--    'not_registered' for an approved volunteer with no registered_at, so
+--    they can't sign themselves up (registration is where the current
+--    year's volunteer waiver is signed). A trigger on volunteer_signups
+--    refuses every other route to a confirmed shift (the roster's Add
+--    volunteer, re-confirming) for someone not registered. An admin can
+--    override it with a recorded reason, the same way as the practical
+--    check (admin_add_volunteer_signup_with_overrides). Chapter leads can't.
+--    Shifts already confirmed are untouched: the trigger only fires on a
+--    change TO confirmed.
+--    event_unregistered_volunteer_ids(event) lets the roster flag
+--    confirmed volunteers who aren't registered (chapter leads can't read
+--    public.volunteers directly).
+--
+-- 4. Opportunities email: settings on app_settings (on/off, anchor date,
+--    weekday), volunteers.opportunities_email_cycle (the send day of the
+--    cycle this person was last handled for — emailed, or checked and had
+--    nothing — so a run cut off part way resumes with whoever's left on the
+--    following days instead of skipping them), the profile preference
+--    profiles.volunteer_opportunities_email (on by default), and
+--    email_preference_tokens: one random token per person for the
+--    no-sign-in unsubscribe link, readable by the service role only.
+--
+-- Safe to re-run. One transaction: if any statement fails, nothing is
+-- applied.
+
+begin;
+
+-- ---- 1a. Regions -------------------------------------------------------------------
+create table if not exists public.regions (
+  id bigserial primary key,
+  name text not null check (btrim(name) <> '' and name = btrim(name)),
+  sort_order integer not null default 0,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists regions_name_key on public.regions (lower(name));
+
+alter table public.regions enable row level security;
+
+-- Everyone signed in can read the list (chapters are grouped by it). Only
+-- admins add or change regions. No delete: deactivate instead.
+drop policy if exists regions_select on public.regions;
+create policy regions_select on public.regions
+  for select to authenticated
+  using (true);
+
+drop policy if exists regions_insert_admin on public.regions;
+create policy regions_insert_admin on public.regions
+  for insert to authenticated
+  with check (public.is_admin());
+
+drop policy if exists regions_update_admin on public.regions;
+create policy regions_update_admin on public.regions
+  for update to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+revoke all on public.regions from anon;
+revoke all on public.regions from authenticated;
+grant select, insert, update on public.regions to authenticated;
+grant all on public.regions to service_role;
+revoke all on sequence public.regions_id_seq from anon, authenticated;
+grant usage, select on sequence public.regions_id_seq to authenticated, service_role;
+
+-- ---- 1b. Chapters ------------------------------------------------------------------
+create table if not exists public.chapters (
+  id bigserial primary key,
+  -- What events.chapter, profiles.chapter etc. store. No commas (the
+  -- events filter carries chapters comma-separated in the URL), and never
+  -- one of the special values the app uses alongside real chapters.
+  name text not null check (
+    btrim(name) <> ''
+    and name = btrim(name)
+    and position(',' in name) = 0
+    and lower(name) not in ('virtual', 'no local chapter', 'not local to a chapter', 'all')
+  ),
+  -- A longer label where the name is abbreviated, e.g. "Colorado Springs"
+  -- for "CO Springs" — the events filter pills and the application form.
+  -- Null = the name.
+  display_name text check (display_name is null or btrim(display_name) <> ''),
+  region_id bigint not null references public.regions(id) on delete restrict,
+  -- USPS code. Also the chapter's waiver state.
+  state text not null check (state ~ '^[A-Z]{2}$'),
+  -- IANA zone its events run in by default (checked by chapters_validate).
+  timezone text not null,
+  sort_order integer not null default 0,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists chapters_name_key on public.chapters (lower(name));
+-- Same slug the events filter derives from the name (lib/chapters.ts
+-- chapterSlug), so two chapters can't share a filter pill.
+create unique index if not exists chapters_slug_key
+  on public.chapters (regexp_replace(lower(name), '\s+', '-', 'g'));
+create index if not exists chapters_region_idx on public.chapters (region_id);
+
+create or replace function public.chapters_validate()
+returns trigger
+language plpgsql
+set search_path to 'public'
+as $function$
+begin
+  if not exists (select 1 from pg_timezone_names where name = new.timezone) then
+    raise exception 'Unknown timezone "%"', new.timezone using errcode = 'P0001';
+  end if;
+  new.updated_at := now();
+  return new;
+end $function$;
+
+drop trigger if exists chapters_validate on public.chapters;
+create trigger chapters_validate
+  before insert or update on public.chapters
+  for each row execute function public.chapters_validate();
+
+revoke all on function public.chapters_validate() from public, anon, authenticated;
+
+alter table public.chapters enable row level security;
+
+drop policy if exists chapters_select on public.chapters;
+create policy chapters_select on public.chapters
+  for select to authenticated
+  using (true);
+
+drop policy if exists chapters_insert_admin on public.chapters;
+create policy chapters_insert_admin on public.chapters
+  for insert to authenticated
+  with check (public.is_admin());
+
+drop policy if exists chapters_update_admin on public.chapters;
+create policy chapters_update_admin on public.chapters
+  for update to authenticated
+  using (public.is_admin())
+  with check (public.is_admin());
+
+revoke all on public.chapters from anon;
+revoke all on public.chapters from authenticated;
+grant select, insert on public.chapters to authenticated;
+-- Every column but name: a rename has to go through admin_rename_chapter.
+grant update (display_name, region_id, state, timezone, sort_order, active, updated_at)
+  on public.chapters to authenticated;
+grant all on public.chapters to service_role;
+revoke all on sequence public.chapters_id_seq from anon, authenticated;
+grant usage, select on sequence public.chapters_id_seq to authenticated, service_role;
+
+-- ---- 1c. Seed: the chapters lib/chapters.ts listed --------------------------------
+insert into public.regions (name, sort_order)
+values ('Colorado', 10), ('Georgia', 20)
+on conflict ((lower(name))) do nothing;
+
+insert into public.chapters (name, display_name, region_id, state, timezone, sort_order)
+select c.name, c.display_name, r.id, c.state, c.timezone, c.sort_order
+  from (values
+    ('Denver', null, 'Colorado', 'CO', 'America/Denver', 10),
+    ('CO Springs', 'Colorado Springs', 'Colorado', 'CO', 'America/Denver', 20),
+    ('Atlanta', null, 'Georgia', 'GA', 'America/New_York', 10),
+    ('Rome', null, 'Georgia', 'GA', 'America/New_York', 20)
+  ) as c(name, display_name, region, state, timezone, sort_order)
+  join public.regions r on lower(r.name) = lower(c.region)
+on conflict ((lower(name))) do nothing;
+
+-- ---- 1d. Renaming a chapter --------------------------------------------------------
+-- Admin only. Renames the chapter and every stored copy of its name, in one
+-- transaction. The table constraints above check the new name.
+create or replace function public.admin_rename_chapter(p_chapter_id bigint, p_name text)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_old text;
+  v_new text := btrim(coalesce(p_name, ''));
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can rename a chapter' using errcode = '42501';
+  end if;
+
+  select name into v_old from public.chapters where id = p_chapter_id for update;
+  if not found then
+    raise exception 'Chapter not found' using errcode = 'P0001';
+  end if;
+  if v_new = v_old then
+    return;
+  end if;
+
+  update public.chapters set name = v_new where id = p_chapter_id;
+
+  update public.events set chapter = v_new where chapter = v_old;
+  update public.event_templates set chapter = v_new where chapter = v_old;
+  update public.venues set chapter = v_new where chapter = v_old;
+  update public.profiles set chapter = v_new where chapter = v_old;
+  update public.profiles
+     set led_chapters = array_replace(led_chapters, v_old, v_new)
+   where v_old = any(led_chapters);
+  update public.volunteer_applications
+     set chapters = array_replace(chapters, v_old, v_new)
+   where v_old = any(chapters);
+  update public.volunteer_reference_requests
+     set answer_chapter = v_new
+   where answer_chapter = v_old;
+end $function$;
+
+revoke all on function public.admin_rename_chapter(bigint, text) from public, anon;
+grant execute on function public.admin_rename_chapter(bigint, text) to authenticated;
+
+-- ---- 2. Waiver state from the chapter ----------------------------------------------
+alter table public.events drop constraint if exists events_waiver_state_check;
+alter table public.events
+  add constraint events_waiver_state_check check (waiver_state ~ '^[A-Z]{2}$');
+
+-- The waiver state for an event: events.waiver_state, else the chapter's
+-- state. Virtual and "No local chapter" deliberately default to CO (same
+-- as waiverStateForChapter in lib/waivers.ts). 'Colorado Springs' is an
+-- older spelling of CO Springs still on some rows. Was immutable; it now
+-- reads chapters, so stable. Same signature, so its grants stand.
+create or replace function public.event_waiver_state(p_waiver_state text, p_chapter text)
+returns text
+language sql
+stable
+set search_path to 'public'
+as $function$
+  select coalesce(
+    p_waiver_state,
+    case when p_chapter in ('Virtual', 'No local chapter', 'Colorado Springs') then 'CO' end,
+    (select c.state from public.chapters c where c.name = p_chapter)
+  );
+$function$;
+
+-- Same rule, inline: this trigger runs as the signed-in user, who can read
+-- chapters but can't execute event_waiver_state.
+create or replace function public.default_event_waiver_state()
+returns trigger
+language plpgsql
+as $function$
+begin
+  if new.waiver_state is null then
+    new.waiver_state := coalesce(
+      case when new.chapter in ('Virtual', 'No local chapter', 'Colorado Springs') then 'CO' end,
+      (select c.state from public.chapters c where c.name = new.chapter)
+    );
+  end if;
+  return new;
+end $function$;
+
+-- Same as the 2026-09-28 "phase 4" version, except the home chapter is
+-- checked against public.chapters instead of a fixed list, and the waiver
+-- year uses the chapter's own timezone (Denver for "No local chapter").
+create or replace function public.complete_volunteer_registration(p_is_18_plus boolean)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  p public.profiles%rowtype;
+  blank constant text := '';
+  v_state text;
+  v_zone text;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+  if not p_is_18_plus then
+    raise exception 'Must confirm 18 years of age or older';
+  end if;
+
+  select * into p from public.profiles where id = v_uid;
+  if not found
+     or coalesce(btrim(p.first_name), blank) = blank
+     or coalesce(btrim(p.last_name), blank) = blank
+     or coalesce(btrim(p.phone), blank) = blank
+     or coalesce(btrim(p.email), blank) = blank
+     or coalesce(btrim(p.address_line1), blank) = blank
+     or coalesce(btrim(p.city), blank) = blank
+     or coalesce(btrim(p.state), blank) = blank
+     or coalesce(btrim(p.postal_code), blank) = blank
+     or coalesce(btrim(p.emergency_contact), blank) = blank
+     or coalesce(btrim(p.emergency_phone), blank) = blank
+     or coalesce(btrim(p.tshirt_size), blank) = blank
+     or coalesce(btrim(p.favorite_snack), blank) = blank
+     or coalesce(btrim(p.favorite_na_beverage), blank) = blank then
+    raise exception 'Complete every required registration answer first';
+  end if;
+
+  if not exists (select 1 from public.volunteer_registration_details d where d.volunteer_id = v_uid) then
+    raise exception 'Answer the fly fishing, certification and availability questions first';
+  end if;
+
+  if p.chapter is distinct from 'No local chapter'
+     and not exists (select 1 from public.chapters c where c.name = p.chapter) then
+    raise exception 'Choose a home chapter';
+  end if;
+  v_state := public.event_waiver_state(null, p.chapter);
+  v_zone := coalesce((select c.timezone from public.chapters c where c.name = p.chapter), 'America/Denver');
+  if not public.has_signed_active_waiver(
+       v_uid, v_state, extract(year from (now() at time zone v_zone))::int, 'volunteer'
+     ) then
+    raise exception 'Sign the volunteer waiver first';
+  end if;
+
+  -- An approved volunteer stays approved; invited/registered become registered.
+  update public.volunteers
+     set status = case when status = 'approved' then 'approved' else 'registered' end,
+         registered_at = coalesce(registered_at, now()),
+         is_18_plus = true,
+         health_history_outstanding = true,
+         updated_at = now()
+   where user_id = v_uid
+     and status in ('invited', 'registered', 'approved');
+
+  if not found then
+    raise exception 'No volunteer invitation found for this account';
+  end if;
+end $function$;
+
+-- ---- 3a. Registration gate in the signup blocker ------------------------------------
+-- Same as the 2026-09-23 version, plus 'not_registered' straight after the
+-- role check (so the roster's lookup, which reads the approval codes, is
+-- unchanged).
+create or replace function public.volunteer_signup_blocker(p_user_id uuid, p_opportunity_id bigint)
+returns text
+language plpgsql
+stable
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_role_type_id bigint;
+  v_event_id bigint;
+begin
+  if not exists (
+    select 1 from public.volunteers where user_id = p_user_id and status = 'approved'
+  ) then
+    return 'not_approved';
+  end if;
+
+  select vo.role_type_id, vo.event_id into v_role_type_id, v_event_id
+    from public.volunteer_opportunities vo
+   where vo.id = p_opportunity_id;
+  if not found then
+    return 'not_found';
+  end if;
+
+  -- A role with no role_type_id ("Custom / other") is open to any approved
+  -- volunteer, same as isRoleEligible.
+  if v_role_type_id is not null and not exists (
+    select 1 from public.volunteer_role_approvals
+     where volunteer_id = p_user_id
+       and role_type_id = v_role_type_id
+       and revoked_at is null
+  ) then
+    return 'role_not_approved';
+  end if;
+
+  if not exists (
+    select 1 from public.volunteers where user_id = p_user_id and registered_at is not null
+  ) then
+    return 'not_registered';
+  end if;
+
+  if not public.has_signed_event_waiver(p_user_id, v_event_id, 'volunteer') then
+    return 'waiver_unsigned';
+  end if;
+
+  if public.registration_incomplete_section(p_user_id, v_event_id) is not null then
+    return 'registration_incomplete';
+  end if;
+
+  return null;
+end $function$;
+
+-- ---- 3b. The same gate on every route to a confirmed shift --------------------------
+alter table public.volunteer_signups
+  add column if not exists registration_override_reason text,
+  add column if not exists registration_override_by uuid references auth.users(id) on delete set null,
+  add column if not exists registration_override_at timestamptz;
+
+create or replace function public.volunteer_signups_registration_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_override text := nullif(btrim(coalesce(current_setting('ftgf.registration_override', true), '')), '');
+begin
+  if new.status <> 'confirmed' or (tg_op = 'UPDATE' and old.status = 'confirmed') then
+    return new;
+  end if;
+
+  if exists (
+    select 1 from public.volunteers where user_id = new.user_id and registered_at is not null
+  ) then
+    return new;
+  end if;
+
+  if v_override is not null and public.is_admin() then
+    new.registration_override_reason := v_override;
+    new.registration_override_by := auth.uid();
+    new.registration_override_at := now();
+    return new;
+  end if;
+
+  raise exception '%', case
+    when auth.uid() is not null and new.user_id = auth.uid() then
+      'Complete your volunteer registration before signing up for a shift — it''s where this year''s volunteer waiver is signed.'
+    when public.is_admin() then
+      'This person hasn''t completed volunteer registration, where this year''s volunteer waiver is signed. You can add them anyway with a reason.'
+    else
+      'This person hasn''t completed volunteer registration, where this year''s volunteer waiver is signed. Only an admin can add them anyway.'
+  end
+  using errcode = 'P0001', hint = 'registration_required';
+end $function$;
+
+drop trigger if exists volunteer_signups_registration_guard on public.volunteer_signups;
+create trigger volunteer_signups_registration_guard
+  before insert or update of status on public.volunteer_signups
+  for each row execute function public.volunteer_signups_registration_guard();
+
+revoke all on function public.volunteer_signups_registration_guard() from public, anon, authenticated;
+
+-- Admin only: the roster's Add volunteer past the practical check and/or
+-- the registration gate, each with its own recorded reason (null = not
+-- overriding that one). Everything else is admin_add_volunteer_signup
+-- as-is. admin_add_volunteer_signup_with_override (practical check only)
+-- stays for the code deployed before this.
+create or replace function public.admin_add_volunteer_signup_with_overrides(
+  p_opportunity_id bigint,
+  p_user_id uuid,
+  p_force boolean,
+  p_practical_check_reason text,
+  p_registration_reason text
+)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if not public.is_admin() then
+    raise exception 'Only an admin can add someone past these checks' using errcode = '42501';
+  end if;
+  if p_practical_check_reason is not null and btrim(p_practical_check_reason) = '' then
+    raise exception 'Give a reason for adding them without a passed practical check' using errcode = 'P0001';
+  end if;
+  if p_registration_reason is not null and btrim(p_registration_reason) = '' then
+    raise exception 'Give a reason for adding them before they''ve registered' using errcode = 'P0001';
+  end if;
+  if p_practical_check_reason is not null then
+    perform set_config('ftgf.practical_check_override', btrim(p_practical_check_reason), true);
+  end if;
+  if p_registration_reason is not null then
+    perform set_config('ftgf.registration_override', btrim(p_registration_reason), true);
+  end if;
+  return public.admin_add_volunteer_signup(p_opportunity_id, p_user_id, p_force);
+end $function$;
+
+revoke all on function public.admin_add_volunteer_signup_with_overrides(bigint, uuid, boolean, text, text) from public, anon;
+grant execute on function public.admin_add_volunteer_signup_with_overrides(bigint, uuid, boolean, text, text) to authenticated;
+
+-- ---- 3c. Who on an event's volunteer roster isn't registered ------------------------
+-- For anyone who manages the event (chapter leads can't read public.volunteers).
+create or replace function public.event_unregistered_volunteer_ids(p_event_id bigint)
+returns setof uuid
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select distinct s.user_id
+    from public.volunteer_signups s
+    join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+    left join public.volunteers v on v.user_id = s.user_id
+   where public.can_manage_event(p_event_id)
+     and vo.event_id = p_event_id
+     and s.status = 'confirmed'
+     and v.registered_at is null;
+$function$;
+
+revoke all on function public.event_unregistered_volunteer_ids(bigint) from public, anon;
+grant execute on function public.event_unregistered_volunteer_ids(bigint) to authenticated;
+
+-- ---- 4a. Opportunities email settings ---------------------------------------------
+-- Sent on `weekday` (0 = Sunday … 6 = Saturday) in the week (Sunday to
+-- Saturday) containing the anchor date, and every 14 days from then — see
+-- lib/volunteer-opportunities-email.ts. Off until an admin turns it on.
+alter table public.app_settings
+  add column if not exists opportunities_email_enabled boolean not null default false,
+  add column if not exists opportunities_email_anchor date not null default date '2026-10-06',
+  add column if not exists opportunities_email_weekday smallint not null default 2
+    check (opportunities_email_weekday between 0 and 6);
+
+-- ---- 4b. One send per volunteer per cycle ----------------------------------------------
+-- The send day (Denver date) of the cycle this person was last handled for:
+-- sent the opportunities email or the finish-registration nudge, or checked
+-- and had nothing to get. A run skips anyone already handled this cycle, so
+-- a run cut off part way (the function's time limit, the daily sending cap)
+-- carries on with the rest over the next few days. Claimed before sending,
+-- put back if the email fails.
+alter table public.volunteers
+  add column if not exists opportunities_email_cycle date;
+
+-- ---- 4c. The profile preference ----------------------------------------------------
+alter table public.profiles
+  add column if not exists volunteer_opportunities_email boolean not null default true;
+
+-- ---- 4d. Unsubscribe tokens ----------------------------------------------------------
+-- One per person, created the first time they're sent the email. The token
+-- is the only key the unsubscribe link carries, so nobody but the service
+-- role can read it: no policies, no grants to anon or authenticated.
+-- Deliberately no foreign key to the person: one would count as a
+-- reference in "Remove person" (person_other_references). A token left
+-- behind by a deleted person matches no profile, so its link just says it
+-- isn't active.
+create table if not exists public.email_preference_tokens (
+  user_id uuid primary key,
+  token text not null unique
+    default replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', ''),
+  created_at timestamptz not null default now()
+);
+
+alter table public.email_preference_tokens enable row level security;
+
+revoke all on public.email_preference_tokens from anon;
+revoke all on public.email_preference_tokens from authenticated;
+grant all on public.email_preference_tokens to service_role;
+
+commit;

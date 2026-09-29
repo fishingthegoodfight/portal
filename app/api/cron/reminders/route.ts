@@ -9,6 +9,16 @@ import {
   type VolunteerShiftEmailContext,
 } from "@/lib/email/send";
 import type { ReminderKind } from "@/lib/email/templates";
+import { runOpportunitiesEmail, type OpportunitiesRunSummary } from "@/lib/volunteer-opportunities-email";
+
+// The volunteer opportunities email runs here too and, on a send day, sends
+// one email per volunteer, spaced out — give it room. 300s is Vercel
+// Hobby's maximum with Fluid compute (on by default); without Fluid compute
+// Hobby is capped at 60s. Either way the email job stops itself
+// OPPORTUNITIES_MARGIN_MS before this limit, and anyone it didn't reach
+// gets theirs on the next day's run.
+export const maxDuration = 300;
+const OPPORTUNITIES_MARGIN_MS = 30_000;
 
 /**
  * Daily pre-event reminders (see vercel.json: 15:00 UTC = 9am Mountain).
@@ -21,6 +31,13 @@ import type { ReminderKind } from "@/lib/email/templates";
  *   - 1-day:  event starts 0–1 local days out, and hasn't started yet
  * sent_1week_at / sent_1day_at on rsvps guarantee a reminder never goes
  * twice: each send first claims its row with a conditional update.
+ *
+ * Then, in the same run, the every-other-week volunteer opportunities email
+ * (lib/volunteer-opportunities-email.ts), which only sends with it turned
+ * on in Setup, on a send day — or on the few days after one, to anyone a
+ * cut-off run didn't reach. Vercel Hobby allows daily crons only, so the
+ * schedule lives there, not in vercel.json. A failure there is logged and
+ * doesn't affect the reminders above.
  *
  * Dev only: ?today=YYYY-MM-DD pretends it's that day (15:00 UTC), and
  * ?dry=1 logs what would be sent without sending or claiming. The secret is
@@ -45,6 +62,7 @@ const EVENT_COLUMNS =
   "id, name, starts_at, ends_at, timezone, location, lead_name, lead_phone, lead_email, custom_email_note, occurrence_note, virtual_link, virtual_access_notes, ics_sequence";
 
 export async function GET(request: NextRequest) {
+  const startedAt = Date.now();
   if (!isCronAuthorized(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -278,5 +296,31 @@ export async function GET(request: NextRequest) {
   }
 
   console.log("[reminders] done", { now: now.toISOString(), dry, totals, volunteerTotals });
-  return NextResponse.json({ ok: true, now: now.toISOString(), dry, totals, volunteerTotals });
+
+  let opportunities: OpportunitiesRunSummary | { error: string };
+  try {
+    opportunities = await runOpportunitiesEmail(supabase, {
+      now,
+      dry,
+      deadline: startedAt + maxDuration * 1000 - OPPORTUNITIES_MARGIN_MS,
+    });
+    for (const failure of opportunities.failed) console.error("[opportunities-email]", failure);
+    console.log("[opportunities-email] done", {
+      today: opportunities.today,
+      ran: opportunities.ran,
+      why: opportunities.why,
+      opportunities: opportunities.opportunities.length,
+      nudges: opportunities.nudges.length,
+      cycle: opportunities.cycle,
+      alreadyHandled: opportunities.alreadyHandled,
+      leftForNextRun: opportunities.leftForNextRun,
+      failed: opportunities.failed.length,
+      nothing: opportunities.nothing.length,
+    });
+  } catch (err) {
+    console.error("[opportunities-email] failed:", err);
+    opportunities = { error: err instanceof Error ? err.message : String(err) };
+  }
+
+  return NextResponse.json({ ok: true, now: now.toISOString(), dry, totals, volunteerTotals, opportunities });
 }

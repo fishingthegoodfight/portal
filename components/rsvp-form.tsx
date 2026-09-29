@@ -43,7 +43,7 @@ import {
 } from "@/lib/registration-sections";
 import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
 import { missingDetailsFields, type DetailsCardKey } from "@/lib/core-profile";
-import { CHAPTERS } from "@/lib/chapters";
+import { activeChapters, isChapterName, type Chapter } from "@/lib/chapters";
 import { formatPhoneNumber } from "@/lib/phone";
 import { HomeChapterField } from "@/components/chapter-select";
 import { Input } from "@/components/ui/input";
@@ -104,6 +104,7 @@ export function RsvpForm({
   offerLapsed,
   waiver,
   volunteerShifts = [],
+  chapters,
 }: {
   userId: string;
   event: EventSummary;
@@ -123,6 +124,8 @@ export function RsvpForm({
   /** Their confirmed volunteer shifts at this event ("Role, time"), when
    * they have no RSVP — RSVPing is then a "Switch to attending". */
   volunteerShifts?: string[];
+  /** Every chapter (loadChapters), for "Your details"' home chapter. */
+  chapters: Chapter[];
 }) {
   const router = useRouter();
   // Seeded from the profile so a partially-complete section (e.g. a name but
@@ -184,7 +187,9 @@ export function RsvpForm({
     last_name: profile.last_name,
     phone: profile.phone,
     // They've just picked an event, so its chapter is the likely answer.
-    chapter: profile.chapter || (CHAPTERS.some((c) => c.name === event.chapter) ? (event.chapter as string) : ""),
+    chapter:
+      profile.chapter ||
+      (isChapterName(activeChapters(chapters), event.chapter) ? (event.chapter as string) : ""),
   }));
   const detailsProblem = (() => {
     const missing = missingDetails.filter((key) => !details[key].trim());
@@ -468,6 +473,7 @@ export function RsvpForm({
                 missing={missingDetails}
                 values={details}
                 onChange={(key, value) => setDetails((prev) => ({ ...prev, [key]: value }))}
+                chapters={chapters}
               />
             )}
             {needsWaiverSignature && waiver.status === "unsigned" && (
@@ -671,10 +677,12 @@ function YourDetails({
   missing,
   values,
   onChange,
+  chapters,
 }: {
   missing: DetailsCardKey[];
   values: Record<DetailsCardKey, string>;
   onChange: (key: DetailsCardKey, value: string) => void;
+  chapters: Chapter[];
 }) {
   const asks = (key: DetailsCardKey) => missing.includes(key);
   return (
@@ -729,7 +737,12 @@ function YourDetails({
       )}
       {asks("chapter") && (
         <div className="sm:max-w-xs">
-          <HomeChapterField idPrefix="details" value={values.chapter} onChange={(value) => onChange("chapter", value)} />
+          <HomeChapterField
+            idPrefix="details"
+            value={values.chapter}
+            onChange={(value) => onChange("chapter", value)}
+            chapters={chapters}
+          />
         </div>
       )}
     </fieldset>
