@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { assignLeadEventsToNewAccount } from "@/lib/admin/lead-account";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { VOLUNTEER_STATUSES, type VolunteerStatus } from "@/lib/volunteers";
 
@@ -206,6 +207,7 @@ export async function createApprovedVolunteerAction(input: {
         return { ok: false, error: createError?.message ?? "Failed to create the volunteer's account" };
       }
       userId = created.user.id;
+      await assignLeadEventsToNewAccount(getAdminClient(), userId);
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : "Admin client unavailable" };
     }

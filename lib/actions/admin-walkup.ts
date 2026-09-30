@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { assignLeadEventsToNewAccount } from "@/lib/admin/lead-account";
 import { requireAdmin, requireEventManager } from "@/lib/admin/require-admin";
 import { activeChapters, isChapterName, loadChapters, NOT_LOCAL_CHAPTER } from "@/lib/chapters";
 import { waiverInfoForUser } from "@/lib/waivers";
@@ -295,6 +296,7 @@ export async function addWalkupRsvpAction(input: {
     }
     profileId = created.user.id;
     wasExistingProfile = false;
+    await assignLeadEventsToNewAccount(adminClient, profileId);
 
     // The signup trigger inserts the profiles row as part of creating the
     // auth user above; fill in what the walk-up form collected — including

@@ -22,6 +22,7 @@ import {
   volunteerShiftEventCancelledEmail,
   volunteerEventRestoredEmail,
   personInviteEmail,
+  newLinkEmail,
   adminDigestEmail,
   applicationAttendMoreEventsEmail,
   volunteerApprovedEmail,
@@ -569,6 +570,21 @@ export async function sendVolunteerInviteEmail({
   needsPasswordSetup: boolean;
 }): Promise<void> {
   const { subject, html, text } = volunteerInviteEmail({ recipientName, actionUrl, needsPasswordSetup });
+  await deliverEmail({ to: toEmail, subject, html, text });
+}
+
+/** The fresh set-password link asked for on the expired-link page
+ * (newLinkEmail). */
+export async function sendNewLinkEmail({
+  toEmail,
+  recipientName,
+  actionUrl,
+}: {
+  toEmail: string;
+  recipientName: string | null;
+  actionUrl: string;
+}): Promise<void> {
+  const { subject, html, text } = newLinkEmail({ recipientName, actionUrl });
   await deliverEmail({ to: toEmail, subject, html, text });
 }
 

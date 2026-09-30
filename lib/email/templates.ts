@@ -5,7 +5,12 @@
  * styles (email clients strip <style> blocks unreliably), no images.
  */
 
+import { ONE_TIME_LINK_NOTE } from "@/lib/one-time-links";
+
 const ORG_NAME = "Fishing the Good Fight";
+
+/** Under the button of every email carrying a one-time account link. */
+const ONE_TIME_LINK_NOTE_HTML = `<p style="margin:0 0 8px;font-size:13px;color:#57534e;">${ONE_TIME_LINK_NOTE}</p>`;
 
 export type RsvpEmailEventInfo = {
   name: string;
@@ -735,6 +740,9 @@ export function volunteerInviteEmail({
       `<p style="margin:0 0 16px;">${greeting}</p>`,
       `<p style="margin:0 0 16px;">${introHtml}</p>`,
       `<p style="margin:24px 0 8px;"><a href="${actionUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
+      // Only a set-password link is one-time; the plain link to the
+      // registration form never expires.
+      ...(needsPasswordSetup ? [ONE_TIME_LINK_NOTE_HTML] : []),
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Questions? Just reply to this email.</p>`,
     ].join("\n"),
   );
@@ -747,6 +755,7 @@ export function volunteerInviteEmail({
     introText,
     "",
     `${buttonLabel}: ${actionUrl}`,
+    ...(needsPasswordSetup ? ["", ONE_TIME_LINK_NOTE] : []),
     "",
     "Questions? Just reply to this email.",
   ].join("\n");
@@ -779,6 +788,7 @@ export function personInviteEmail({
       `<p style="margin:0 0 16px;">${greeting}</p>`,
       `<p style="margin:0 0 16px;">${intro}</p>`,
       `<p style="margin:24px 0 8px;"><a href="${actionUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
+      ONE_TIME_LINK_NOTE_HTML,
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Questions? Just reply to this email.</p>`,
     ].join("\n"),
   );
@@ -792,7 +802,57 @@ export function personInviteEmail({
     "",
     `${buttonLabel}: ${actionUrl}`,
     "",
+    ONE_TIME_LINK_NOTE,
+    "",
     "Questions? Just reply to this email.",
+  ].join("\n");
+
+  return { subject, html, text };
+}
+
+/**
+ * The fresh set-password link someone asked for from the expired-link page
+ * (lib/actions/new-link.ts) — replaces an invite link that expired or was
+ * already used.
+ */
+export function newLinkEmail({
+  recipientName,
+  actionUrl,
+}: {
+  recipientName: string | null;
+  actionUrl: string;
+}): RenderedEmail {
+  const subject = "Your new Fishing the Good Fight portal link";
+  const greeting = recipientName ? `Hi ${escapeHtml(recipientName)},` : "Hi,";
+  const greetingText = recipientName ? `Hi ${recipientName},` : "Hi,";
+  const intro =
+    "Here's the new link you asked for. Click below to set your password and carry on where you left off.";
+  const ignore = "If you didn't ask for this, you can ignore this email — nothing changes unless the link is used.";
+  const buttonLabel = "Set your password";
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">Your new link</p>`,
+      `<p style="margin:0 0 16px;">${greeting}</p>`,
+      `<p style="margin:0 0 16px;">${intro}</p>`,
+      `<p style="margin:24px 0 8px;"><a href="${actionUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
+      ONE_TIME_LINK_NOTE_HTML,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">${ignore}</p>`,
+    ].join("\n"),
+  );
+
+  const text = [
+    "Your new link",
+    "",
+    greetingText,
+    "",
+    intro,
+    "",
+    `${buttonLabel}: ${actionUrl}`,
+    "",
+    ONE_TIME_LINK_NOTE,
+    "",
+    ignore,
   ].join("\n");
 
   return { subject, html, text };

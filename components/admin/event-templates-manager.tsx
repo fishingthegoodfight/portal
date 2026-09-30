@@ -18,7 +18,7 @@ import { isVirtualChapter } from "@/lib/chapters";
 import type { Venue } from "@/lib/venues";
 import { LocationFields } from "@/components/admin/fields/location-fields";
 import type { EventTypeOption } from "@/lib/event-types";
-import { VIRTUAL_CHAPTER, type Chapter } from "@/lib/chapters";
+import { chapterByName, VIRTUAL_CHAPTER, type Chapter } from "@/lib/chapters";
 import { DescriptionField, EventTypeField } from "@/components/admin/fields/event-text-fields";
 import { RoleDescriptionField } from "@/components/admin/fields/volunteer-role-fields";
 import { RegistrationSectionsFields } from "@/components/admin/fields/registration-sections-fields";
@@ -364,6 +364,7 @@ function TemplateFormFields({
             required={false}
             venues={venues}
             chapter={value.chapter}
+            statePlaceholder={chapterByName(chapters, value.chapter)?.state}
           />
           <p className="text-xs text-muted-foreground">
             Optional default location — pre-fills the event&apos;s address, which stays editable.

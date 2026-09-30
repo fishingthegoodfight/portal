@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { assignLeadEventsToNewAccount } from "@/lib/admin/lead-account";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { getSiteUrl } from "@/lib/site-url";
 import { authConfirmUrl, buildConfirmUrl } from "@/lib/auth-confirm-link";
@@ -160,6 +161,7 @@ async function inviteOne(
     userId = link.user.id;
     needsPasswordSetup = true;
     actionUrl = buildConfirmUrl(link.properties.hashed_token, "invite", SET_PASSWORD_NEXT);
+    await assignLeadEventsToNewAccount(adminClientForCreate, userId);
 
     // handle_new_user() (the signup trigger) only copies id/email/
     // directory_opt_in from auth metadata — fill in the name here, same as

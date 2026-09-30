@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { assignLeadEventsToNewAccount } from "@/lib/admin/lead-account";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import {
   checkImportRow,
@@ -233,6 +234,7 @@ export async function importVolunteerChunkAction(rows: ImportRowInput[]): Promis
         continue;
       }
       userId = created.user.id;
+      await assignLeadEventsToNewAccount(adminClient, userId);
       // handle_new_user() only copies id/email/directory_opt_in.
       const profileUpdate: Record<string, string> = { email: row.email };
       if (row.firstName) profileUpdate.first_name = row.firstName;

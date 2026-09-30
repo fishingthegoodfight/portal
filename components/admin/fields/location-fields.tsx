@@ -20,6 +20,7 @@ export function LocationFields({
   legacyLocation,
   venues,
   chapter,
+  statePlaceholder,
   saveVenue,
   onSaveVenueChange,
 }: {
@@ -36,6 +37,10 @@ export function LocationFields({
   venues: Venue[];
   /** The event's (or template's) chapter — scopes the picker. */
   chapter: string;
+  /** The chapter's own state (chapters.state), shown as the State box's
+   * placeholder. Omit for none — never a fixed "CO", which on another
+   * state's event reads as though the state were already filled in. */
+  statePlaceholder?: string;
   saveVenue?: boolean;
   /** Omit to never offer "Save this venue for next time". */
   onSaveVenueChange?: (save: boolean) => void;
@@ -84,7 +89,7 @@ export function LocationFields({
           id={`${idPrefix}_state`}
           required={required}
           maxLength={2}
-          placeholder="CO"
+          placeholder={statePlaceholder}
           value={value.state}
           onChange={(e) => onChange({ state: e.target.value.toUpperCase() })}
         />
@@ -98,7 +103,6 @@ export function LocationFields({
           inputMode="numeric"
           autoComplete="off"
           maxLength={10}
-          placeholder="80202"
           value={value.postalCode}
           onChange={(e) => onChange({ postalCode: e.target.value })}
         />

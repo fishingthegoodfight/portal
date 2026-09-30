@@ -9,7 +9,7 @@ import {
   type VolunteerRoleInput,
 } from "@/lib/actions/admin-create-event";
 import { generateRecurrenceDates, type RecurrenceFrequency } from "@/lib/admin/recurrence";
-import { timezoneForChapter, timezoneOptions, type Chapter } from "@/lib/chapters";
+import { chapterByName, timezoneForChapter, timezoneOptions, type Chapter } from "@/lib/chapters";
 import {
   CapacityField,
   CustomEmailNoteField,
@@ -878,6 +878,7 @@ export function EventCreateWizard({
                 onChange={(patch) => setForm((prev) => ({ ...prev, ...patch }))}
                 venues={venues}
                 chapter={form.chapter}
+                statePlaceholder={chapterByName(chapters, form.chapter)?.state}
                 saveVenue={saveVenue}
                 onSaveVenueChange={canSaveVenue ? setSaveVenue : undefined}
               />
@@ -932,6 +933,20 @@ export function EventCreateWizard({
 
         {step === 3 && (
           <div className="flex flex-col gap-4">
+            {/* Shift times are set against the event's own, which was chosen
+                two steps ago — pinned so it stays in view down a long list
+                of roles. */}
+            <div className="sticky top-2 z-10 rounded-md border bg-background px-3 py-2 text-sm shadow-sm">
+              <span className="text-muted-foreground">Event: </span>
+              {whenPreview ? (
+                <span className="font-medium">{whenPreview}</span>
+              ) : (
+                <span className="text-muted-foreground">date and time not set yet (step 1)</span>
+              )}
+              {whenPreview && !form.endTime && (
+                <span className="text-muted-foreground"> · no end time set</span>
+              )}
+            </div>
             <div className="grid gap-2">
               <span className="text-sm font-medium">Are volunteers needed?</span>
               <div className="flex gap-2">

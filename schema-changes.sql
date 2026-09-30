@@ -12086,3 +12086,191 @@ create trigger volunteer_signups_stamp_checked_in_at
   for each row execute function public.stamp_checked_in_at();
 
 commit;
+
+-- =============================================================================
+-- 2026-09-30 — Cancelling or restoring an event: admins and the chapter's
+--              lead only
+-- =============================================================================
+-- Someone who only leads an event (events.lead_user_id) keeps the rest of
+-- can_manage_event — roster, check-in, walk-ups, volunteers, editing,
+-- removing people, waitlist offers, printing — but can no longer cancel it
+-- or restore it once cancelled: both email everyone registered.
+-- can_manage_event itself and every policy built on it are unchanged; this
+-- is one trigger on the status column, the same shape as
+-- events_chapter_guard.
+--
+-- Run 2026-09-30, before the matching code was pushed to main. The code
+-- also hides Cancel and Restore from an event's own lead and refuses them
+-- in the actions; this is the database's own refusal. Trusted contexts (no signed-in user) are exempt.
+-- No new tables, so no new grants. Safe to re-run.
+
+begin;
+
+create or replace function public.events_cancel_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if auth.uid() is null then
+    return new;
+  end if;
+  -- Into 'cancelled' (cancel) or out of it (restore).
+  if (new.status = 'cancelled') is distinct from (old.status = 'cancelled')
+     and not public.can_manage_chapter(old.chapter) then
+    raise exception 'Only an admin or the chapter''s lead can cancel or restore an event' using errcode = '42501';
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists events_cancel_guard on public.events;
+create trigger events_cancel_guard
+  before update of status on public.events
+  for each row execute function public.events_cancel_guard();
+
+revoke all on function public.events_cancel_guard() from public, anon, authenticated;
+
+commit;
+
+-- =============================================================================
+-- 2026-09-30 — Leads named before they have an account are assigned when
+--              the account arrives
+-- =============================================================================
+-- Events are created months ahead with a lead's name and email typed in,
+-- often before that person has a portal account — so lead_user_id stays
+-- null and they have no access. assign_lead_events(user) closes that gap:
+-- it assigns the account to every event where
+--   * lead_email is EXACTLY the account's email (case and surrounding spaces
+--     aside — no partial or name matching),
+--   * nobody is assigned yet (an existing assignment is never overwritten),
+--   * the event is upcoming and not cancelled.
+-- It runs at two moments (app code):
+--   * when an admin-side action creates the account — an invite, a walk-up,
+--     the volunteer import (service role);
+--   * the first time an account signs in through an emailed link
+--     (/auth/confirm) — a self sign-up's confirmation, or an account made
+--     earlier that was never used. "First time" is
+--     profiles.lead_events_checked_at, stamped by that run. Accounts that
+--     have already signed in are stamped here, so they are never swept up
+--     later: for them the event form's "has an account — assign" is the way.
+-- The email has to be trustworthy: an account an admin-side action made
+-- for that address (the service-role run), or one whose own sign-in through
+-- an emailed link proved it. A self sign-up that hasn't confirmed its email
+-- gets nothing until it does. Someone whose access was removed gets
+-- nothing.
+--
+-- Every assignment is kept in event_lead_auto_assignments (who, which
+-- event, when) — shown on the event page beside the lead and listed in the
+-- daily digest's "For information" lines.
+--
+-- Run 2026-09-30, before the matching code was pushed to main. One new
+-- table, with its grants below. Safe to re-run.
+
+begin;
+
+alter table public.profiles
+  add column if not exists lead_events_checked_at timestamptz;
+
+-- Accounts already in use: not "signing in for the first time" ever again.
+update public.profiles p
+   set lead_events_checked_at = now()
+  from auth.users u
+ where u.id = p.id
+   and u.last_sign_in_at is not null
+   and p.lead_events_checked_at is null;
+
+create table if not exists public.event_lead_auto_assignments (
+  id bigserial primary key,
+  event_id bigint not null references public.events(id) on delete cascade,
+  -- Kept as text too, so the record still reads after the person is removed.
+  user_id uuid references auth.users(id) on delete set null,
+  person_name text not null,
+  email text not null,
+  assigned_at timestamptz not null default now()
+);
+
+create index if not exists event_lead_auto_assignments_event_idx
+  on public.event_lead_auto_assignments (event_id);
+
+alter table public.event_lead_auto_assignments enable row level security;
+
+-- Whoever manages the event sees how its lead came to be assigned. No
+-- insert, update or delete policy: only assign_lead_events writes.
+drop policy if exists event_lead_auto_assignments_select_managed on public.event_lead_auto_assignments;
+create policy event_lead_auto_assignments_select_managed on public.event_lead_auto_assignments
+  for select to authenticated
+  using (public.can_manage_event(event_id));
+
+revoke all on public.event_lead_auto_assignments from anon;
+revoke all on public.event_lead_auto_assignments from authenticated;
+grant select on public.event_lead_auto_assignments to authenticated;
+-- The daily digest reads them with the service role.
+grant all on public.event_lead_auto_assignments to service_role;
+-- Only the function below inserts, as the table's owner.
+revoke all on sequence public.event_lead_auto_assignments_id_seq from anon, authenticated;
+grant usage, select on sequence public.event_lead_auto_assignments_id_seq to service_role;
+
+-- Returns how many events were assigned. A signed-in caller can only run it
+-- for themselves, and only their first run does anything; the service role
+-- (account creation) can run it for anyone, any number of times.
+create or replace function public.assign_lead_events(p_user_id uuid default auth.uid())
+returns integer
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_email text;
+  v_name text;
+  v_count integer := 0;
+begin
+  if p_user_id is null then
+    return 0;
+  end if;
+  if auth.uid() is not null then
+    if auth.uid() <> p_user_id then
+      raise exception 'Not allowed' using errcode = '42501';
+    end if;
+    -- First sign-in only: claim the stamp, or stop.
+    update public.profiles
+       set lead_events_checked_at = now()
+     where id = p_user_id and lead_events_checked_at is null;
+    if not found then
+      return 0;
+    end if;
+  end if;
+
+  select lower(btrim(u.email)),
+         coalesce(nullif(btrim(concat_ws(' ', p.first_name, p.last_name)), ''), btrim(u.email))
+    into v_email, v_name
+    from auth.users u
+    join public.profiles p on p.id = u.id
+   where u.id = p_user_id
+     and p.access_removed_at is null
+     -- The service role only runs this for accounts admins created; a
+     -- signed-in caller's email must be confirmed.
+     and (auth.uid() is null or u.email_confirmed_at is not null);
+  if coalesce(v_email, '') = '' then
+    return 0;
+  end if;
+
+  with assigned as (
+    update public.events e
+       set lead_user_id = p_user_id, updated_at = now()
+     where e.lead_user_id is null
+       and lower(btrim(e.lead_email)) = v_email
+       and coalesce(e.ends_at, e.starts_at) >= now()
+       and coalesce(e.status, 'scheduled') <> 'cancelled'
+    returning e.id
+  )
+  insert into public.event_lead_auto_assignments (event_id, user_id, person_name, email)
+  select a.id, p_user_id, v_name, v_email from assigned a;
+  get diagnostics v_count = row_count;
+  return v_count;
+end $function$;
+
+revoke all on function public.assign_lead_events(uuid) from public, anon;
+grant execute on function public.assign_lead_events(uuid) to authenticated, service_role;
+
+commit;

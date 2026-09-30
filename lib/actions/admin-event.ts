@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { actorLabel, loadManagedEventIds, requireEventManager } from "@/lib/admin/require-admin";
+import { leadAssignmentProblem } from "@/lib/admin/lead-account";
 import { formatEventDateRange } from "@/lib/format-date";
 import { normalizeSlug, publicEventPath, slugError } from "@/lib/event-slug";
 import { toZonedDateTimeInputs, zonedDateTimeToUtc } from "@/lib/timezone";
@@ -686,6 +687,12 @@ export async function updateEventAction(
   if (input.leadUserId && !UUID_PATTERN.test(input.leadUserId)) {
     return { ok: false, error: "Choose the lead again" };
   }
+  try {
+    const leadProblem = await leadAssignmentProblem(input.leadUserId, input.leadEmail);
+    if (leadProblem) return { ok: false, error: leadProblem, field: "lead" };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Admin client unavailable" };
+  }
 
   if (input.eventType !== before.event_type) {
     const { data: eventTypeRow } = await supabase
@@ -1172,6 +1179,19 @@ async function eventsToCancel(
  * get the same text with their own date) and counts recipients across every
  * occurrence it reaches — no writes, no sends. Backs the admin cancel flow's
  * required preview step. */
+/**
+ * Cancelling and restoring are for admins and the chapter's own lead(s) —
+ * can_manage_chapter, narrower than can_manage_event: someone who only leads
+ * this event runs its roster and can edit it, but both of these email
+ * everyone registered. The events_cancel_guard trigger refuses the same
+ * thing in the database. Returns the message to refuse with, or null.
+ */
+async function cancelNotAllowed(supabase: SupabaseServerClient, chapter: string | null): Promise<string | null> {
+  const { data: allowed, error } = await supabase.rpc("can_manage_chapter", { p_chapter: chapter });
+  if (error) return error.message;
+  return allowed ? null : "Only an admin or the chapter's lead can cancel or restore an event";
+}
+
 export async function previewEventCancellationAction(
   eventId: number,
   reason: string,
@@ -1186,6 +1206,8 @@ export async function previewEventCancellationAction(
 
   const event = await loadEvent(supabase, eventId);
   if (!event) return { ok: false, error: "Event not found" };
+  const cancelProblem = await cancelNotAllowed(supabase, event.chapter);
+  if (cancelProblem) return { ok: false, error: cancelProblem };
   if (scope === "future" && !event.series_id) {
     return { ok: false, error: "This event isn't part of a series" };
   }
@@ -1243,6 +1265,8 @@ export async function cancelEventAction(
 
   const anchor = await loadEvent(supabase, eventId);
   if (!anchor) return { ok: false, error: "Event not found" };
+  const cancelProblem = await cancelNotAllowed(supabase, anchor.chapter);
+  if (cancelProblem) return { ok: false, error: cancelProblem };
   if (scope === "future" && !anchor.series_id) {
     return { ok: false, error: "This event isn't part of a series" };
   }
@@ -1376,6 +1400,8 @@ export async function restoreEventAction(
 
   const before = await loadEvent(supabase, eventId);
   if (!before) return { ok: false, error: "Event not found" };
+  const restoreProblem = await cancelNotAllowed(supabase, before.chapter);
+  if (restoreProblem) return { ok: false, error: restoreProblem };
   if (before.status !== "cancelled") return { ok: false, error: "Event is not cancelled" };
 
   const newSequence = before.ics_sequence + 1;

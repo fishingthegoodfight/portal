@@ -5,16 +5,16 @@ import { createClient } from "@/lib/supabase/server";
 import { loadEventAdminAccess } from "@/lib/admin/require-admin";
 import { loadEventRoster } from "@/lib/admin/roster";
 import { countSignupsCancelledWithEvent } from "@/lib/admin/event-roles";
-import { formatEventDateRange } from "@/lib/format-date";
+import { formatDateInZone, formatEventDateRange } from "@/lib/format-date";
 import { EventRoster } from "@/components/admin/event-roster";
 import { DeleteEventSection } from "@/components/admin/delete-event-section";
 import { eventsWithRegistrations } from "@/lib/admin/event-delete";
-import { ShareEventCard } from "@/components/admin/share-event-card";
 import { publicEventPath } from "@/lib/event-slug";
 import { getSiteUrl } from "@/lib/site-url";
 import { loadHealthMarkers, loadHealthStatus } from "@/lib/health-access";
 import { loadLatestPracticalChecks } from "@/lib/admin/practical-checks";
 import { loadChapters } from "@/lib/chapters";
+import { loadLeadAccount } from "@/lib/admin/lead-account";
 
 async function AdminEventLoader({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -52,6 +52,24 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
         volunteerRoster.filter((v) => v.instructorShift).map((v) => v.userId),
       )
     : null;
+  // Cancelling and restoring are for admins and this chapter's own lead(s),
+  // not for someone who only leads this event (events_cancel_guard enforces it).
+  // The assigned lead is read by id with the service role — the layout has
+  // already checked can_manage_event, and a chapter or event lead can't
+  // otherwise read the profile of someone who isn't on the roster.
+  const [{ data: canCancel }, leadAccount, { data: autoAssigned }] = await Promise.all([
+    supabase.rpc("can_manage_chapter", { p_chapter: event.chapter }),
+    loadLeadAccount(event.lead_user_id).catch(() => null),
+    // Whether the current lead got here through assign_lead_events (their
+    // account arrived after the event named their email).
+    supabase
+      .from("event_lead_auto_assignments")
+      .select("user_id, assigned_at")
+      .eq("event_id", eventId)
+      .order("assigned_at", { ascending: false })
+      .limit(1),
+  ]);
+  const autoAssignment = (autoAssigned ?? []).find((a) => a.user_id === event.lead_user_id);
   const offeredCount = waitlist.filter((w) => w.status === "offered").length;
   // Only needed for the restore dialog — shifts don't come back on restore.
   const volunteersCancelledWithEvent =
@@ -91,6 +109,15 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
         volunteersCancelledWithEvent={volunteersCancelledWithEvent}
         canSaveAsTemplate={access?.isAdmin ?? false}
         canRemovePaperWaiver={access?.isAdmin ?? false}
+        canCancel={Boolean(canCancel)}
+        lead={{
+          assignedName: event.lead_user_id ? (leadAccount?.name ?? "An account") : null,
+          contactName: (event.lead_name ?? "").trim() || (event.lead_email ?? "").trim(),
+          autoAssignedOn:
+            event.lead_user_id && autoAssignment
+              ? formatDateInZone(autoAssignment.assigned_at as string, event.timezone)
+              : null,
+        }}
         chapters={chapters}
         unregisteredVolunteerIds={(unregistered.data ?? []) as string[]}
         practicalChecks={
@@ -107,14 +134,11 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
           status: Object.fromEntries(healthStatus),
           markers: healthMarkers ? Object.fromEntries(healthMarkers) : null,
         }}
-        shareCard={
-          <ShareEventCard
-            url={`${getSiteUrl()}${publicEventPath(event.slug)}`}
-            slug={event.slug}
-            published={Boolean(event.is_published)}
-            cancelled={event.status === "cancelled"}
-          />
-        }
+        share={{
+          url: `${getSiteUrl()}${publicEventPath(event.slug)}`,
+          slug: event.slug,
+          published: Boolean(event.is_published),
+        }}
       />
       {/* Set apart below everything else, so it can't be hit by accident. */}
       <DeleteEventSection
@@ -122,6 +146,7 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
         eventName={event.name}
         seriesId={event.series_id}
         canDelete={!registered.has(event.id)}
+        canCancel={Boolean(canCancel)}
         isCancelled={event.status === "cancelled"}
       />
     </>

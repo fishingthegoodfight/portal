@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
+import { EmergencyContactSectionFields } from "@/components/emergency-contact-fields";
 import { RegistrationFieldInput } from "@/components/registration-fields";
 import { HomeChapterField } from "@/components/chapter-select";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -501,6 +502,10 @@ function SectionFields({
   onChange: (key: string, value: string) => void;
 }) {
   const fields = visibleFields(section, values);
+  // One contact per row, the same component as every other form.
+  if (section.id === "emergency_contact") {
+    return <EmergencyContactSectionFields values={values} onChange={onChange} />;
+  }
   return (
     <div
       className={

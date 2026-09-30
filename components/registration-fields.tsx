@@ -29,7 +29,7 @@ export function RegistrationFieldInput({
 
   if (field.type === "select") {
     return (
-      <div className="grid gap-2">
+      <div className="grid content-end gap-2">
         <Label htmlFor={field.key}>{field.label}</Label>
         <Select
           id={field.key}
@@ -89,8 +89,11 @@ export function RegistrationFieldInput({
     );
   }
 
+  // `content-end`: in a two-column section (e.g. Emergency contact) a label
+  // that wraps on a narrow screen makes its row taller, and the box beside
+  // it would otherwise sit higher than its neighbour.
   return (
-    <div className="grid gap-2">
+    <div className="grid content-end gap-2">
       <Label htmlFor={field.key}>{field.label}</Label>
       {field.type === "textarea" ? (
         <Textarea

@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { assignLeadEventsToNewAccount } from "@/lib/admin/lead-account";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { authConfirmUrl, buildConfirmUrl } from "@/lib/auth-confirm-link";
 import { sendPersonInviteEmail } from "@/lib/email/send";
@@ -106,6 +107,7 @@ export async function invitePersonAction(input: InvitePersonInput): Promise<Invi
     }
     userId = link.user.id;
     actionUrl = buildConfirmUrl(link.properties.hashed_token, "invite", SET_PASSWORD_NEXT);
+    await assignLeadEventsToNewAccount(adminClient, userId);
 
     // handle_new_user() only copies id/email/directory_opt_in — the name is
     // filled in here, as the volunteer invite does.

@@ -320,7 +320,42 @@ const paperWaivers: DigestNote = async (admin) => {
   }
 };
 
-export const DIGEST_NOTES: DigestNote[] = [paperWaivers];
+/** The window the automatic lead assignments are listed over, in days. */
+const LEAD_ASSIGNMENT_WINDOW_DAYS = 7;
+
+/** Leads assigned automatically (event_lead_auto_assignments): someone named
+ * as an event's lead by email before they had an account, assigned when the
+ * account arrived. Named one by one — it grants manage rights on an event,
+ * so it should be seen to have happened. A failure here is logged and
+ * leaves the line out rather than stopping the digest. */
+const autoAssignedLeads: DigestNote = async (admin) => {
+  try {
+    const { data, error } = await admin
+      .from("event_lead_auto_assignments")
+      .select("person_name, assigned_at, events(name, starts_at, timezone)")
+      .gte("assigned_at", new Date(Date.now() - LEAD_ASSIGNMENT_WINDOW_DAYS * 86_400_000).toISOString())
+      .order("assigned_at");
+    if (error) throw new Error(error.message);
+    const rows = (data ?? []) as unknown as {
+      person_name: string;
+      events: { name: string; starts_at: string; timezone: string } | null;
+    }[];
+    if (rows.length === 0) return null;
+    const list = rows
+      .map((row) =>
+        row.events
+          ? `${row.person_name} → ${row.events.name} (${formatDateInZone(row.events.starts_at, row.events.timezone)})`
+          : row.person_name,
+      )
+      .join("; ");
+    return `Event leads assigned automatically in the last ${LEAD_ASSIGNMENT_WINDOW_DAYS} days, because their new account's email matched the event's lead email: ${list}.`;
+  } catch (err) {
+    console.error("[admin-digest] listing automatic lead assignments failed:", err);
+    return null;
+  }
+};
+
+export const DIGEST_NOTES: DigestNote[] = [paperWaivers, autoAssignedLeads];
 
 /** In the order the sections appear — most pressing first. */
 export const DIGEST_SOURCES: DigestSource[] = [

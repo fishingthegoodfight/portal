@@ -6,6 +6,7 @@ import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/client";
 import { addWalkupRsvpAction, removePaperWaiverAction } from "@/lib/actions/admin-walkup";
+import { updateRosterPersonDetailsAction } from "@/lib/actions/roster-person";
 import { walkupLookupAction } from "@/lib/actions/waiver";
 import { RegistrationSectionField } from "@/components/registration-section-field";
 import {
@@ -20,6 +21,7 @@ import { adminAddVolunteerSignupAction } from "@/lib/actions/admin-volunteer-sig
 import { CancelEventDialog } from "@/components/admin/cancel-event-dialog";
 import { RestoreEventDialog } from "@/components/admin/restore-event-dialog";
 import { SaveAsTemplateButton } from "@/components/admin/save-as-template-button";
+import { ShareEventCard } from "@/components/admin/share-event-card";
 import { EventCard, type EventCardEvent } from "@/components/event-card";
 import { EmergencyContactFields } from "@/components/emergency-contact-fields";
 import { Button } from "@/components/ui/button";
@@ -113,9 +115,11 @@ export function EventRoster({
   initialVolunteerRoster,
   seriesId,
   volunteersCancelledWithEvent,
-  shareCard,
+  share,
   canSaveAsTemplate = false,
   canRemovePaperWaiver = false,
+  canCancel = false,
+  lead,
   health,
   practicalChecks = null,
   unregisteredVolunteerIds = [],
@@ -148,15 +152,30 @@ export function EventRoster({
   seriesId: string | null;
   /** Volunteer signups the event's cancellation cancelled (0 unless cancelled). */
   volunteersCancelledWithEvent: number;
-  /** The "Share" block (public link + QR) — built by the server page, which
-   * knows the site URL. */
-  shareCard?: React.ReactNode;
+  /** For the "Share" block (public link + QR): the public page's URL, from
+   * the server page, which knows the site URL. Plain data, not a rendered
+   * element — an element made by the server page and dropped in among this
+   * component's children was what React's "unique key" warning was about. */
+  share: { url: string; slug: string; published: boolean };
   /** Templates are admin-only setup, so a chapter lead doesn't get "Save as
    * template". */
   canSaveAsTemplate?: boolean;
   /** Admins only: undo a paper waiver record entered by mistake. A chapter
    * lead can record one but not remove it. */
   canRemovePaperWaiver?: boolean;
+  /** Cancel and restore: admins and the event's chapter lead(s) only — not
+   * someone who just leads this event. Both email everyone registered. */
+  canCancel?: boolean;
+  /** Who leads the event: the assigned account's own name (it has manage
+   * rights), and the free-text contact name attendees see. Either can be
+   * missing, and they can differ. */
+  lead: {
+    assignedName: string | null;
+    contactName: string;
+    /** Set when the lead was assigned automatically: their account arrived
+     * after the event already named their email (assign_lead_events). */
+    autoAssignedOn: string | null;
+  };
   /** Health form status for everyone, markers only for a health-access
    * viewer (see RosterHealthLine). */
   health: RosterHealth;
@@ -691,6 +710,37 @@ export function EventRoster({
     <div className="flex flex-col gap-6">
       <EventCard event={eventCard} rsvpStatus={null} exactSpots />
 
+      {/* Assigned (has access) and merely named (contact details, no
+          access) look the same everywhere else, so say which it is. */}
+      {lead.assignedName ? (
+        <p className="text-sm">
+          <span className="text-muted-foreground">Lead:</span>{" "}
+          <span className="font-medium">{lead.assignedName}</span>{" "}
+          <span className="text-muted-foreground">(can manage this event)</span>
+          {lead.contactName && lead.contactName.toLowerCase() !== lead.assignedName.toLowerCase() && (
+            <span className="text-muted-foreground"> · shown to attendees as {lead.contactName}</span>
+          )}
+          {lead.autoAssignedOn && (
+            <span className="text-muted-foreground">
+              {" "}
+              · assigned automatically {lead.autoAssignedOn}, when their account matched the lead email
+            </span>
+          )}
+        </p>
+      ) : lead.contactName ? (
+        <p className="text-sm">
+          <span className="text-muted-foreground">Lead contact:</span>{" "}
+          <span className="font-medium">{lead.contactName}</span>{" "}
+          <span className="font-medium text-amber-700 dark:text-amber-400">(not assigned — no access)</span>{" "}
+          <Link
+            href={`/protected/admin/events/${eventId}/edit`}
+            className="text-muted-foreground underline underline-offset-4"
+          >
+            Assign on the edit form
+          </Link>
+        </p>
+      ) : null}
+
       {virtualLink && (
         <VirtualLinkCard link={virtualLink} accessNotes={virtualAccessNotes} />
       )}
@@ -702,7 +752,12 @@ export function EventRoster({
         </div>
       )}
 
-      {shareCard}
+      <ShareEventCard
+        url={share.url}
+        slug={share.slug}
+        published={share.published}
+        cancelled={isCancelled}
+      />
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatTile label="Capacity" value={eventCard.capacity ?? "—"} />
@@ -717,15 +772,19 @@ export function EventRoster({
       <div className="flex flex-col gap-3 rounded-md border p-3">
         {isCancelled ? (
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <RestoreEventDialog
-              eventId={eventId}
-              eventName={eventCard.name}
-              confirmedCount={confirmedCount}
-              volunteersCancelledCount={volunteersCancelledWithEvent}
-              onRestored={() => router.refresh()}
-            />
+            {canCancel && (
+              <RestoreEventDialog
+                eventId={eventId}
+                eventName={eventCard.name}
+                confirmedCount={confirmedCount}
+                volunteersCancelledCount={volunteersCancelledWithEvent}
+                onRestored={() => router.refresh()}
+              />
+            )}
             <span className="text-sm text-muted-foreground">
-              Cancelled — restore it to add people again.
+              {canCancel
+                ? "Cancelled — restore it to add people again."
+                : "Cancelled — an admin or the chapter's lead can restore it. Nobody can be added until then."}
             </span>
           </div>
         ) : (
@@ -750,6 +809,13 @@ export function EventRoster({
               Print roster
             </Link>
           </Button>
+          {/* Its own printout, not part of the roster's: the waiver plus
+              blank sign-in pages, for the rare event that needs paper. */}
+          <Button asChild variant="outline" size="sm">
+            <Link href={`/protected/admin/events/${eventId}/walkup-sheet`} target="_blank">
+              Print walk-up sheet
+            </Link>
+          </Button>
           {health.markers && (
             <Button asChild variant="outline" size="sm">
               <Link href={`/protected/admin/events/${eventId}/health/print`} target="_blank">
@@ -770,7 +836,7 @@ export function EventRoster({
               chapters={chapters}
             />
           )}
-          {!isCancelled && (
+          {!isCancelled && canCancel && (
             <div className="ml-auto">
               <CancelEventDialog
                 eventId={eventId}
@@ -879,6 +945,9 @@ export function EventRoster({
                     removing={busyRsvpId === person.rsvpId}
                     confirming={pendingRemoval?.rsvpId === person.rsvpId}
                     onRemovePaperWaiver={canRemovePaperWaiver ? removePaperWaiver : undefined}
+                    editDetails={
+                      <EditDetails eventId={eventId} person={person} onSaved={() => router.refresh()} />
+                    }
                     health={
                       <RosterHealthLine
                         eventId={eventId}
@@ -966,6 +1035,11 @@ export function EventRoster({
                     key={person.signupId}
                     person={person}
                     timing={timing}
+                    editDetails={
+                      person.userId && (
+                        <EditDetails eventId={eventId} person={person} onSaved={() => router.refresh()} />
+                      )
+                    }
                     unregistered={unregisteredVolunteerIds.includes(person.userId)}
                     answerSections={answerSections}
                     onToggleCheckIn={toggleVolunteerCheckIn}
@@ -1479,6 +1553,7 @@ function RosterRow({
   removing,
   confirming,
   onRemovePaperWaiver,
+  editDetails,
   health,
 }: {
   person: RosterPerson;
@@ -1493,6 +1568,8 @@ function RosterRow({
   confirming: boolean;
   /** Set for admins only: removes a paper waiver record entered by mistake. */
   onRemovePaperWaiver?: (person: RosterPerson) => void;
+  /** The "Edit details" control. */
+  editDetails?: React.ReactNode;
   health: React.ReactNode;
 }) {
   const contact = [person.phone, person.email].filter(Boolean).join(" · ");
@@ -1507,6 +1584,7 @@ function RosterRow({
           {personDisplayName(person)}
         </span>
         <span className="text-sm text-muted-foreground">{contact || "—"}</span>
+        {editDetails}
         <span className="text-sm text-muted-foreground">Emergency: {emergency || "—"}</span>
         {person.emergencySecondary && (
           <span className="text-sm text-muted-foreground">Second contact: {person.emergencySecondary}</span>
@@ -1619,6 +1697,7 @@ function RosterRow({
 function VolunteerRosterRow({
   person,
   timing,
+  editDetails,
   unregistered,
   answerSections,
   onToggleCheckIn,
@@ -1627,6 +1706,8 @@ function VolunteerRosterRow({
 }: {
   person: VolunteerRosterPerson;
   timing: EventTiming;
+  /** The "Edit details" control. */
+  editDetails?: React.ReactNode;
   /** Hasn't completed volunteer registration (this year's volunteer waiver
    * is signed there). */
   unregistered: boolean;
@@ -1653,6 +1734,7 @@ function VolunteerRosterRow({
         )}
         <span className="text-sm text-muted-foreground">{person.shiftLabel}</span>
         <span className="text-sm text-muted-foreground">{contact || "—"}</span>
+        {editDetails}
         <span className="text-sm text-muted-foreground">Emergency: {emergency || "—"}</span>
         {person.emergencySecondary && (
           <span className="text-sm text-muted-foreground">Second contact: {person.emergencySecondary}</span>
@@ -1697,6 +1779,119 @@ function VolunteerRosterRow({
         {person.checkedInAt ? "✓ Checked in" : "Check in"}
       </button>
     </li>
+  );
+}
+
+/**
+ * "Edit details" on a roster row: a quiet link that opens the person's name
+ * and phone for a quick fix at check-in (a misspelling, a wrong digit), saved
+ * to their profile. Name and phone only — everything else stays theirs to
+ * change. For whoever manages the event, its own lead included; the action
+ * checks the same (updateRosterPersonDetailsAction).
+ */
+function EditDetails({
+  eventId,
+  person,
+  onSaved,
+}: {
+  eventId: number;
+  person: { userId: string; firstName: string; lastName: string; phone: string };
+  onSaved: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const id = (field: string) => `edit_details_${person.userId}_${field}`;
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        className="w-fit text-xs text-muted-foreground underline underline-offset-4"
+        onClick={() => {
+          setFirstName(person.firstName);
+          setLastName(person.lastName);
+          setPhone(person.phone);
+          setError(null);
+          setOpen(true);
+        }}
+      >
+        Edit details
+      </button>
+    );
+  }
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await updateRosterPersonDetailsAction({
+        eventId,
+        userId: person.userId,
+        firstName,
+        lastName,
+        phone,
+      });
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      setOpen(false);
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong — try again.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <RevealPanel aria-label="Edit details" className="my-1 rounded-md border p-3">
+      <form onSubmit={save} className="flex flex-col gap-3">
+        <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-1">
+            <Label htmlFor={id("first")} className="text-xs">First name</Label>
+            <Input id={id("first")} required autoFocus value={firstName} onChange={(e) => setFirstName(e.target.value)} />
+          </div>
+          <div className="grid gap-1">
+            <Label htmlFor={id("last")} className="text-xs">Last name</Label>
+            <Input id={id("last")} required value={lastName} onChange={(e) => setLastName(e.target.value)} />
+          </div>
+        </div>
+        <div className="grid gap-1">
+          <Label htmlFor={id("phone")} className="text-xs">Phone</Label>
+          <Input
+            id={id("phone")}
+            type="tel"
+            inputMode="numeric"
+            maxLength={14}
+            placeholder="(303) 555-0100"
+            value={phone}
+            onChange={(e) => setPhone(formatPhoneNumber(e.target.value))}
+          />
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Changes their profile, so it shows this way on every roster.
+        </p>
+        {error && (
+          <p role="alert" className="text-sm text-red-500">
+            {error}
+          </p>
+        )}
+        <div className="flex gap-2">
+          <Button type="submit" size="sm" disabled={saving}>
+            {saving ? "Saving..." : "Save"}
+          </Button>
+          <Button type="button" size="sm" variant="outline" disabled={saving} onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+        </div>
+      </form>
+    </RevealPanel>
   );
 }
 

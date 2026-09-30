@@ -29,12 +29,16 @@ export function DeleteEventSection({
   eventName,
   seriesId,
   canDelete,
+  canCancel,
   isCancelled,
 }: {
   eventId: number;
   eventName: string;
   seriesId: string | null;
   canDelete: boolean;
+  /** Admins and the chapter's lead(s) — not someone who only leads this
+   * event. */
+  canCancel: boolean;
   isCancelled: boolean;
 }) {
   const router = useRouter();
@@ -96,6 +100,8 @@ export function DeleteEventSection({
           Events with registrations or volunteer signups can&apos;t be deleted
           {isCancelled ? (
             " — this one is already cancelled."
+          ) : !canCancel ? (
+            " — they have to be cancelled instead, by an admin or the chapter's lead."
           ) : (
             <>
               {" "}— they have to be{" "}

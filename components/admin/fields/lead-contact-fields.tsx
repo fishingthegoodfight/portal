@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from "react";
 
-import { searchLeadCandidatesAction, type LeadCandidate } from "@/lib/actions/event-lead";
+import {
+  leadAccountStatusAction,
+  searchLeadCandidatesAction,
+  type LeadCandidate,
+} from "@/lib/actions/event-lead";
+import type { LeadAccount } from "@/lib/admin/lead-account";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,6 +25,13 @@ const ROLE_NOTE: Record<string, string> = {
  * can_manage_event), then the free-text name/phone/email shown to attendees,
  * which picking a person fills from their profile and which stay editable
  * (and are all there is for a lead without an account).
+ *
+ * The two can disagree — typing a name and email gives nobody access, and
+ * retyping them leaves the old account assigned — so the block always says
+ * which it is: who (if anyone) is assigned and can manage the event, by the
+ * account's own name, and when the typed email belongs to an account, an
+ * offer to assign it in one click. Saving with one account assigned and
+ * another account's email typed is refused (leadAssignmentProblem).
  */
 export function LeadContactFields({
   idPrefix,
@@ -74,6 +86,44 @@ export function LeadContactFields({
     };
   }, [trimmed]);
 
+  // Who is actually assigned, and whether the typed email is an account's —
+  // looked up for exactly what's in the form now (a stale answer is ignored).
+  const emailKey = email.trim().toLowerCase();
+  const emailComplete = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailKey);
+  const [account, setAccount] = useState<{
+    forUser: string;
+    forEmail: string;
+    assigned: LeadAccount | null;
+    emailMatch: LeadAccount | null;
+  } | null>(null);
+  useEffect(() => {
+    if (!leadUserId && !emailComplete) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const result = await leadAccountStatusAction({ leadUserId, email: emailComplete ? emailKey : "" });
+      if (cancelled || !result.ok) return;
+      setAccount({ forUser: leadUserId, forEmail: emailKey, assigned: result.assigned, emailMatch: result.emailMatch });
+    }, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [leadUserId, emailKey, emailComplete]);
+  const current = account && account.forUser === leadUserId && account.forEmail === emailKey ? account : null;
+  const assigned = leadUserId ? (current?.assigned ?? null) : null;
+  const emailMatch = emailComplete ? (current?.emailMatch ?? null) : null;
+  const checking = (Boolean(leadUserId) || emailComplete) && !current;
+  // The typed email is someone else's account than the one assigned.
+  const otherAccount = leadUserId && emailMatch && emailMatch.id !== leadUserId ? emailMatch : null;
+
+  /** One click from "this email has an account" to assigned. The contact
+   * details typed so far are kept; a blank name takes the account's. */
+  const assign = (person: LeadAccount) => {
+    onChangeLeadUserId(person.id);
+    if (!name.trim()) onChangeName(person.name);
+    setPickedLabel(person.name || person.email);
+  };
+
   const pick = (person: LeadCandidate) => {
     onChangeLeadUserId(person.id);
     onChangeName(person.name);
@@ -89,7 +139,13 @@ export function LeadContactFields({
     setPickedLabel(null);
   };
 
-  const linkedLabel = pickedLabel ?? (name.trim() || email.trim() || "the linked account");
+  const linkedLabel =
+    assigned?.name ?? pickedLabel ?? (name.trim() || email.trim() || "the linked account");
+  const typedName = name.trim();
+  const nameDiffers =
+    Boolean(assigned && typedName) && typedName.toLowerCase() !== assigned!.name.trim().toLowerCase();
+  const emailDiffers =
+    Boolean(assigned && emailComplete) && !otherAccount && emailKey !== assigned!.email.trim().toLowerCase();
   const showResults = trimmed.length >= 2;
 
   return (
@@ -100,8 +156,9 @@ export function LeadContactFields({
           <div className="flex flex-col gap-2 rounded-md border border-blue-600/40 bg-blue-600/5 p-3 text-sm">
             <div className="flex items-start justify-between gap-3">
               <p>
-                <span className="font-medium">{linkedLabel}</span>{" "}
-                <span className="text-muted-foreground">— linked account</span>
+                <span className="font-medium">{linkedLabel}</span>
+                {assigned?.email && <span className="text-muted-foreground"> · {assigned.email}</span>}{" "}
+                <span className="text-muted-foreground">— assigned, can manage this event</span>
               </p>
               <Button type="button" variant="ghost" size="sm" onClick={unlink}>
                 Remove
@@ -110,9 +167,37 @@ export function LeadContactFields({
             <p className="text-xs text-muted-foreground">
               {linkedLabel} can manage this event: see the roster with contact details, emergency
               contacts and registration answers, check people in, add walk-ups and volunteers,
-              and edit, cancel or restore it. Remove the link to take that away — the contact
-              details below stay.
+              and edit it. Cancelling and restoring are for admins and the chapter&apos;s lead. Remove the
+              assignment to take that away — the contact details below stay.
             </p>
+            {otherAccount ? (
+              <div role="alert" className="flex flex-col gap-2 rounded-md border border-red-500/50 bg-red-500/10 p-2 text-sm">
+                <p>
+                  The lead email below belongs to <span className="font-medium">{otherAccount.name}</span>,
+                  but the event is assigned to <span className="font-medium">{linkedLabel}</span>. It
+                  can&apos;t be saved named as one person and assigned to another.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" size="sm" onClick={() => assign(otherAccount)}>
+                    Assign {otherAccount.name} instead
+                  </Button>
+                  <Button type="button" size="sm" variant="outline" onClick={unlink}>
+                    Remove the assignment
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              (nameDiffers || emailDiffers) && (
+                <p className="text-xs text-amber-700 dark:text-amber-400">
+                  The contact details below
+                  {nameDiffers ? ` name “${typedName}”` : ""}
+                  {nameDiffers && emailDiffers ? " and" : ""}
+                  {emailDiffers ? " use a different email" : ""}. That&apos;s what attendees see;{" "}
+                  {linkedLabel} is who has access. If the lead has changed, remove the assignment
+                  and pick the new person.
+                </p>
+              )
+            )}
           </div>
         ) : (
           <>
@@ -202,6 +287,30 @@ export function LeadContactFields({
           />
         </div>
       </div>
+
+      {/* Nobody assigned: say plainly what typing a name and email does. */}
+      {!leadUserId && emailMatch ? (
+        <div className="flex flex-col gap-2 rounded-md border border-blue-600/40 bg-blue-600/5 p-3 text-sm">
+          <p>
+            <span className="font-medium">{emailMatch.name}</span> has an account with this email, but
+            isn&apos;t assigned — so far these are contact details only, and they can&apos;t manage
+            the event.
+          </p>
+          <Button type="button" size="sm" className="w-fit" onClick={() => assign(emailMatch)}>
+            Assign {emailMatch.name} as lead
+          </Button>
+        </div>
+      ) : (
+        !leadUserId &&
+        !checking &&
+        (typedName || emailKey) && (
+          <p className="text-sm text-amber-700 dark:text-amber-400">
+            Contact details only: {typedName || "this person"} won&apos;t be able to manage this event
+            {emailComplete ? " — no account you can assign has this email" : ""}. To give them access,
+            pick their account in the search above.
+          </p>
+        )
+      )}
     </div>
   );
 }

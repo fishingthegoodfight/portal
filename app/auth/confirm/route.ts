@@ -41,6 +41,11 @@ export async function GET(request: NextRequest) {
       token_hash,
     });
     if (!error) {
+      // Someone named as an event's lead before they had (or had used) an
+      // account gets those events now — assign_lead_events only acts on
+      // an account's first sign-in. Never in the way of signing in.
+      const { error: assignError } = await supabase.rpc("assign_lead_events");
+      if (assignError) console.error("[lead-assign] assign_lead_events at sign-in failed:", assignError);
       // redirect user to specified redirect URL or root of app
       redirect(await signupDestination(supabase, type, next));
     }

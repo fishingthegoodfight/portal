@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Suspense } from "react";
 
-const CONTACT_EMAIL = "tcramer@fishingthegoodfight.org";
+import { NewLinkForm } from "@/components/new-link-form";
 
 async function ErrorContent({
   searchParams,
@@ -11,23 +11,34 @@ async function ErrorContent({
 }) {
   const params = await searchParams;
 
-  // A password-setup link (a fresh invite, or a resend for someone who
-  // never finished one — see lib/actions/volunteer-invite.ts) always sends
-  // people through /auth/update-password on its way to the registration
-  // form. Recognizing that `next` prefix here, rather than just `type`, is
-  // what keeps this message specific to that flow instead of also firing
-  // for an unrelated expired "forgot password" link, which is also `type=
+  // A password-setup link (a volunteer or portal invite, a resend for
+  // someone who never finished one, or a link sent from this page — see
+  // lib/actions/volunteer-invite.ts, person-invite.ts, new-link.ts) always
+  // sends people through /auth/update-password on its way to where they're
+  // headed. Recognizing that `next` prefix here, rather than just `type`,
+  // is what keeps this specific to that flow instead of also firing for an
+  // unrelated expired "forgot password" link, which is also `type=
   // recovery` but heads somewhere else.
   if (params?.next?.startsWith("/auth/update-password")) {
     return (
-      <p className="text-sm text-muted-foreground">
-        This invitation link has expired or was already used. Ask whoever invited you to send a
-        new one, or contact{" "}
-        <a href={`mailto:${CONTACT_EMAIL}`} className="underline underline-offset-4">
-          {CONTACT_EMAIL}
-        </a>
-        .
-      </p>
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-muted-foreground">
+          This link has expired or was already used. Enter your email and we&apos;ll send you a
+          new one.
+        </p>
+        <NewLinkForm />
+        <p className="text-sm text-muted-foreground">
+          Already set a password?{" "}
+          <Link href="/auth/login" className="underline underline-offset-4">
+            Sign in
+          </Link>
+          , or use{" "}
+          <Link href="/auth/forgot-password" className="underline underline-offset-4">
+            Forgot password
+          </Link>
+          .
+        </p>
+      </div>
     );
   }
 

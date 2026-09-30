@@ -40,11 +40,15 @@ export function SeriesOccurrences({
   seriesName,
   frequencyLabel,
   occurrences,
+  canCancel,
 }: {
   seriesId: string;
   seriesName: string;
   frequencyLabel: string | null;
   occurrences: SeriesOccurrence[];
+  /** Admins and the chapter's lead(s) — not someone who only leads these
+   * events. */
+  canCancel: boolean;
 }) {
   const router = useRouter();
   const [confirmDelete, setConfirmDelete] = useState<number | "future_empty" | null>(null);
@@ -85,7 +89,7 @@ export function SeriesOccurrences({
       </div>
 
       <div className="flex flex-wrap gap-2">
-        {firstUpcoming && (
+        {firstUpcoming && canCancel && (
           <CancelEventDialog
             eventId={firstUpcoming.id}
             eventName={`${seriesName} — all upcoming`}

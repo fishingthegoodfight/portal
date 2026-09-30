@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 
+import { EmergencyContactSectionFields } from "@/components/emergency-contact-fields";
 import { RegistrationFieldInput } from "@/components/registration-fields";
 import {
   isSectionComplete,
@@ -87,22 +88,27 @@ export function RegistrationSectionField({
           {hasRequiredField && !editing && (
             <span className="mb-1 text-sm text-amber-600">{requiredNote}</span>
           )}
-          <div
-            className={
-              fields.length > 1 && section.layout !== "stack"
-                ? "grid grid-cols-2 gap-4"
-                : "grid gap-3"
-            }
-          >
-            {fields.map((field) => (
-              <RegistrationFieldInput
-                key={field.key}
-                field={field}
-                value={fieldValues[field.key] ?? ""}
-                onChange={onChange}
-              />
-            ))}
-          </div>
+          {section.id === "emergency_contact" ? (
+            // One contact per row, the same component as every other form.
+            <EmergencyContactSectionFields values={fieldValues} onChange={onChange} />
+          ) : (
+            <div
+              className={
+                fields.length > 1 && section.layout !== "stack"
+                  ? "grid grid-cols-2 gap-4"
+                  : "grid gap-3"
+              }
+            >
+              {fields.map((field) => (
+                <RegistrationFieldInput
+                  key={field.key}
+                  field={field}
+                  value={fieldValues[field.key] ?? ""}
+                  onChange={onChange}
+                />
+              ))}
+            </div>
+          )}
           {editing && onStopEditing && (
             <button
               type="button"

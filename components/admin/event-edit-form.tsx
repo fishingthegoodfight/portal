@@ -27,7 +27,7 @@ import { MarketingBoostField } from "@/components/admin/fields/marketing-boost-f
 import { RequiresHealthHistoryField } from "@/components/admin/fields/requires-health-history-field";
 import { LocationFields } from "@/components/admin/fields/location-fields";
 import { VirtualEventFields } from "@/components/admin/fields/virtual-event-fields";
-import { isVirtualChapter, timezoneOptions, type Chapter } from "@/lib/chapters";
+import { chapterByName, isVirtualChapter, timezoneOptions, type Chapter } from "@/lib/chapters";
 import { RegistrationSectionsFields } from "@/components/admin/fields/registration-sections-fields";
 import {
   VolunteerRoleFields,
@@ -445,6 +445,7 @@ export function EventEditForm({
                 legacyLocation={legacyLocation}
                 venues={venues}
                 chapter={form.chapter}
+                statePlaceholder={chapterByName(chapters, form.chapter)?.state}
                 saveVenue={saveVenue}
                 onSaveVenueChange={canSaveVenue ? setSaveVenue : undefined}
               />

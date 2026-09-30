@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import { createClient } from "@/lib/supabase/server";
 import { actorLabel, requireChapterManager } from "@/lib/admin/require-admin";
+import { leadAssignmentProblem } from "@/lib/admin/lead-account";
 import { activeChapters, isChapterName, isVirtualChapter, loadChapters, timezoneForChapter } from "@/lib/chapters";
 import { formatEventDateRange } from "@/lib/format-date";
 import { generateRecurrenceDates, type RecurrenceFrequency } from "@/lib/admin/recurrence";
@@ -133,6 +134,12 @@ export async function createEventAction(input: CreateEventInput): Promise<Create
   if ("error" in adminCheck) return fail(adminCheck.error, 1, "chapter");
   if (input.leadUserId && !/^[0-9a-f-]{36}$/i.test(input.leadUserId)) {
     return fail("Choose the lead again", 2, "lead");
+  }
+  try {
+    const leadProblem = await leadAssignmentProblem(input.leadUserId, input.leadEmail);
+    if (leadProblem) return fail(leadProblem, 2, "lead");
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : "Admin client unavailable", 2, "lead");
   }
   // A new event can only take an active, currently-offered type — unlike
   // editing, where an event may already carry one that's since been

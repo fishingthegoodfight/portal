@@ -22,6 +22,10 @@ export type AdminEventSummary = {
   capacity: number | null;
   spots_taken: number | null;
   lead_name: string | null;
+  /** The account assigned as lead (manage rights) — separate from the
+   * free-text lead_name/lead_email shown to attendees. */
+  lead_user_id: string | null;
+  lead_email: string | null;
   lead_phone: string | null;
   custom_email_note: string | null;
   registration_sections: string[] | null;
@@ -198,7 +202,7 @@ export async function loadEventRoster(
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, slug, is_published, name, chapter, event_type, starts_at, ends_at, timezone, location, description, occurrence_note, virtual_link, virtual_access_notes, capacity, spots_taken, lead_name, lead_phone, custom_email_note, registration_sections, waiver_state, status, cancellation_reason, cancelled_at, series_id, requires_health_history",
+      "id, slug, is_published, name, chapter, event_type, starts_at, ends_at, timezone, location, description, occurrence_note, virtual_link, virtual_access_notes, capacity, spots_taken, lead_name, lead_user_id, lead_email, lead_phone, custom_email_note, registration_sections, waiver_state, status, cancellation_reason, cancelled_at, series_id, requires_health_history",
     )
     .eq("id", eventId)
     .maybeSingle();

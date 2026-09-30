@@ -11,7 +11,7 @@ import {
   venueUsageAction,
   type VenueInput,
 } from "@/lib/actions/venues";
-import type { Chapter } from "@/lib/chapters";
+import { chapterByName, type Chapter } from "@/lib/chapters";
 import { EMPTY_LOCATION } from "@/lib/event-location";
 import { venueAddressLine, type Venue } from "@/lib/venues";
 import { ShowInactiveToggle, useDeleteFlow } from "@/components/admin/setup-list-controls";
@@ -82,7 +82,11 @@ function VenueFormFields({
       {text("streetAddress", "Street address", { required: true })}
       <div className="grid grid-cols-3 gap-4">
         {text("city", "City", { required: true })}
-        {text("state", "State", { required: true, maxLength: 2, placeholder: "CO" })}
+        {text("state", "State", {
+          required: true,
+          maxLength: 2,
+          placeholder: chapterByName(chapters, value.chapter)?.state,
+        })}
         {text("postalCode", "ZIP code (optional)", { inputMode: "numeric", maxLength: 10 })}
       </div>
     </div>

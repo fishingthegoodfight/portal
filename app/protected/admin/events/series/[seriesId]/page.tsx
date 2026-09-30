@@ -23,12 +23,13 @@ async function SeriesLoader({ params }: { params: Promise<{ seriesId: string }> 
   const managed = await loadManagedEventIds(supabase);
   const { data: rows } = await supabase
     .from("events")
-    .select("id, name, starts_at, ends_at, timezone, status, capacity, recurrence_frequency")
+    .select("id, name, chapter, starts_at, ends_at, timezone, status, capacity, recurrence_frequency")
     .eq("series_id", seriesId)
     .order("starts_at", { ascending: true });
   const allEvents = (rows ?? []) as {
     id: number;
     name: string;
+    chapter: string | null;
     starts_at: string;
     ends_at: string | null;
     timezone: string;
@@ -40,9 +41,13 @@ async function SeriesLoader({ params }: { params: Promise<{ seriesId: string }> 
   if (events.length === 0) notFound();
 
   const eventIds = events.map((e) => e.id);
-  const [people, registered] = await Promise.all([
+  const [people, registered, { data: canCancel }] = await Promise.all([
     peopleByEvent(supabase, eventIds),
     eventsWithRegistrations(supabase, eventIds),
+    // Cancelling is for admins and the chapter's lead(s), not an event's
+    // own lead. The next occurrence to run decides (the one "Cancel all
+    // upcoming" starts from).
+    supabase.rpc("can_manage_chapter", { p_chapter: (events.find((e) => e.status === "scheduled") ?? events[0]).chapter }),
   ]);
   // eslint-disable-next-line react-hooks/purity -- Server Component: renders once per request on the server (after awaiting request data), so there's no re-render or hydration to disagree with this timestamp.
   const now = Date.now();
@@ -70,6 +75,7 @@ async function SeriesLoader({ params }: { params: Promise<{ seriesId: string }> 
       seriesName={(occurrences.find((o) => !o.isPast) ?? occurrences[occurrences.length - 1]).name}
       frequencyLabel={frequency ? (FREQUENCY_LABELS[frequency] ?? frequency) : null}
       occurrences={occurrences}
+      canCancel={Boolean(canCancel)}
     />
   );
 }
