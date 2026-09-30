@@ -115,7 +115,19 @@ async function PrintRosterLoader({ params }: { params: Promise<{ id: string }> }
                   </td>
                 ))}
                 <td className="py-2 pr-3">
-                  {person.waiverSignedOn ? person.waiverSignedOn : <strong>NOT SIGNED</strong>}
+                  {person.paperWaiver ? (
+                    <>
+                      <strong>Paper waiver — this event only</strong>
+                      <div>
+                        Recorded by {person.paperWaiver.recordedBy}, {person.paperWaiver.recordedLabel}
+                      </div>
+                      {person.waiverSignedOn && <div>Signed in the portal {person.waiverSignedOn}</div>}
+                    </>
+                  ) : person.waiverSignedOn ? (
+                    person.waiverSignedOn
+                  ) : (
+                    <strong>NOT SIGNED</strong>
+                  )}
                 </td>
                 <td className="py-2">
                   <span className="inline-block h-4 w-4 border border-black" aria-hidden />

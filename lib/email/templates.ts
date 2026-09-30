@@ -1507,9 +1507,17 @@ export type AdminDigestSection = {
 
 /**
  * The daily admin digest: everything needing an admin's attention, as
- * sections in priority order. Only sent when at least one section has items.
+ * sections in priority order, then `notes` — numbers worth seeing that
+ * aren't tasks (they're left out of the count in the subject). Only sent
+ * when at least one section has items; notes never send it by themselves.
  */
-export function adminDigestEmail({ sections }: { sections: AdminDigestSection[] }): RenderedEmail {
+export function adminDigestEmail({
+  sections,
+  notes = [],
+}: {
+  sections: AdminDigestSection[];
+  notes?: string[];
+}): RenderedEmail {
   const total = sections.reduce((n, s) => n + s.items.length, 0);
   const subject = `FTGF portal: ${total} ${total === 1 ? "thing needs" : "things need"} your attention`;
 
@@ -1530,6 +1538,12 @@ export function adminDigestEmail({ sections }: { sections: AdminDigestSection[] 
           `</ul>`,
         ].join("\n"),
       ),
+      ...(notes.length > 0
+        ? [
+            `<p style="margin:24px 0 4px;font-weight:600;">For information</p>`,
+            ...notes.map((note) => `<p style="margin:0 0 6px;font-size:13px;color:#57534e;">${escapeHtml(note)}</p>`),
+          ]
+        : []),
     ].join("\n"),
   );
   const text = [
@@ -1540,6 +1554,7 @@ export function adminDigestEmail({ sections }: { sections: AdminDigestSection[] 
       ...(section.intro ? [section.intro] : []),
       ...section.items.map((item) => `- ${item.label}${item.detail ? ` — ${item.detail}` : ""}: ${item.url}`),
     ]),
+    ...(notes.length > 0 ? ["", "For information", ...notes] : []),
   ].join("\n");
   return { subject, html, text };
 }

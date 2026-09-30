@@ -2,7 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { requireEventManager } from "@/lib/admin/require-admin";
+import { requireAdmin, requireEventManager } from "@/lib/admin/require-admin";
 import { activeChapters, isChapterName, loadChapters, NOT_LOCAL_CHAPTER } from "@/lib/chapters";
 import { waiverInfoForUser } from "@/lib/waivers";
 import { formatEventDateRange } from "@/lib/format-date";
@@ -68,6 +68,12 @@ export async function addWalkupRsvpAction(input: {
    * signed yet; ignored when they already have a valid signature. */
   waiverName?: string;
   waiverAgreed?: boolean;
+  /** The fallback for when signing here fails: the lead confirms they hold
+   * this person's signed PAPER waiver. Recorded for this event only
+   * (event_paper_waivers) — no signature is created, so they're asked to
+   * sign in the portal at their next event. Ignored when they already have
+   * a valid signature. */
+  paperWaiverHeld?: boolean;
   /** Answers to the event's registration sections (dietary, sizing, …),
    * keyed by profile column — the same values the RSVP form collects. */
   sections?: Record<string, string>;
@@ -148,6 +154,7 @@ export async function addWalkupRsvpAction(input: {
   // Walk-ups must sign the event's waiver too. Decided before anything is
   // created, so a missing signature can't leave a half-added profile behind.
   let waiverIdToSign: number | null = null;
+  let paperWaiver = false;
   const { data: waiverEvent } = await supabase
     .from("events")
     .select("id, chapter, waiver_state, starts_at, timezone, registration_sections")
@@ -162,7 +169,9 @@ export async function addWalkupRsvpAction(input: {
     if (info.status === "unavailable") {
       return { ok: false, error: info.message };
     }
-    if (info.status === "unsigned") {
+    if (info.status === "unsigned" && input.paperWaiverHeld) {
+      paperWaiver = true;
+    } else if (info.status === "unsigned") {
       if (!input.waiverAgreed || !(input.waiverName ?? "").trim()) {
         return {
           ok: false,
@@ -368,6 +377,8 @@ export async function addWalkupRsvpAction(input: {
     p_event_id: input.eventId,
     p_profile_id: profileId,
     p_force: input.force,
+    // Who recorded it and when are stamped by the function, not sent.
+    ...(paperWaiver ? { p_paper_waiver: true } : {}),
   });
   if (rpcError) return { ok: false, error: rpcError.message };
 
@@ -404,4 +415,29 @@ export async function addWalkupRsvpAction(input: {
   }
 
   return { ok: true, status: "confirmed", wasExistingProfile };
+}
+
+/**
+ * Removes a paper waiver record entered by mistake, so the person shows as
+ * "waiver not signed" again. Admins only — a chapter lead can record one
+ * but not remove it (admin_remove_paper_waiver re-checks). The removal is
+ * kept in event_paper_waiver_removals: what the record said, who removed
+ * it and when. Their RSVP and check-in are left as they are.
+ */
+export async function removePaperWaiverAction(
+  rsvpId: number,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = await createClient();
+  const adminCheck = await requireAdmin(supabase);
+  if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
+
+  const { data: removed, error } = await supabase.rpc("admin_remove_paper_waiver", {
+    p_rsvp_id: rsvpId,
+  });
+  if (error) {
+    console.error(`[paper-waiver] rsvp ${rsvpId}: admin_remove_paper_waiver failed:`, error);
+    return { ok: false, error: error.message };
+  }
+  if (!removed) return { ok: false, error: "That paper waiver record was already removed." };
+  return { ok: true };
 }

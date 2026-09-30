@@ -963,7 +963,13 @@ export async function sendReferenceRequestEmail(params: {
  * event-change notifications). Returns false — sends nothing — when there's
  * nothing in any section or nobody to send it to.
  */
-export async function sendAdminDigestEmail(sections: AdminDigestSection[]): Promise<boolean> {
+export async function sendAdminDigestEmail(
+  sections: AdminDigestSection[],
+  /** Numbers that aren't tasks (lib/admin-digest.ts DIGEST_NOTES). They
+   * only ride along on a digest that's going anyway — a note never causes
+   * a send. */
+  notes: string[] = [],
+): Promise<boolean> {
   const nonEmpty = sections.filter((s) => s.items.length > 0);
   const recipients = (process.env.ADMIN_NOTIFICATION_EMAILS ?? "")
     .split(",")
@@ -974,7 +980,7 @@ export async function sendAdminDigestEmail(sections: AdminDigestSection[]): Prom
     recipients.length > 0 ? recipients : "(empty — not set, skipping send)",
   );
   if (nonEmpty.length === 0 || recipients.length === 0) return false;
-  const { subject, html, text } = adminDigestEmail({ sections: nonEmpty });
+  const { subject, html, text } = adminDigestEmail({ sections: nonEmpty, notes });
   await deliverEmail({ to: recipients, subject, html, text });
   return true;
 }

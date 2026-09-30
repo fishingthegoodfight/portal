@@ -283,6 +283,45 @@ const awaitingApproval: DigestSource = async (admin) => {
   };
 };
 
+/**
+ * A number worth seeing that isn't a task: one line under "For information"
+ * at the end of the digest, not counted in the subject. Null when there's
+ * nothing to say. A note never causes a send — it's only included when a
+ * section has items and the digest is going anyway — so it should look back
+ * over a window long enough not to be missed on a quiet day.
+ */
+export type DigestNote = (admin: AdminClient) => Promise<string | null>;
+
+/** The window the paper-waiver count looks back over, in days. */
+const PAPER_WAIVER_WINDOW_DAYS = 30;
+
+/** How many paper waivers leads recorded (event_paper_waivers) — a rare
+ * fallback for when signing on the lead's phone fails. Ones an admin has
+ * since removed as a mistake aren't counted. Just the number: if
+ * it climbs, something is wrong with how check-in is being run. A failure
+ * here (e.g. the table isn't there yet) is logged and leaves the line out
+ * rather than stopping the digest. */
+const paperWaivers: DigestNote = async (admin) => {
+  const countSince = async (days: number) => {
+    const { count, error } = await admin
+      .from("event_paper_waivers")
+      .select("*", { count: "exact", head: true })
+      .gte("recorded_at", new Date(Date.now() - days * 86_400_000).toISOString());
+    if (error) throw new Error(error.message);
+    return count ?? 0;
+  };
+  try {
+    const [lastDay, inWindow] = await Promise.all([countSince(1), countSince(PAPER_WAIVER_WINDOW_DAYS)]);
+    if (inWindow === 0) return null;
+    return `Paper waivers: ${lastDay} recorded in the last day, ${inWindow} in the last ${PAPER_WAIVER_WINDOW_DAYS} days. Each covers one event only; they sign in the portal at their next one.`;
+  } catch (err) {
+    console.error("[admin-digest] counting paper waivers failed:", err);
+    return null;
+  }
+};
+
+export const DIGEST_NOTES: DigestNote[] = [paperWaivers];
+
 /** In the order the sections appear — most pressing first. */
 export const DIGEST_SOURCES: DigestSource[] = [
   readyApplications,

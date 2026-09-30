@@ -11785,3 +11785,304 @@ revoke all on public.email_preference_tokens from authenticated;
 grant all on public.email_preference_tokens to service_role;
 
 commit;
+
+-- =============================================================================
+-- 2026-09-30 — Paper waivers (one event only), server-side check-in clock,
+--              walk-ups on an unpublished event
+-- =============================================================================
+-- Run 2026-09-30, before the matching code was pushed to main. Safe against
+-- the code deployed before it: that code calls admin_upsert_walkup_rsvp
+-- with its first three arguments, which still works (the fourth has a
+-- default), and it keeps sending a check-in time from the browser, which is
+-- now simply replaced.
+--
+-- 1. event_paper_waivers: a lead's record that someone signed a PAPER waiver
+--    for one event — the fallback for when signing on the lead's phone
+--    fails. One row per RSVP. It is NOT a waiver signature: nothing is
+--    written to waiver_signatures, has_signed_event_waiver() is unchanged,
+--    and at their next event they're asked to sign in the portal exactly as
+--    if they'd never signed anything. It only lets the walk-up function
+--    accept them at THIS event, and the roster show them as covered for it.
+--    Who recorded it and when are stamped by the database, never sent by
+--    the app. Written only by admin_upsert_walkup_rsvp (below):
+--    authenticated has SELECT and nothing else. Hangs off the RSVP row
+--    (on delete cascade), so deleting a person or an event takes it with
+--    the RSVP and the Remove person functions need no change.
+--
+--    Undo: admin_remove_paper_waiver(rsvp_id), ADMINS ONLY (a chapter lead
+--    can record one but not remove it). The record moves to
+--    event_paper_waiver_removals — what it said, who removed it and when —
+--    and the person goes back to "waiver not signed" on the roster. Their
+--    RSVP and check-in are left as they are.
+--
+-- 2. admin_upsert_walkup_rsvp gains p_paper_waiver (default false). The old
+--    three-argument version is dropped so the two can't be ambiguous.
+--    Also fixes the false "This event is at capacity": try_claim_event_spot
+--    refuses an unpublished event as well as a full one, and the walk-up
+--    function reported both as 'capacity_exceeded'. It now works out
+--    whether the event is actually full; an unpublished event with room
+--    takes the walk-up straight away. try_claim_event_spot itself is
+--    unchanged — every public RSVP path still needs a published event.
+--
+-- 3. checked_in_at is stamped by the database on rsvps and
+--    volunteer_signups: whenever it changes to a non-null value it becomes
+--    now(), whatever the browser sent. Clearing it (undo) still clears it,
+--    and checking in again stamps the new time — a re-check is a
+--    correction. To backfill a historical time by hand, disable the
+--    trigger for that statement.
+--
+-- Two new tables, with their grants below. Safe to re-run. One transaction:
+-- if any statement fails, nothing is applied.
+
+begin;
+
+-- ---- 1. Paper waivers -------------------------------------------------------------
+create table if not exists public.event_paper_waivers (
+  rsvp_id bigint primary key references public.rsvps(id) on delete cascade,
+  event_id bigint not null references public.events(id) on delete cascade,
+  -- Who ticked "I hold their signed paper waiver". The name is kept as it
+  -- was then, so the roster still says who after that person is removed.
+  recorded_by uuid references auth.users(id) on delete set null,
+  recorded_by_name text not null,
+  recorded_at timestamptz not null default now()
+);
+
+create index if not exists event_paper_waivers_event_idx
+  on public.event_paper_waivers (event_id);
+
+alter table public.event_paper_waivers enable row level security;
+
+-- Whoever manages the event sees its paper waivers on the roster. No
+-- insert, update or delete policy: only admin_upsert_walkup_rsvp writes.
+drop policy if exists event_paper_waivers_select_managed on public.event_paper_waivers;
+create policy event_paper_waivers_select_managed on public.event_paper_waivers
+  for select to authenticated
+  using (public.can_manage_event(event_id));
+
+revoke all on public.event_paper_waivers from anon;
+revoke all on public.event_paper_waivers from authenticated;
+grant select on public.event_paper_waivers to authenticated;
+-- The daily digest counts them with the service role.
+grant all on public.event_paper_waivers to service_role;
+
+-- ---- 1b. Removing one recorded by mistake ------------------------------------------
+-- The removed record, kept: what it said, who removed it and when. Rows are
+-- only ever added, by admin_remove_paper_waiver.
+create table if not exists public.event_paper_waiver_removals (
+  id bigserial primary key,
+  rsvp_id bigint not null references public.rsvps(id) on delete cascade,
+  event_id bigint not null references public.events(id) on delete cascade,
+  recorded_by uuid references auth.users(id) on delete set null,
+  recorded_by_name text not null,
+  recorded_at timestamptz not null,
+  removed_by uuid references auth.users(id) on delete set null,
+  removed_by_name text not null,
+  removed_at timestamptz not null default now()
+);
+
+create index if not exists event_paper_waiver_removals_event_idx
+  on public.event_paper_waiver_removals (event_id);
+
+alter table public.event_paper_waiver_removals enable row level security;
+
+-- Whoever manages the event can see that one was removed (the roster says
+-- so under "waiver not signed"). No insert, update or delete policy.
+drop policy if exists event_paper_waiver_removals_select_managed on public.event_paper_waiver_removals;
+create policy event_paper_waiver_removals_select_managed on public.event_paper_waiver_removals
+  for select to authenticated
+  using (public.can_manage_event(event_id));
+
+revoke all on public.event_paper_waiver_removals from anon;
+revoke all on public.event_paper_waiver_removals from authenticated;
+grant select on public.event_paper_waiver_removals to authenticated;
+grant all on public.event_paper_waiver_removals to service_role;
+-- Only the function below inserts, as the table's owner.
+revoke all on sequence public.event_paper_waiver_removals_id_seq from anon, authenticated;
+grant usage, select on sequence public.event_paper_waiver_removals_id_seq to service_role;
+
+-- Admins only. True when a record was removed, false when there was none.
+create or replace function public.admin_remove_paper_waiver(p_rsvp_id bigint)
+returns boolean
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_waiver public.event_paper_waivers%rowtype;
+begin
+  if not public.is_admin() then
+    raise exception 'Only an admin can remove a paper waiver record' using errcode = '42501';
+  end if;
+
+  delete from public.event_paper_waivers
+   where rsvp_id = p_rsvp_id
+  returning * into v_waiver;
+  if not found then
+    return false;
+  end if;
+
+  insert into public.event_paper_waiver_removals
+    (rsvp_id, event_id, recorded_by, recorded_by_name, recorded_at, removed_by, removed_by_name)
+  values (
+    v_waiver.rsvp_id,
+    v_waiver.event_id,
+    v_waiver.recorded_by,
+    v_waiver.recorded_by_name,
+    v_waiver.recorded_at,
+    auth.uid(),
+    coalesce(
+      (select coalesce(nullif(btrim(concat_ws(' ', p.first_name, p.last_name)), ''), p.email)
+         from public.profiles p
+        where p.id = auth.uid()),
+      'Unknown'
+    )
+  );
+  return true;
+end $function$;
+
+revoke all on function public.admin_remove_paper_waiver(bigint) from public, anon;
+grant execute on function public.admin_remove_paper_waiver(bigint) to authenticated;
+
+-- ---- 2. Walk-ups: paper waiver, and "full" only when it is full -------------------
+drop function if exists public.admin_upsert_walkup_rsvp(bigint, uuid, boolean);
+
+-- Same as the previous version (gate: can_manage_event) apart from the
+-- paper waiver and the capacity check.
+create or replace function public.admin_upsert_walkup_rsvp(
+  p_event_id bigint,
+  p_profile_id uuid,
+  p_force boolean default false,
+  p_paper_waiver boolean default false
+)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_rsvp_id bigint;
+  v_existing_status text;
+  v_signed boolean;
+  v_claimed boolean;
+  v_full boolean;
+begin
+  if not public.can_manage_event(p_event_id) then
+    raise exception 'Only someone who manages this event can add walk-ups';
+  end if;
+
+  if not exists (
+    select 1 from public.events where id = p_event_id and status = 'scheduled'
+  ) then
+    raise exception 'Event is not scheduled';
+  end if;
+
+  select id, status into v_rsvp_id, v_existing_status
+    from public.rsvps
+   where event_id = p_event_id and user_id = p_profile_id;
+
+  -- A signature in the portal, a paper waiver being recorded now, or one
+  -- already recorded for this RSVP.
+  v_signed := public.has_signed_event_waiver(p_profile_id, p_event_id, 'participant');
+  if not v_signed
+     and not coalesce(p_paper_waiver, false)
+     and not exists (select 1 from public.event_paper_waivers w where w.rsvp_id = v_rsvp_id) then
+    return 'waiver_unsigned';
+  end if;
+
+  if public.registration_incomplete_section(p_profile_id, p_event_id) is not null then
+    return 'registration_incomplete';
+  end if;
+
+  if v_existing_status = 'confirmed' then
+    update public.rsvps
+       set checked_in_at = now(), updated_at = now()
+     where id = v_rsvp_id;
+  else
+    v_claimed := public.try_claim_event_spot(p_event_id, p_profile_id);
+
+    if not v_claimed then
+      -- try_claim_event_spot refuses an unpublished event as well as a full
+      -- one (it still holds the event's row lock). Only a full one is
+      -- 'capacity_exceeded'; same sum as its own check.
+      select e.capacity is not null
+             and coalesce(e.spots_taken, 0) + (
+                   select count(*)
+                     from public.rsvps r
+                    where r.event_id = e.id
+                      and r.status = 'offered'
+                      and r.user_id is distinct from p_profile_id
+                 ) >= e.capacity
+        into v_full
+        from public.events e
+       where e.id = p_event_id;
+
+      if v_full and not p_force then
+        return 'capacity_exceeded';
+      end if;
+
+      update public.events
+         set spots_taken = coalesce(spots_taken, 0) + 1, updated_at = now()
+       where id = p_event_id;
+    end if;
+
+    insert into public.rsvps (event_id, user_id, status, checked_in_at)
+    values (p_event_id, p_profile_id, 'confirmed', now())
+    on conflict (event_id, user_id)
+    do update set status = excluded.status,
+                  checked_in_at = excluded.checked_in_at,
+                  offer_expires_at = null,
+                  updated_at = now()
+    returning id into v_rsvp_id;
+  end if;
+
+  -- Recorded only when it's what let them in: someone with a portal
+  -- signature has no use for a paper note. The first record stands.
+  if coalesce(p_paper_waiver, false) and not v_signed then
+    insert into public.event_paper_waivers (rsvp_id, event_id, recorded_by, recorded_by_name)
+    values (
+      v_rsvp_id,
+      p_event_id,
+      auth.uid(),
+      coalesce(
+        (select coalesce(nullif(btrim(concat_ws(' ', p.first_name, p.last_name)), ''), p.email)
+           from public.profiles p
+          where p.id = auth.uid()),
+        'Unknown'
+      )
+    )
+    on conflict (rsvp_id) do nothing;
+  end if;
+
+  return 'confirmed';
+end $function$;
+
+revoke all on function public.admin_upsert_walkup_rsvp(bigint, uuid, boolean, boolean) from public, anon;
+grant execute on function public.admin_upsert_walkup_rsvp(bigint, uuid, boolean, boolean) to authenticated;
+
+-- ---- 3. Check-in time comes from the database -------------------------------------
+create or replace function public.stamp_checked_in_at()
+returns trigger
+language plpgsql
+set search_path to 'public'
+as $function$
+begin
+  if new.checked_in_at is not null
+     and (tg_op = 'INSERT' or new.checked_in_at is distinct from old.checked_in_at) then
+    new.checked_in_at := now();
+  end if;
+  return new;
+end $function$;
+
+revoke all on function public.stamp_checked_in_at() from public, anon, authenticated;
+
+drop trigger if exists rsvps_stamp_checked_in_at on public.rsvps;
+create trigger rsvps_stamp_checked_in_at
+  before insert or update of checked_in_at on public.rsvps
+  for each row execute function public.stamp_checked_in_at();
+
+drop trigger if exists volunteer_signups_stamp_checked_in_at on public.volunteer_signups;
+create trigger volunteer_signups_stamp_checked_in_at
+  before insert or update of checked_in_at on public.volunteer_signups
+  for each row execute function public.stamp_checked_in_at();
+
+commit;

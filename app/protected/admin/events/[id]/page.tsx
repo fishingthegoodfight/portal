@@ -75,6 +75,7 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
           // Open offers hold a spot, so count them as taken on the card.
           spots_taken: (event.spots_taken ?? 0) + offeredCount,
         }}
+        timing={{ startsAt: event.starts_at, endsAt: event.ends_at, timeZone: event.timezone }}
         virtualLink={event.virtual_link}
         virtualAccessNotes={event.virtual_access_notes}
         status={event.status}
@@ -89,6 +90,7 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
         seriesId={event.series_id}
         volunteersCancelledWithEvent={volunteersCancelledWithEvent}
         canSaveAsTemplate={access?.isAdmin ?? false}
+        canRemovePaperWaiver={access?.isAdmin ?? false}
         chapters={chapters}
         unregisteredVolunteerIds={(unregistered.data ?? []) as string[]}
         practicalChecks={

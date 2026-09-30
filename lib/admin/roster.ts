@@ -54,6 +54,12 @@ export type RosterPerson = {
   emergencySecondary: string;
   /** Pre-formatted date they signed this event's waiver, or null if they haven't. */
   waiverSignedOn: string | null;
+  /** A lead's record that they signed a paper waiver for this event only
+   * (event_paper_waivers) — not a waiver signature. Null when there's none. */
+  paperWaiver: { recordedBy: string; recordedLabel: string } | null;
+  /** The latest time an admin removed a paper waiver record from this RSVP
+   * as a mistake (event_paper_waiver_removals), or null. */
+  paperWaiverRemoved: { removedBy: string; removedLabel: string } | null;
   /** Every registration field's value from their profile, keyed by column —
    * the event's other sections (sizing, …) are shown from here, same as for
    * volunteers. Dietary keeps using dietaryNotes above. */
@@ -248,6 +254,38 @@ export async function loadEventRoster(
         : `No ${requirement.year} ${requirement.state} waiver has been published.`;
   }
 
+  // Paper waivers recorded for this event, by RSVP. A failed read shows none.
+  const { data: paperRows } = await supabase
+    .from("event_paper_waivers")
+    .select("rsvp_id, recorded_by_name, recorded_at")
+    .eq("event_id", eventId);
+  const paperByRsvp = new Map(
+    (paperRows ?? []).map((w) => [
+      w.rsvp_id as number,
+      {
+        recordedBy: w.recorded_by_name as string,
+        recordedLabel: formatEventInstant(w.recorded_at as string, event.timezone as string),
+      },
+    ]),
+  );
+
+  // Records an admin removed as a mistake — oldest first, so the map keeps
+  // each RSVP's latest.
+  const { data: removalRows } = await supabase
+    .from("event_paper_waiver_removals")
+    .select("rsvp_id, removed_by_name, removed_at")
+    .eq("event_id", eventId)
+    .order("removed_at", { ascending: true });
+  const paperRemovalByRsvp = new Map(
+    (removalRows ?? []).map((w) => [
+      w.rsvp_id as number,
+      {
+        removedBy: w.removed_by_name as string,
+        removedLabel: formatEventInstant(w.removed_at as string, event.timezone as string),
+      },
+    ]),
+  );
+
   const isWaiting = (status: string) =>
     status === "waitlisted" || status === "offered" || status === "expired";
 
@@ -269,6 +307,8 @@ export async function loadEventRoster(
         waiverSignedOn: signedAtByUser.has(r.user_id as string)
           ? formatDateInZone(signedAtByUser.get(r.user_id as string)!, event.timezone as string)
           : null,
+        paperWaiver: paperByRsvp.get(r.id as number) ?? null,
+        paperWaiverRemoved: paperRemovalByRsvp.get(r.id as number) ?? null,
         profileFields: profileFieldsOf(profile),
       };
     });

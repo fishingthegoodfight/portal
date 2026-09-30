@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/client";
-import { addWalkupRsvpAction } from "@/lib/actions/admin-walkup";
+import { addWalkupRsvpAction, removePaperWaiverAction } from "@/lib/actions/admin-walkup";
 import { walkupLookupAction } from "@/lib/actions/waiver";
 import { RegistrationSectionField } from "@/components/registration-section-field";
 import {
@@ -57,8 +57,12 @@ import { RosterHealthLine, type RosterHealth } from "@/components/admin/roster-h
 import { practicalCheckSummary, type PracticalCheck } from "@/lib/practical-checks";
 import type { Chapter } from "@/lib/chapters";
 import { personDisplayName } from "@/lib/person-name";
+import { formatDateInZone, formatEventInstant } from "@/lib/format-date";
 
 type LatestPracticalCheck = Pick<PracticalCheck, "outcome" | "checked_on" | "assessor_name">;
+
+/** When the event ran — what a check-in's own time is compared against. */
+type EventTiming = { startsAt: string; endsAt: string | null; timeZone: string };
 
 const DIRECTORY_FIELD = REGISTRATION_SECTIONS.find((s) => s.id === "directory")!.fields[0];
 
@@ -95,6 +99,7 @@ const EMPTY_WALKUP_FORM: WalkupFormState = {
 export function EventRoster({
   eventId,
   eventCard,
+  timing,
   status,
   cancellationReason,
   initialRoster,
@@ -110,6 +115,7 @@ export function EventRoster({
   volunteersCancelledWithEvent,
   shareCard,
   canSaveAsTemplate = false,
+  canRemovePaperWaiver = false,
   health,
   practicalChecks = null,
   unregisteredVolunteerIds = [],
@@ -117,6 +123,9 @@ export function EventRoster({
 }: {
   eventId: number;
   eventCard: EventCardEvent;
+  /** The event's own start/end and timezone — each check-in shows when it
+   * was entered, and whether that was after the event. */
+  timing: EventTiming;
   status: string;
   cancellationReason: string | null;
   initialRoster: RosterPerson[];
@@ -145,6 +154,9 @@ export function EventRoster({
   /** Templates are admin-only setup, so a chapter lead doesn't get "Save as
    * template". */
   canSaveAsTemplate?: boolean;
+  /** Admins only: undo a paper waiver record entered by mistake. A chapter
+   * lead can record one but not remove it. */
+  canRemovePaperWaiver?: boolean;
   /** Health form status for everyone, markers only for a health-access
    * viewer (see RosterHealthLine). */
   health: RosterHealth;
@@ -237,6 +249,9 @@ export function EventRoster({
     setPendingRemoval({ rsvpId: person.rsvpId, name, warning });
   };
 
+  const removePaperWaiver = (person: RosterPerson) =>
+    runWaitlistAction(person.rsvpId, () => removePaperWaiverAction(person.rsvpId));
+
   const confirmRemoval = async () => {
     if (!pendingRemoval) return;
     const { rsvpId } = pendingRemoval;
@@ -327,6 +342,10 @@ export function EventRoster({
     hasChapterOnFile: boolean;
   } | null>(null);
   const [walkupSign, setWalkupSign] = useState<WaiverSignState>(EMPTY_WAIVER_SIGN);
+  // The fallback behind "They signed a paper waiver instead": `open` swaps
+  // the signing block for the paper confirmation, `held` is the lead's tick
+  // that they hold the signed copy.
+  const [walkupPaper, setWalkupPaper] = useState({ open: false, held: false });
   const [walkupSectionValues, setWalkupSectionValues] = useState<Record<string, string>>({});
   // Bumped whenever the section inputs are re-seeded, so stateful inputs
   // (e.g. the dietary Yes/No) remount and pick up the new values.
@@ -368,7 +387,10 @@ export function EventRoster({
 
   const confirmedCount = roster.filter((p) => p.status === "confirmed").length;
   const checkedInCount = roster.filter((p) => p.checkedInAt).length;
-  const unsignedCount = roster.filter((p) => !p.waiverSignedOn).length;
+  // A paper waiver covers them for this event, so it isn't "not signed" —
+  // but it's counted apart from a signature in the portal.
+  const unsignedCount = roster.filter((p) => !p.waiverSignedOn && !p.paperWaiver).length;
+  const paperOnlyCount = roster.filter((p) => !p.waiverSignedOn && p.paperWaiver).length;
 
   const filteredRoster = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -389,12 +411,22 @@ export function EventRoster({
       prev.map((p) => (p.rsvpId === person.rsvpId ? { ...p, checkedInAt: next } : p)),
     );
 
+    // The time sent is only a placeholder for "checked in": the database
+    // stamps its own (stamp_checked_in_at), and that's what is shown.
     const supabase = createClient();
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("rsvps")
       .update({ checked_in_at: next })
-      .eq("id", person.rsvpId);
+      .eq("id", person.rsvpId)
+      .select("checked_in_at")
+      .maybeSingle();
 
+    if (data) {
+      const stamped = (data.checked_in_at as string | null) ?? null;
+      setRoster((prev) =>
+        prev.map((p) => (p.rsvpId === person.rsvpId ? { ...p, checkedInAt: stamped } : p)),
+      );
+    }
     if (error) {
       setRoster((prev) =>
         prev.map((p) => (p.rsvpId === person.rsvpId ? { ...p, checkedInAt: previous } : p)),
@@ -415,11 +447,19 @@ export function EventRoster({
     );
 
     const supabase = createClient();
-    const { error } = await supabase
+    const { data, error } = await supabase
       .from("volunteer_signups")
       .update({ checked_in_at: next })
-      .eq("id", person.signupId);
+      .eq("id", person.signupId)
+      .select("checked_in_at")
+      .maybeSingle();
 
+    if (data) {
+      const stamped = (data.checked_in_at as string | null) ?? null;
+      setVolunteerRoster((prev) =>
+        prev.map((p) => (p.signupId === person.signupId ? { ...p, checkedInAt: stamped } : p)),
+      );
+    }
     if (error) {
       setVolunteerRoster((prev) =>
         prev.map((p) => (p.signupId === person.signupId ? { ...p, checkedInAt: previous } : p)),
@@ -436,6 +476,7 @@ export function EventRoster({
     setCapacityConfirmPending(false);
     setWalkupLookup(null);
     setWalkupSign(EMPTY_WAIVER_SIGN);
+    setWalkupPaper({ open: false, held: false });
     setWalkupSectionValues({});
     setWalkupSectionsKey((k) => k + 1);
     setVolunteerConflictShifts(null);
@@ -472,7 +513,13 @@ export function EventRoster({
     const sectionValues = withProfileValues(walkupSectionValues, lookup?.profileFields ?? null);
 
     const info = lookup?.info ?? null;
-    if (info && waiverNeedsInput(info, walkupSign)) {
+    const onPaper = info?.status === "unsigned" && walkupPaper.open;
+    if (onPaper && !walkupPaper.held) {
+      setIsSubmittingWalkup(false);
+      setWalkupError("Tick the box to confirm you hold their signed paper waiver.");
+      return;
+    }
+    if (info && !onPaper && waiverNeedsInput(info, walkupSign)) {
       setIsSubmittingWalkup(false);
       setWalkupError(
         info.status === "unavailable"
@@ -510,6 +557,7 @@ export function EventRoster({
       chapter: walkupForm.chapter,
       waiverName: walkupSign.name,
       waiverAgreed: walkupSign.agreed,
+      paperWaiverHeld: onPaper,
       sections: sectionValues,
       allowVolunteerConflict: volunteerConflictAcked || volunteerConflictShifts != null,
       force: capacityConfirmPending,
@@ -760,7 +808,10 @@ export function EventRoster({
             <span className="font-semibold">{waiver.heading}</span> —{" "}
             {unsignedCount > 0
               ? `${unsignedCount} of ${roster.length} on the roster NOT SIGNED`
-              : "everyone on the roster has signed"}
+              : paperOnlyCount > 0
+                ? "everyone on the roster is covered"
+                : "everyone on the roster has signed"}
+            {paperOnlyCount > 0 && ` · ${paperOnlyCount} on a paper waiver for this event only`}
           </p>
         )}
       </div>
@@ -815,6 +866,7 @@ export function EventRoster({
                 <Fragment key={person.rsvpId}>
                   <RosterRow
                     person={person}
+                    timing={timing}
                     collectsDietary={dietary.collected}
                     answerSections={answerSections}
                     onToggleCheckIn={toggleCheckIn}
@@ -826,6 +878,7 @@ export function EventRoster({
                     }
                     removing={busyRsvpId === person.rsvpId}
                     confirming={pendingRemoval?.rsvpId === person.rsvpId}
+                    onRemovePaperWaiver={canRemovePaperWaiver ? removePaperWaiver : undefined}
                     health={
                       <RosterHealthLine
                         eventId={eventId}
@@ -912,6 +965,7 @@ export function EventRoster({
                   <VolunteerRosterRow
                     key={person.signupId}
                     person={person}
+                    timing={timing}
                     unregistered={unregisteredVolunteerIds.includes(person.userId)}
                     answerSections={answerSections}
                     onToggleCheckIn={toggleVolunteerCheckIn}
@@ -1111,6 +1165,7 @@ export function EventRoster({
                         setWalkupSectionsKey((k) => k + 1);
                       }
                       setWalkupLookup(null);
+                      setWalkupPaper({ open: false, held: false });
                       setVolunteerConflictShifts(null);
                       setVolunteerConflictAcked(false);
                     }}
@@ -1188,14 +1243,56 @@ export function EventRoster({
                 ))}
                 <div className="grid gap-1 rounded-md border p-3">
                   <span className="text-sm font-medium">Liability waiver</span>
-                  {walkupLookup ? (
-                    <WaiverSigning
-                      info={walkupLookup.info}
-                      value={walkupSign}
-                      onChange={setWalkupSign}
-                      idPrefix="walkup"
-                    />
+                  {!walkupLookup ? null : walkupLookup.info.status === "unsigned" && walkupPaper.open ? (
+                    <div className="grid gap-3">
+                      <p className="text-sm font-medium">Paper waiver — this event only</p>
+                      <p className="text-sm text-muted-foreground">
+                        Only for when they couldn&apos;t sign here. It covers this event and nothing
+                        else: they&apos;ll be asked to sign in the portal at their next one.
+                      </p>
+                      <label className="flex items-start gap-2 text-sm font-medium">
+                        <input
+                          id="walkup_paper_waiver_held"
+                          type="checkbox"
+                          className="mt-1"
+                          checked={walkupPaper.held}
+                          onChange={(e) => setWalkupPaper({ open: true, held: e.target.checked })}
+                        />
+                        I hold their signed paper waiver for this event
+                      </label>
+                      <p className="text-xs text-muted-foreground">
+                        Recorded with your name and the time.
+                      </p>
+                      <button
+                        type="button"
+                        className="w-fit text-sm underline underline-offset-4"
+                        onClick={() => setWalkupPaper({ open: false, held: false })}
+                      >
+                        Sign here instead
+                      </button>
+                    </div>
                   ) : (
+                    <>
+                      <WaiverSigning
+                        info={walkupLookup.info}
+                        value={walkupSign}
+                        onChange={setWalkupSign}
+                        idPrefix="walkup"
+                      />
+                      {/* Deliberately a quiet link, not a button beside the
+                          signing fields: signing here stays the obvious path. */}
+                      {walkupLookup.info.status === "unsigned" && (
+                        <button
+                          type="button"
+                          className="mt-2 w-fit text-xs text-muted-foreground underline underline-offset-4"
+                          onClick={() => setWalkupPaper({ open: true, held: false })}
+                        >
+                          They signed a paper waiver instead
+                        </button>
+                      )}
+                    </>
+                  )}
+                  {!walkupLookup && (
                     <p className="text-sm text-muted-foreground">
                       Enter their email to check whether they&apos;ve already signed.
                     </p>
@@ -1374,15 +1471,18 @@ function WaitlistRow({
 
 function RosterRow({
   person,
+  timing,
   collectsDietary,
   answerSections,
   onToggleCheckIn,
   onRemove,
   removing,
   confirming,
+  onRemovePaperWaiver,
   health,
 }: {
   person: RosterPerson;
+  timing: EventTiming;
   collectsDietary: boolean;
   /** The event's sections to show answers for (see rosterAnswerSections). */
   answerSections: RegistrationSection[];
@@ -1391,10 +1491,14 @@ function RosterRow({
   removing: boolean;
   /** Their "Remove?" confirmation is open, right below this row. */
   confirming: boolean;
+  /** Set for admins only: removes a paper waiver record entered by mistake. */
+  onRemovePaperWaiver?: (person: RosterPerson) => void;
   health: React.ReactNode;
 }) {
   const contact = [person.phone, person.email].filter(Boolean).join(" · ");
   const emergency = [person.emergencyContact, person.emergencyPhone].filter(Boolean).join(" · ");
+  // Two-step, in the row (no window.confirm — see removePerson above).
+  const [confirmingPaperRemoval, setConfirmingPaperRemoval] = useState(false);
 
   return (
     <li className="flex flex-col gap-3 border-b py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
@@ -1407,14 +1511,74 @@ function RosterRow({
         {person.emergencySecondary && (
           <span className="text-sm text-muted-foreground">Second contact: {person.emergencySecondary}</span>
         )}
-        {person.waiverSignedOn ? (
+        {person.paperWaiver ? (
+          <>
+            <span className="w-fit rounded border border-amber-600 px-2 py-0.5 text-xs font-bold tracking-wide text-amber-700 dark:text-amber-400">
+              Paper waiver — this event only
+            </span>
+            <span className="text-xs text-muted-foreground">
+              Recorded by {person.paperWaiver.recordedBy} · {person.paperWaiver.recordedLabel}
+            </span>
+            {onRemovePaperWaiver &&
+              (confirmingPaperRemoval ? (
+                <RevealPanel
+                  aria-label="Remove this paper waiver record?"
+                  className="my-1 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm"
+                >
+                  <p className="font-medium">Remove this paper waiver record?</p>
+                  <p className="mt-1 text-muted-foreground">
+                    For one entered by mistake. They&apos;ll show as WAIVER NOT SIGNED; their place
+                    on the roster and check-in stay as they are. The removal is recorded with your
+                    name and the time.
+                  </p>
+                  <div className="mt-3 flex gap-2">
+                    <Button
+                      size="sm"
+                      disabled={removing}
+                      onClick={() => {
+                        setConfirmingPaperRemoval(false);
+                        onRemovePaperWaiver(person);
+                      }}
+                    >
+                      Yes, remove the record
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => setConfirmingPaperRemoval(false)}>
+                      Keep
+                    </Button>
+                  </div>
+                </RevealPanel>
+              ) : (
+                <button
+                  type="button"
+                  disabled={removing}
+                  className="w-fit text-xs text-muted-foreground underline underline-offset-4"
+                  onClick={() => setConfirmingPaperRemoval(true)}
+                >
+                  Entered by mistake? Remove paper waiver record
+                </button>
+              ))}
+            {person.waiverSignedOn && (
+              <span className="text-sm text-muted-foreground">
+                Signed in the portal {person.waiverSignedOn}
+              </span>
+            )}
+          </>
+        ) : person.waiverSignedOn ? (
           <span className="text-sm text-muted-foreground">
             Waiver signed {person.waiverSignedOn}
           </span>
         ) : (
-          <span className="w-fit rounded bg-red-600 px-2 py-0.5 text-xs font-bold tracking-wide text-white">
-            WAIVER NOT SIGNED
-          </span>
+          <>
+            <span className="w-fit rounded bg-red-600 px-2 py-0.5 text-xs font-bold tracking-wide text-white">
+              WAIVER NOT SIGNED
+            </span>
+            {person.paperWaiverRemoved && (
+              <span className="text-xs text-muted-foreground">
+                Paper waiver record removed by {person.paperWaiverRemoved.removedBy} ·{" "}
+                {person.paperWaiverRemoved.removedLabel}
+              </span>
+            )}
+          </>
         )}
         {health}
         <SectionAnswers
@@ -1423,6 +1587,7 @@ function RosterRow({
           dietaryNote={person.dietaryNotes}
           collectsDietary={collectsDietary}
         />
+        <CheckInTime at={person.checkedInAt} timing={timing} />
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <Button
@@ -1453,6 +1618,7 @@ function RosterRow({
 
 function VolunteerRosterRow({
   person,
+  timing,
   unregistered,
   answerSections,
   onToggleCheckIn,
@@ -1460,6 +1626,7 @@ function VolunteerRosterRow({
   practicalCheck,
 }: {
   person: VolunteerRosterPerson;
+  timing: EventTiming;
   /** Hasn't completed volunteer registration (this year's volunteer waiver
    * is signed there). */
   unregistered: boolean;
@@ -1515,6 +1682,7 @@ function VolunteerRosterRow({
           </Link>
         )}
         {health}
+        <CheckInTime at={person.checkedInAt} timing={timing} />
       </div>
       <button
         type="button"
@@ -1529,6 +1697,32 @@ function VolunteerRosterRow({
         {person.checkedInAt ? "✓ Checked in" : "Check in"}
       </button>
     </li>
+  );
+}
+
+/**
+ * When a check-in was entered. checked_in_at is the moment the button was
+ * tapped (or the walk-up added), not the event's date, so a lead catching up
+ * from the car park or the next morning shows as exactly that: marked "after
+ * the event" once it's past the event's end — or, for an event with no end
+ * time, on a later day than it started.
+ */
+function CheckInTime({ at, timing }: { at: string | null; timing: EventTiming }) {
+  if (!at) return null;
+  const entered = new Date(at).getTime();
+  const start = new Date(timing.startsAt).getTime();
+  const end = timing.endsAt ? new Date(timing.endsAt).getTime() : start;
+  const afterEvent =
+    end > start
+      ? entered > end
+      : entered > start &&
+        formatDateInZone(at, timing.timeZone) !== formatDateInZone(timing.startsAt, timing.timeZone);
+
+  return (
+    <span className="text-xs text-muted-foreground">
+      Checked in {formatEventInstant(at, timing.timeZone)}
+      {afterEvent && <span className="font-medium text-amber-600"> · after the event</span>}
+    </span>
   );
 }
 
