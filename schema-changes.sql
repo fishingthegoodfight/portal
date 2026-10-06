@@ -12360,3 +12360,90 @@ revoke all on function public.auth_user_id_by_email(text) from public, anon, aut
 grant execute on function public.auth_user_id_by_email(text) to service_role;
 
 commit;
+
+-- =============================================================================
+-- 2026-10-06 — Finding people already in the system from an event's roster
+-- =============================================================================
+-- The roster's Add walk-up and Add volunteer forms can search existing
+-- people by name or email instead of retyping their details: mostly for
+-- adding someone to a past event who was missed at check-in. Picking a
+-- person fills the form's email; everything after that (waiver, missing
+-- details, approval, registration and practical-check gates, capacity) is
+-- the forms' existing flow, unchanged.
+--
+-- event_person_candidates(event, query): for whoever manages the event
+-- (can_manage_event). At most 10, 2+ characters, LIKE wildcards escaped.
+-- The same limit as the event lead picker (event_lead_candidates), so it
+-- can't be used to list every member's contact details: an admin finds
+-- anyone; anyone else finds people whose home chapter is the event's or
+-- one they lead, and people who have attended or volunteered at one of the
+-- event's chapter's events. Anyone else can still be added by typing their
+-- exact email, as before. People whose access was removed aren't found.
+-- Returns name, email and chapter only, plus their RSVP status for this
+-- event if they have one.
+--
+-- A function, no new tables, so no new table grants. Safe to re-run.
+
+create or replace function public.event_person_candidates(p_event_id bigint, p_query text)
+returns table (
+  id uuid,
+  first_name text,
+  last_name text,
+  email text,
+  chapter text,
+  rsvp_status text
+)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+declare
+  v_q text := btrim(coalesce(p_query, ''));
+  v_pattern text;
+  v_is_admin boolean := public.is_admin();
+  v_event_chapter text;
+  v_led text[];
+begin
+  if not public.can_manage_event(p_event_id) then
+    raise exception 'Not allowed' using errcode = '42501';
+  end if;
+  if length(v_q) < 2 then
+    return;
+  end if;
+  v_pattern := '%' || replace(replace(replace(v_q, '\', '\\'), '%', '\%'), '_', '\_') || '%';
+  select e.chapter into v_event_chapter from public.events e where e.id = p_event_id;
+  select p.led_chapters into v_led from public.profiles p where p.id = auth.uid();
+
+  return query
+    select p.id, p.first_name, p.last_name, p.email, p.chapter,
+           (select r.status from public.rsvps r where r.event_id = p_event_id and r.user_id = p.id)
+      from public.profiles p
+     where p.access_removed_at is null
+       and (
+             p.first_name ilike v_pattern
+             or p.last_name ilike v_pattern
+             or p.email ilike v_pattern
+             or concat_ws(' ', p.first_name, p.last_name) ilike v_pattern
+           )
+       and (
+             v_is_admin
+             or p.chapter = v_event_chapter
+             or p.chapter = any(coalesce(v_led, '{}'::text[]))
+             or exists (
+               select 1 from public.rsvps r join public.events e on e.id = r.event_id
+                where r.user_id = p.id and r.status = 'confirmed' and e.chapter = v_event_chapter
+             )
+             or exists (
+               select 1 from public.volunteer_signups s
+                 join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+                 join public.events e on e.id = vo.event_id
+                where s.user_id = p.id and s.status = 'confirmed' and e.chapter = v_event_chapter
+             )
+           )
+     order by p.first_name nulls last, p.last_name nulls last
+     limit 10;
+end $function$;
+
+revoke all on function public.event_person_candidates(bigint, text) from public, anon;
+grant execute on function public.event_person_candidates(bigint, text) to authenticated;

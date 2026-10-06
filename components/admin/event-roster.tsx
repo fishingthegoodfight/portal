@@ -24,6 +24,7 @@ import { SaveAsTemplateButton } from "@/components/admin/save-as-template-button
 import { ShareEventCard } from "@/components/admin/share-event-card";
 import { EventCard, type EventCardEvent } from "@/components/event-card";
 import { EmergencyContactFields } from "@/components/emergency-contact-fields";
+import { EventPersonSearch } from "@/components/admin/event-person-search";
 import { Button } from "@/components/ui/button";
 import { RevealPanel } from "@/components/reveal-panel";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -318,6 +319,10 @@ export function EventRoster({
 
   const [showAddVolunteerForm, setShowAddVolunteerForm] = useState(false);
   const [addVolunteerEmail, setAddVolunteerEmail] = useState("");
+  // Whether the event had started when Add volunteer was opened: it may be
+  // recording a shift after the fact (adminAddVolunteerSignupAction marks an
+  // ended shift as served and sends no emails), and the form says so.
+  const [addVolunteerEventStarted, setAddVolunteerEventStarted] = useState(false);
   const [addVolunteerOpportunityId, setAddVolunteerOpportunityId] = useState("");
   const [addVolunteerError, setAddVolunteerError] = useState<string | null>(null);
   const [isAddingVolunteer, setIsAddingVolunteer] = useState(false);
@@ -517,6 +522,21 @@ export function EventRoster({
     setShowWalkupForm(true);
   };
 
+  // A different email is a different person: drop their lookup, and any
+  // answers that were pre-filled from the previous person's profile so they
+  // can't carry over.
+  const changeWalkupEmail = (email: string) => {
+    setWalkupForm((prev) => ({ ...prev, email }));
+    if (walkupLookup?.profileFields) {
+      setWalkupSectionValues({});
+      setWalkupSectionsKey((k) => k + 1);
+    }
+    setWalkupLookup(null);
+    setWalkupPaper({ open: false, held: false });
+    setVolunteerConflictShifts(null);
+    setVolunteerConflictAcked(false);
+  };
+
   const closeWalkupForm = () => {
     if (isSubmittingWalkup) return;
     setShowWalkupForm(false);
@@ -625,6 +645,7 @@ export function EventRoster({
 
   const openAddVolunteerForm = () => {
     setAddVolunteerEmail("");
+    setAddVolunteerEventStarted(new Date(timing.startsAt).getTime() <= Date.now());
     setAddVolunteerOpportunityId(volunteerRoles[0] ? String(volunteerRoles[0].opportunityId) : "");
     setAddVolunteerError(null);
     setAddVolunteerConfirm(null);
@@ -1107,6 +1128,14 @@ export function EventRoster({
                     ))}
                   </Select>
                 </div>
+                <EventPersonSearch
+                  eventId={eventId}
+                  idPrefix="add_volunteer"
+                  onPick={(person) => {
+                    setAddVolunteerEmail(person.email);
+                    resetAddVolunteerConfirm();
+                  }}
+                />
                 <div className="grid gap-2">
                   <Label htmlFor="add_volunteer_email">Email</Label>
                   <Input
@@ -1126,6 +1155,12 @@ export function EventRoster({
                     They need an existing account — this doesn&apos;t create one, unlike the
                     participant walk-up flow.
                   </p>
+                  {addVolunteerEventStarted && (
+                    <p className="text-xs text-muted-foreground">
+                      Adding someone to a shift that has already ended records them as having
+                      served it, and sends no emails.
+                    </p>
+                  )}
                 </div>
                 {addVolunteerConfirm === "has_rsvp" && (
                   <RevealPanel role="alert" className="text-sm text-amber-600">
@@ -1215,6 +1250,16 @@ export function EventRoster({
                 <CardTitle>Add walk-up</CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
+                {!walkupLookup && (
+                  <EventPersonSearch
+                    eventId={eventId}
+                    idPrefix="walkup"
+                    onPick={(person) => {
+                      changeWalkupEmail(person.email);
+                      void lookUpWalkup(person.email);
+                    }}
+                  />
+                )}
                 <div className="grid gap-2">
                   <Label htmlFor="walkup_email">Email</Label>
                   <Input
@@ -1225,20 +1270,7 @@ export function EventRoster({
                     autoFocus
                     required
                     value={walkupForm.email}
-                    onChange={(e) => {
-                      updateWalkupField("email")(e);
-                      // A different email is a different person: drop their
-                      // lookup, and any answers that were pre-filled from the
-                      // previous person's profile so they can't carry over.
-                      if (walkupLookup?.profileFields) {
-                        setWalkupSectionValues({});
-                        setWalkupSectionsKey((k) => k + 1);
-                      }
-                      setWalkupLookup(null);
-                      setWalkupPaper({ open: false, held: false });
-                      setVolunteerConflictShifts(null);
-                      setVolunteerConflictAcked(false);
-                    }}
+                    onChange={(e) => changeWalkupEmail(e.target.value)}
                     onBlur={(e) => void lookUpWalkup(e.target.value)}
                   />
                   {!walkupLookup && (

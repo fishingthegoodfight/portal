@@ -151,6 +151,24 @@ export async function adminAddVolunteerSignupAction(input: {
     return { ok: true, status: "capacity_exceeded" };
   }
 
+  // A shift that has already ended is being recorded after the fact
+  // (someone missed at check-in): they're marked as served, which the
+  // roster shows as "Checked in … · after the event" (the database stamps
+  // the time), and nobody is emailed about a shift that's over.
+  if (new Date(opportunity.shift_end as string).getTime() < Date.now()) {
+    const { error: servedError } = await supabase
+      .from("volunteer_signups")
+      .update({ checked_in_at: new Date().toISOString() })
+      .eq("opportunity_id", input.opportunityId)
+      .eq("user_id", userId)
+      .is("checked_in_at", null);
+    if (servedError) {
+      console.error(`[admin-volunteer] opportunity ${input.opportunityId}: marking served failed:`, servedError);
+      return { ok: false, error: `Added, but couldn't mark them as served: ${servedError.message}. Check them in on the roster.` };
+    }
+    return { ok: true, status: "confirmed" };
+  }
+
   try {
     const ctx: VolunteerShiftEmailContext = {
       opportunityId: opportunity.id as number,
