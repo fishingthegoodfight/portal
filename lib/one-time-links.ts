@@ -15,4 +15,4 @@ export const ONE_TIME_LINK_LIFETIME = "24 hours";
 
 /** The sentence every email carrying one of these links ends its link
  * paragraph with. An expired link's page (app/auth/error) offers a new one. */
-export const ONE_TIME_LINK_NOTE = `This link works once and expires ${ONE_TIME_LINK_LIFETIME} after this email was sent. If it has expired, open it anyway: the page it takes you to can send you a new one.`;
+export const ONE_TIME_LINK_NOTE = `This link works once and expires ${ONE_TIME_LINK_LIFETIME} after this email was sent. If it's expired by the time you get to it, click it anyway — the page will send you a new one.`;

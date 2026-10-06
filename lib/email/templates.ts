@@ -5,7 +5,7 @@
  * styles (email clients strip <style> blocks unreliably), no images.
  */
 
-import { ONE_TIME_LINK_LIFETIME, ONE_TIME_LINK_NOTE } from "@/lib/one-time-links";
+import { ONE_TIME_LINK_NOTE } from "@/lib/one-time-links";
 
 const ORG_NAME = "Fishing the Good Fight";
 
@@ -887,7 +887,6 @@ export function walkupWelcomeEmail({
   const why = `When you checked in, we set you up with an account on the ${ORG_NAME} portal so your check-in and waiver were on file. That's why you have an account you didn't create.`;
   const ask = "Set a password and you can see what's coming up and RSVP:";
   const buttonLabel = "Set your password";
-  const linkNote = `This link works once and expires ${ONE_TIME_LINK_LIFETIME} after this email was sent. If it's expired by the time you get to it, click it anyway — the page will send you a new one.`;
   const closing = "Hope to see you at the next one,";
   const signature = [
     leadName?.trim() || null,
@@ -901,7 +900,7 @@ export function walkupWelcomeEmail({
       `<p style="margin:0 0 16px;">${escapeHtml(why)}</p>`,
       `<p style="margin:0 0 8px;">${escapeHtml(ask)}</p>`,
       `<p style="margin:16px 0 8px;"><a href="${actionUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
-      `<p style="margin:0 0 16px;font-size:13px;color:#57534e;">${escapeHtml(linkNote)}</p>`,
+      ONE_TIME_LINK_NOTE_HTML,
       `<p style="margin:16px 0 0;">${escapeHtml(closing)}<br>${signature.map(escapeHtml).join("<br>")}</p>`,
     ].join("\n"),
   );
@@ -917,7 +916,7 @@ export function walkupWelcomeEmail({
     "",
     `${buttonLabel}: ${actionUrl}`,
     "",
-    linkNote,
+    ONE_TIME_LINK_NOTE,
     "",
     closing,
     ...signature,
