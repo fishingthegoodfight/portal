@@ -18,21 +18,22 @@ Separately, an **event lead** (`events.lead_user_id`) can manage just that one e
 
 ## Items, in priority order
 
-### 1. Welcome email for walk-up accounts (top item)
-**What:** send each account created by a walk-up a welcome email with a one-time set-password link.
+### 1. Welcome email for walk-up accounts (top item, built 2026-10-06, catch-up not yet sent)
+**What:** each account created by a walk-up gets a short welcome from the chapter with a one-time set-password link.
 
-**Why:** a walk-up for someone with no account creates one for them (`auth.admin.createUser`, email confirmed, with a random password hash nobody knows). They have an account they don't know about and can't log in to. Nine real people got accounts this way at the **Knot Just Fly Tying** event on the evening of 2026-10-05 (Denver time; 01:33–02:45 UTC on 2026-10-06).
+**Why:** a walk-up for someone with no account creates one for them (`auth.admin.createUser`, email confirmed, random password nobody knows). They have an account they don't know about and can't log in to. Nine real people got accounts this way at the **Knot Just Fly Tying** event on the evening of 2026-10-05 (Denver time; 01:33–02:45 UTC on 2026-10-06).
 
-**Decided / known:**
-- **The link:** a `recovery` link from `auth.admin.generateLink`, the way `lib/actions/new-link.ts` and the invites already do it.
-- **When to send:**
-  - right after the walk-up, from `addWalkupRsvpAction` in `lib/actions/admin-walkup.ts`, only on the branch that creates the account;
-  - once as a catch-up for the existing ones.
-- **Finding the existing ones:** walk-up accounts are recognisable in `auth.users`:
-  - `email_confirmed_at` within seconds of `created_at`;
-  - `confirmation_sent_at` and `invited_at` both null;
-  - `raw_user_meta_data` holds only `first_name` and `last_name`.
-- **Until this exists:** if one of them tries to sign up, the sign-up form spots the existing email and shows "You already have an account… Use Forgot password" (`components/sign-up-form.tsx`). That's the only way they get in today.
+**Built:**
+- **The code:** `lib/walkup-welcome.ts`, with the template `walkupWelcomeEmail` and the table `walkup_welcome_emails` (2026-10-06 "Welcome email for accounts created at a walk-up" entry in `schema-changes.sql`).
+- **Automatic sends:**
+  - The walk-up action queues a row when it creates an account.
+  - The daily 15:00 UTC reminders job sends it the morning after the event's last day, in the event's time zone, within a week.
+  - It skips anyone who has signed in, so someone who has already set a password never gets it.
+  - A failed send is retried for up to 3 days.
+- **Catch-up:** Setup → **Walk-up welcome emails** lists everyone who should have had it and hasn't. Everyone is ticked by default; you can untick anyone. Nothing sends until an admin confirms. **The send for the nine from Oct 5 is the admin's to do by hand.**
+- **Expired links:** a link that has expired lands on `/auth/error` ("This link has expired"), where they can email themselves a fresh one with no admin involved.
+
+**Known blind spot:** an email address typed wrong at the walk-up desk. The welcome goes nowhere, nothing in the portal shows it, and a typo looks the same as someone who just hasn't replied. See item 11.
 
 ### 2. Turn on the volunteer opportunities email
 **What:** switch on the every-other-week email of open volunteer shifts. It's built and currently off.
@@ -120,3 +121,13 @@ Separately, an **event lead** (`events.lead_user_id`) can manage just that one e
 **Why:** "Chapter Program Lead" reads like the **chapter lead** access role, but it's just a volunteer role and grants no access.
 
 **Known:** the role type was seeded as key `other_chapter_program_lead`, label "Other Chapter Program Lead" (2026-09-22 "Volunteer registry" entry in `schema-changes.sql`, table `volunteer_role_types`); check the live label before renaming. Change the label only. Approvals and shifts point at the role type's id, and no code refers to this key, but keys are how code identifies other role types (such as `fishing_instructor` for the practical check), so leave keys alone as a rule.
+
+### 11. Surface email bounces
+**What:** read bounce notifications from the Google Workspace mailbox and show which addresses bounced, against the person's profile.
+
+**Why:** a walk-up who gave a typo'd email at the desk ends up with a silent dead profile. Their welcome email (item 1) bounces, and we never find out or get to fix the address. The same goes for every other portal email.
+
+**Known:**
+- **Where bounces land:** they come back to the Google Workspace mailbox. Which provider sends is set by `EMAIL_PROVIDER` in `lib/email/send.ts`; replies go to `tcramer@fishingthegoodfight.org`.
+- **Where they should show:** on the walk-up welcome catch-up screen at least, and probably in the admin digest.
+- **After the Resend migration (item 9):** Resend reports bounces itself (webhooks), which may be the simpler source.

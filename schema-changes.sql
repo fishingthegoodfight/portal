@@ -12974,3 +12974,173 @@ drop trigger if exists profiles_protect_login_email on public.profiles;
 create trigger profiles_protect_login_email
   before update on public.profiles
   for each row execute function public.profiles_protect_login_email();
+
+-- =============================================================================
+-- 2026-10-06 — Welcome email for accounts created at a walk-up
+-- =============================================================================
+-- A walk-up for someone with no account creates one for them (confirmed,
+-- with a random password nobody knows), so they have an account they don't
+-- know about and can't use. They now get a short welcome from the chapter
+-- with a one-time set-password link (lib/walkup-welcome.ts). An expired link
+-- lands on /auth/error, which lets them send themselves a new one.
+--
+-- walkup_welcome_emails: one row per account, the record that it's been
+-- sent (or is waiting to be).
+--   * source 'walkup': added by addWalkupRsvpAction when it creates the
+--     account. The daily 15:00 UTC reminders job sends these the morning
+--     after the event's last day (event time zone), up to 7 days after it,
+--     skipping anyone who has signed in since (setting a password signs you
+--     in) or whose access was removed. A failed send is retried on the next
+--     run, up to 3 attempts.
+--   * source 'catch_up': written by an admin's send from Setup → Walk-up
+--     welcome emails, for accounts made before this existed (or ones the
+--     automatic send couldn't reach). Stamped sent_at on success; a failed
+--     one keeps last_error and shows on the list again.
+-- No foreign key on user_id, like email_preference_tokens: one would count
+-- as a reference in "Remove person" (person_other_references). sent_by is a
+-- "who did it" column and does reference auth.users.
+--
+-- walkup_welcome_candidates(): the catch-up list. Walk-up-created accounts
+-- (email confirmed within seconds of being created, never sent a
+-- confirmation, not invited, with an RSVP created within 10 minutes of the
+-- account) that have never signed in, still have access, haven't been sent
+-- the welcome, and aren't still waiting for their automatic send. A queued
+-- walk-up that failed 3 times, or was added more than a week after its
+-- event, shows here rather than falling through.
+-- walkup_welcome_due(now): the automatic sends due at that moment.
+-- Both service role only.
+--
+-- One new table: RLS on, no policies; nobody but the service role reads or
+-- writes it. Safe to re-run.
+
+begin;
+
+create table if not exists public.walkup_welcome_emails (
+  user_id uuid primary key,
+  event_id bigint references public.events(id) on delete set null,
+  source text not null check (source in ('walkup', 'catch_up')),
+  queued_at timestamptz not null default now(),
+  sent_at timestamptz,
+  sent_by uuid references auth.users(id) on delete set null,
+  attempts integer not null default 0,
+  last_error text
+);
+
+create index if not exists walkup_welcome_emails_unsent_idx
+  on public.walkup_welcome_emails (queued_at)
+  where sent_at is null;
+
+alter table public.walkup_welcome_emails enable row level security;
+
+revoke all on public.walkup_welcome_emails from anon;
+revoke all on public.walkup_welcome_emails from authenticated;
+grant all on public.walkup_welcome_emails to service_role;
+
+create or replace function public.walkup_welcome_candidates()
+returns table (
+  user_id uuid,
+  email text,
+  first_name text,
+  last_name text,
+  event_id bigint,
+  event_name text,
+  event_starts_at timestamptz,
+  event_ends_at timestamptz,
+  event_timezone text,
+  lead_name text,
+  chapter_name text,
+  account_created_at timestamptz
+)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select u.id, p.email, p.first_name, p.last_name,
+         e.id, e.name, e.starts_at, e.ends_at, e.timezone, e.lead_name,
+         coalesce(c.display_name, c.name, e.chapter),
+         u.created_at
+    from auth.users u
+    join public.profiles p on p.id = u.id
+    join lateral (
+      select r.event_id
+        from public.rsvps r
+       where r.user_id = u.id
+         and r.created_at between u.created_at - interval '1 minute' and u.created_at + interval '10 minutes'
+       order by r.created_at
+       limit 1
+    ) w on true
+    join public.events e on e.id = w.event_id
+    left join public.chapters c on c.name = e.chapter
+   where u.last_sign_in_at is null
+     and u.invited_at is null
+     and u.confirmation_sent_at is null
+     and u.email_confirmed_at is not null
+     and u.email_confirmed_at - u.created_at < interval '10 seconds'
+     and p.access_removed_at is null
+     and coalesce(p.email, '') <> ''
+     -- Not already sent, and not still waiting for its automatic send (a
+     -- queued walk-up that failed 3 times or is past its week shows here).
+     and not exists (
+       select 1 from public.walkup_welcome_emails x
+        where x.user_id = u.id
+          and (
+            x.sent_at is not null
+            or (x.source = 'walkup'
+                and x.attempts < 3
+                and (now() at time zone e.timezone)::date
+                    <= (coalesce(e.ends_at, e.starts_at) at time zone e.timezone)::date + 7)
+          )
+     )
+   order by e.starts_at, p.first_name, p.last_name;
+$function$;
+
+revoke all on function public.walkup_welcome_candidates() from public, anon, authenticated;
+grant execute on function public.walkup_welcome_candidates() to service_role;
+
+create or replace function public.walkup_welcome_due(p_now timestamptz)
+returns table (
+  user_id uuid,
+  email text,
+  first_name text,
+  last_name text,
+  event_id bigint,
+  event_name text,
+  event_starts_at timestamptz,
+  event_ends_at timestamptz,
+  event_timezone text,
+  lead_name text,
+  chapter_name text,
+  account_created_at timestamptz
+)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select u.id, p.email, p.first_name, p.last_name,
+         e.id, e.name, e.starts_at, e.ends_at, e.timezone, e.lead_name,
+         coalesce(c.display_name, c.name, e.chapter),
+         u.created_at
+    from public.walkup_welcome_emails x
+    join auth.users u on u.id = x.user_id
+    join public.profiles p on p.id = x.user_id
+    join public.events e on e.id = x.event_id
+    left join public.chapters c on c.name = e.chapter
+   where x.source = 'walkup'
+     and x.sent_at is null
+     and x.attempts < 3
+     and u.last_sign_in_at is null
+     and p.access_removed_at is null
+     and coalesce(p.email, '') <> ''
+     -- The morning after the event's last day, in its own time zone, and
+     -- no more than a week after it.
+     and (p_now at time zone e.timezone)::date > (coalesce(e.ends_at, e.starts_at) at time zone e.timezone)::date
+     and (p_now at time zone e.timezone)::date <= (coalesce(e.ends_at, e.starts_at) at time zone e.timezone)::date + 7
+   order by x.queued_at;
+$function$;
+
+revoke all on function public.walkup_welcome_due(timestamptz) from public, anon, authenticated;
+grant execute on function public.walkup_welcome_due(timestamptz) to service_role;
+
+commit;

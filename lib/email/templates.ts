@@ -5,7 +5,7 @@
  * styles (email clients strip <style> blocks unreliably), no images.
  */
 
-import { ONE_TIME_LINK_NOTE } from "@/lib/one-time-links";
+import { ONE_TIME_LINK_LIFETIME, ONE_TIME_LINK_NOTE } from "@/lib/one-time-links";
 
 const ORG_NAME = "Fishing the Good Fight";
 
@@ -853,6 +853,74 @@ export function newLinkEmail({
     ONE_TIME_LINK_NOTE,
     "",
     ignore,
+  ].join("\n");
+
+  return { subject, html, text };
+}
+
+/**
+ * The welcome for someone whose account was created at a walk-up
+ * (lib/walkup-welcome.ts): a short follow-up from the chapter, sent the
+ * morning after the event, saying plainly why they have an account they
+ * didn't create, with a one-time set-password link. Signed by the event's
+ * lead when it has one.
+ */
+export function walkupWelcomeEmail({
+  firstName,
+  eventName,
+  dayPhrase,
+  leadName,
+  chapterName,
+  actionUrl,
+}: {
+  firstName: string | null;
+  eventName: string;
+  /** "on Monday" or "on October 5" (lib/walkup-welcome.ts). */
+  dayPhrase: string;
+  leadName: string | null;
+  chapterName: string | null;
+  actionUrl: string;
+}): RenderedEmail {
+  const subject = `Good to meet you at ${eventName}`;
+  const greeting = firstName ? `Hi ${firstName},` : "Hi,";
+  const thanks = `Thanks for coming to ${eventName} ${dayPhrase}. It was good to meet you.`;
+  const why = `When you checked in, we set you up with an account on the ${ORG_NAME} portal so your check-in and waiver were on file. That's why you have an account you didn't create.`;
+  const ask = "Set a password and you can see what's coming up and RSVP:";
+  const buttonLabel = "Set your password";
+  const linkNote = `This link works once and expires ${ONE_TIME_LINK_LIFETIME} after this email was sent. If it's expired by the time you get to it, click it anyway — the page will send you a new one.`;
+  const closing = "Hope to see you at the next one,";
+  const signature = [
+    leadName?.trim() || null,
+    chapterName?.trim() ? `${chapterName.trim()} chapter · ${ORG_NAME}` : ORG_NAME,
+  ].filter((line): line is string => Boolean(line));
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;">${escapeHtml(greeting)}</p>`,
+      `<p style="margin:0 0 16px;">${escapeHtml(thanks)}</p>`,
+      `<p style="margin:0 0 16px;">${escapeHtml(why)}</p>`,
+      `<p style="margin:0 0 8px;">${escapeHtml(ask)}</p>`,
+      `<p style="margin:16px 0 8px;"><a href="${actionUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
+      `<p style="margin:0 0 16px;font-size:13px;color:#57534e;">${escapeHtml(linkNote)}</p>`,
+      `<p style="margin:16px 0 0;">${escapeHtml(closing)}<br>${signature.map(escapeHtml).join("<br>")}</p>`,
+    ].join("\n"),
+  );
+
+  const text = [
+    greeting,
+    "",
+    thanks,
+    "",
+    why,
+    "",
+    ask,
+    "",
+    `${buttonLabel}: ${actionUrl}`,
+    "",
+    linkNote,
+    "",
+    closing,
+    ...signature,
   ].join("\n");
 
   return { subject, html, text };

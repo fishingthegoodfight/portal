@@ -341,6 +341,17 @@ async function addWalkup(input: WalkupInput, isRetry: boolean): Promise<WalkupRe
     profileId = created.user.id;
     wasExistingProfile = false;
     await assignLeadEventsToNewAccount(adminClient, profileId);
+    // Queue their welcome email (lib/walkup-welcome.ts), sent the morning
+    // after the event. Never blocks the walk-up: a failure is logged.
+    const { error: welcomeError } = await adminClient
+      .from("walkup_welcome_emails")
+      .upsert(
+        { user_id: profileId, event_id: input.eventId, source: "walkup" },
+        { onConflict: "user_id", ignoreDuplicates: true },
+      );
+    if (welcomeError) {
+      console.error(`[walkup] event ${input.eventId}: queueing the welcome email failed:`, welcomeError);
+    }
 
     // The signup trigger inserts the profiles row as part of creating the
     // auth user above; fill in what the walk-up form collected — including

@@ -10,6 +10,7 @@ import {
 } from "@/lib/email/send";
 import type { ReminderKind } from "@/lib/email/templates";
 import { runOpportunitiesEmail, type OpportunitiesRunSummary } from "@/lib/volunteer-opportunities-email";
+import { runWalkupWelcomeEmails, type WalkupWelcomeRunSummary } from "@/lib/walkup-welcome";
 
 // The volunteer opportunities email runs here too and, on a send day, sends
 // one email per volunteer, spaced out — give it room. 300s is Vercel
@@ -31,6 +32,12 @@ const OPPORTUNITIES_MARGIN_MS = 30_000;
  *   - 1-day:  event starts 0–1 local days out, and hasn't started yet
  * sent_1week_at / sent_1day_at on rsvps guarantee a reminder never goes
  * twice: each send first claims its row with a conditional update.
+ *
+ * First, the welcome email for accounts created at a walk-up
+ * (lib/walkup-welcome.ts): the morning after the event — 15:00 UTC is 9am
+ * Mountain (8am in winter), 11am Eastern. Small and time-sensitive, so it
+ * goes before everything else; a failure there is logged and doesn't stop
+ * the rest.
  *
  * Then, in the same run, the every-other-week volunteer opportunities email
  * (lib/volunteer-opportunities-email.ts), which only sends with it turned
@@ -82,6 +89,20 @@ export async function GET(request: NextRequest) {
 
   const supabase = createAdminClient();
 
+  let walkupWelcome: WalkupWelcomeRunSummary | { error: string };
+  try {
+    walkupWelcome = await runWalkupWelcomeEmails(supabase, { now, dry });
+    for (const failure of walkupWelcome.failed) console.error("[walkup-welcome]", failure);
+    console.log("[walkup-welcome] done", {
+      due: walkupWelcome.due,
+      sent: walkupWelcome.sent.length,
+      failed: walkupWelcome.failed.length,
+    });
+  } catch (err) {
+    console.error("[walkup-welcome] failed:", err);
+    walkupWelcome = { error: err instanceof Error ? err.message : String(err) };
+  }
+
   // Coarse UTC window; the exact per-event-timezone day math happens below.
   const windowEnd = new Date(now.getTime() + 9 * 86_400_000);
   const { data: events, error: eventsError } = await supabase
@@ -92,7 +113,7 @@ export async function GET(request: NextRequest) {
     .lt("starts_at", windowEnd.toISOString());
   if (eventsError) {
     console.error("[reminders] failed to load events:", eventsError.message);
-    return NextResponse.json({ error: eventsError.message }, { status: 500 });
+    return NextResponse.json({ error: eventsError.message, walkupWelcome }, { status: 500 });
   }
 
   const totals: Record<ReminderKind, Outcome> = {
@@ -322,5 +343,5 @@ export async function GET(request: NextRequest) {
     opportunities = { error: err instanceof Error ? err.message : String(err) };
   }
 
-  return NextResponse.json({ ok: true, now: now.toISOString(), dry, totals, volunteerTotals, opportunities });
+  return NextResponse.json({ ok: true, now: now.toISOString(), dry, walkupWelcome, totals, volunteerTotals, opportunities });
 }

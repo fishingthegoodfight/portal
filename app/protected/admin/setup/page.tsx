@@ -40,6 +40,11 @@ const SETUP_LINKS = [
     description: "The every-other-week email of open volunteer roles: on or off, and which day it goes out.",
   },
   {
+    href: "/protected/admin/setup/walkup-welcome",
+    title: "Walk-up welcome emails",
+    description: "The set-password email for accounts made at a walk-up. See who hasn't had it and send it to them.",
+  },
+  {
     href: "/protected/admin/setup/interest-areas",
     title: "Interest areas",
     description: "The plain-language “What are you interested in helping with?” choices on the volunteer application. Separate from role types.",

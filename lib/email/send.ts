@@ -23,6 +23,7 @@ import {
   volunteerEventRestoredEmail,
   personInviteEmail,
   newLinkEmail,
+  walkupWelcomeEmail,
   adminDigestEmail,
   applicationAttendMoreEventsEmail,
   volunteerApprovedEmail,
@@ -585,6 +586,15 @@ export async function sendNewLinkEmail({
   actionUrl: string;
 }): Promise<void> {
   const { subject, html, text } = newLinkEmail({ recipientName, actionUrl });
+  await deliverEmail({ to: toEmail, subject, html, text });
+}
+
+/** The welcome for an account created at a walk-up (walkupWelcomeEmail). */
+export async function sendWalkupWelcomeEmail({
+  toEmail,
+  ...content
+}: { toEmail: string } & Parameters<typeof walkupWelcomeEmail>[0]): Promise<void> {
+  const { subject, html, text } = walkupWelcomeEmail(content);
   await deliverEmail({ to: toEmail, subject, html, text });
 }
 
