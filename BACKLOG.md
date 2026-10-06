@@ -35,7 +35,9 @@ Separately, an **event lead** (`events.lead_user_id`) can manage just that one e
 
 **Known blind spot:** an email address typed wrong at the walk-up desk. The welcome goes nowhere, nothing in the portal shows it, and a typo looks the same as someone who just hasn't replied. See item 11.
 
-### 2. Turn on the volunteer opportunities email
+### 2. Turn on the volunteer opportunities email (done 2026-10-06)
+**Status:** done. It is on and running. The notes below are kept for reference.
+
 **What:** switch on the every-other-week email of open volunteer shifts. It's built and currently off.
 
 **Why:** about 50 imported volunteers are approved but idle, and they're blocked from taking shifts until they complete volunteer registration. This email is how they hear about shifts, and it also nudges unregistered volunteers to register.
