@@ -12910,3 +12910,59 @@ revoke all on function public.admin_upsert_walkup_rsvp(bigint, uuid, boolean, bo
 grant execute on function public.admin_upsert_walkup_rsvp(bigint, uuid, boolean, boolean, boolean) to authenticated;
 
 commit;
+
+-- =============================================================================
+-- 2026-10-06 — profiles.email is the login email: only trusted roles change it
+-- =============================================================================
+-- profiles.email is the email someone logs in with. The profile page and
+-- the volunteer registration form now show it read-only and never send it,
+-- but the Data API still let a signed-in user change their own row's email,
+-- so it could drift from their login email. Walk-ups and invites look
+-- people up by it, so a drifted email links the wrong person, or nobody.
+--
+-- profiles_protect_login_email (BEFORE UPDATE): raises when email changes
+-- and current_user is neither service_role nor postgres. Allowed, as before:
+--   * the service-role paths that write it: a new walk-up's account
+--     (addWalkupRsvpAction), the volunteer backfill (volunteer-admin.ts) and
+--     the volunteer import (volunteer-import.ts);
+--   * SECURITY DEFINER functions owned by postgres (current_user is the
+--     owner inside them) and the SQL editor.
+-- handle_new_user INSERTs the row, so it never reaches this UPDATE trigger.
+--
+-- Deliberately a trigger, not a column-level grant: revoking UPDATE (email)
+-- does nothing while authenticated holds table-wide UPDATE, and replacing
+-- that with per-column grants would make every column added to profiles
+-- later silently uneditable until someone remembered to grant it.
+--
+-- Order against profiles_normalize_email (2026-10-06 "One profile per
+-- email"): BEFORE row triggers fire in name order, and
+-- profiles_normalize_email < profiles_protect_login_email, so this one
+-- compares the already-normalized value. Re-sending the same email in a
+-- different case or with spaces is no change and passes. The two never
+-- fight: one rewrites NEW.email, the other only reads it.
+--
+-- Changing someone's login email properly (auth.updateUser with
+-- confirmation) is in BACKLOG.md.
+--
+-- No new tables, so no new grants. Safe to re-run.
+
+create or replace function public.profiles_protect_login_email()
+returns trigger
+language plpgsql
+set search_path to 'public'
+as $function$
+begin
+  if new.email is distinct from old.email
+     and current_user not in ('service_role', 'postgres') then
+    raise exception 'The email on a profile is the email they log in with, so it can only be changed through the login (auth) flow, not by editing the profile.'
+      using errcode = '42501', hint = 'login_email_protected';
+  end if;
+  return new;
+end $function$;
+
+revoke all on function public.profiles_protect_login_email() from public, anon, authenticated;
+
+drop trigger if exists profiles_protect_login_email on public.profiles;
+create trigger profiles_protect_login_email
+  before update on public.profiles
+  for each row execute function public.profiles_protect_login_email();

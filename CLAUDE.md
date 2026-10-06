@@ -17,6 +17,8 @@ From **2026-10-30**, Supabase stops giving new tables in the `public` schema Dat
 
 **Same exception: `health_histories` and `health_checkin_answers`** (the 2026-09-25 "Health history form" entry). service_role gets **no** grants at all, and authenticated gets `insert` only. Nobody can select from them directly: every read goes through a SECURITY DEFINER function that checks access and writes `health_access_log` in the same call (see `lib/health-access.ts`). A direct select grant, for service_role or anyone else, would be a way to read health data with no access check and no log entry. Don't add one.
 
+**Exception on an existing table: `profiles.email`** (the 2026-10-06 "profiles.email is the login email" entry in `schema-changes.sql`). It's the email people log in with, so only `service_role` and `postgres` may change it. That's enforced by the `profiles_protect_login_email` trigger, not by grants. Don't replace it with a column-level revoke: `authenticated` has table-wide UPDATE on `profiles`, so a column revoke does nothing, and swapping to per-column grants would leave every column added later silently uneditable. App code that sets `email` must use the service-role client, and forms show it read-only. The trigger fires after `profiles_normalize_email` (name order), so keep that ordering if either is renamed.
+
 This applies only to tables created from 2026-10-30 onward. Don't go back and add grants to existing tables. They keep the grants they already have, and changing them isn't part of this rule.
 
 SQL still goes in a fresh `admin-sql.sql` for the user to run, and is appended to `schema-changes.sql`.

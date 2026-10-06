@@ -31,7 +31,6 @@ export type SubmitVolunteerRegistrationInput = {
   firstName: string;
   lastName: string;
   cellPhone: string;
-  email: string;
   addressLine1: string;
   addressLine2: string;
   city: string;
@@ -84,7 +83,6 @@ export async function submitVolunteerRegistrationAction(
   const firstName = input.firstName.trim();
   const lastName = input.lastName.trim();
   const cellPhone = input.cellPhone.trim();
-  const email = input.email.trim();
   const addressLine1 = input.addressLine1.trim();
   const city = input.city.trim();
   const state = input.state.trim();
@@ -106,7 +104,6 @@ export async function submitVolunteerRegistrationAction(
 
   if (!firstName || !lastName) return { ok: false, error: "First and last name are required" };
   if (!cellPhone) return { ok: false, error: "Cell phone is required" };
-  if (!email) return { ok: false, error: "Email is required" };
   if (!addressLine1 || !city || !state || !postalCode) {
     return { ok: false, error: "Full address is required" };
   }
@@ -175,7 +172,6 @@ export async function submitVolunteerRegistrationAction(
       first_name: firstName,
       last_name: lastName,
       phone: cellPhone,
-      email,
       address_line1: addressLine1,
       address_line2: input.addressLine2.trim() || null,
       city,

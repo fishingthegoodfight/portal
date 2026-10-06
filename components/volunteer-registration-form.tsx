@@ -179,7 +179,6 @@ export function VolunteerRegistrationForm({
       firstName: profile.first_name,
       lastName: profile.last_name,
       cellPhone: profile.phone,
-      email: profile.email,
       addressLine1: profile.address_line1,
       addressLine2: profile.address_line2,
       city: profile.city,
@@ -256,7 +255,16 @@ export function VolunteerRegistrationForm({
           </div>
           <div className="grid gap-2">
             <Label htmlFor="v_email">Email</Label>
-            <Input id="v_email" type="email" required value={profile.email} onChange={updateField("email")} />
+            {/* Their login email: shown, never saved from here (the
+                profiles_protect_login_email trigger refuses it anyway). */}
+            <Input id="v_email" type="email" value={profile.email} readOnly aria-describedby="v_email_note" />
+            <p id="v_email_note" className="text-sm text-muted-foreground">
+              This is the email you log in with. To change it, contact{" "}
+              <a href="mailto:tcramer@fishingthegoodfight.org" className="underline underline-offset-4">
+                tcramer@fishingthegoodfight.org
+              </a>
+              .
+            </p>
           </div>
           <div className="grid gap-2">
             <Label htmlFor="v_address1">Address</Label>
