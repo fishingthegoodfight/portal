@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { findProfileByEmail } from "@/lib/profile-lookup";
+import { isAfterEvent } from "@/lib/event-timing";
 import { missingCoreFields } from "@/lib/core-profile";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { assignLeadEventsToNewAccount } from "@/lib/admin/lead-account";
@@ -77,6 +78,12 @@ type WalkupInput = {
    * sign in the portal at their next event. Ignored when they already have
    * a valid signature. */
   paperWaiverHeld?: boolean;
+  /** Only once the event has ended (when signing here is no longer
+   * offered): record their attendance with no waiver at all
+   * (event_no_waiver_records). Flagged on the roster and in the digest; it
+   * isn't a signature and satisfies nothing else. Ignored when they already
+   * have a valid signature or a paper waiver is being recorded. */
+  noWaiverOnFile?: boolean;
   /** Answers to the event's registration sections (dietary, sizing, …),
    * keyed by profile column — the same values the RSVP form collects. */
   sections?: Record<string, string>;
@@ -168,9 +175,10 @@ async function addWalkup(input: WalkupInput, isRetry: boolean): Promise<WalkupRe
   // created, so a missing signature can't leave a half-added profile behind.
   let waiverIdToSign: number | null = null;
   let paperWaiver = false;
+  let noWaiver = false;
   const { data: waiverEvent } = await supabase
     .from("events")
-    .select("id, chapter, waiver_state, starts_at, timezone, registration_sections")
+    .select("id, chapter, waiver_state, starts_at, ends_at, timezone, registration_sections")
     .eq("id", input.eventId)
     .maybeSingle();
   if (waiverEvent) {
@@ -182,8 +190,26 @@ async function addWalkup(input: WalkupInput, isRetry: boolean): Promise<WalkupRe
     if (info.status === "unavailable") {
       return { ok: false, error: info.message };
     }
+    // Once the event has ended the person usually isn't there, and a
+    // signature typed then would count as their waiver for the whole year:
+    // no signing here. A paper waiver the lead holds, or "No waiver on
+    // file" (admin_upsert_walkup_rsvp re-checks that the event has ended).
+    const ended = isAfterEvent(new Date().toISOString(), {
+      startsAt: waiverEvent.starts_at as string,
+      endsAt: (waiverEvent.ends_at as string | null) ?? null,
+      timeZone: waiverEvent.timezone as string,
+    });
     if (info.status === "unsigned" && input.paperWaiverHeld) {
       paperWaiver = true;
+    } else if (info.status === "unsigned" && ended) {
+      if (!input.noWaiverOnFile) {
+        return {
+          ok: false,
+          error:
+            "This event has ended, so they can't sign in the portal for it now. Record the paper waiver you hold, or No waiver on file.",
+        };
+      }
+      noWaiver = true;
     } else if (info.status === "unsigned") {
       if (!input.waiverAgreed || !(input.waiverName ?? "").trim()) {
         return {
@@ -399,6 +425,7 @@ async function addWalkup(input: WalkupInput, isRetry: boolean): Promise<WalkupRe
     p_force: input.force,
     // Who recorded it and when are stamped by the function, not sent.
     ...(paperWaiver ? { p_paper_waiver: true } : {}),
+    ...(noWaiver ? { p_no_waiver: true } : {}),
   });
   if (rpcError) return { ok: false, error: rpcError.message };
 

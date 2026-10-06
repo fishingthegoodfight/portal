@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { findProfileByEmail } from "@/lib/profile-lookup";
+import { isAfterEvent } from "@/lib/event-timing";
 import { missingCoreFields, type CoreProfileKey } from "@/lib/core-profile";
 import { requireAdmin, requireEventManager } from "@/lib/admin/require-admin";
 import { createAdminClient } from "@/lib/supabase/admin";
@@ -17,9 +18,9 @@ import {
   type WaiverInfo,
 } from "@/lib/waivers";
 
-const WAIVER_EVENT_COLUMNS = "id, chapter, waiver_state, starts_at, timezone, registration_sections";
+const WAIVER_EVENT_COLUMNS = "id, chapter, waiver_state, starts_at, ends_at, timezone, registration_sections";
 
-type WaiverEventRow = WaiverEvent & { id: number; registration_sections: string[] | null };
+type WaiverEventRow = WaiverEvent & { id: number; ends_at: string | null; registration_sections: string[] | null };
 
 async function loadWaiverEvent(
   supabase: Awaited<ReturnType<typeof createClient>>,
@@ -129,6 +130,9 @@ export type WalkupLookupResult =
        * form then collapses to their name and asks only for the core fields
        * blank on their record (`missingCore`). Null for someone new. */
       existing: { name: string; missingCore: CoreProfileKey[] } | null;
+      /** The event has ended (isAfterEvent): the form offers no signing in
+       * the portal, only a paper waiver or "No waiver on file". */
+      eventEnded: boolean;
     }
   | { ok: false; error: string };
 
@@ -191,6 +195,11 @@ export async function walkupLookupAction(
           missingCore: missingCoreFields(profile),
         }
       : null,
+    eventEnded: isAfterEvent(new Date().toISOString(), {
+      startsAt: event.starts_at,
+      endsAt: event.ends_at,
+      timeZone: event.timezone,
+    }),
   };
 }
 

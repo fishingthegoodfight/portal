@@ -62,12 +62,11 @@ import { practicalCheckSummary, type PracticalCheck } from "@/lib/practical-chec
 import type { Chapter } from "@/lib/chapters";
 import { personDisplayName } from "@/lib/person-name";
 import { CORE_PROFILE_FIELDS, type CoreProfileKey } from "@/lib/core-profile";
-import { formatDateInZone, formatEventInstant } from "@/lib/format-date";
+import { isAfterEvent, type EventTiming } from "@/lib/event-timing";
+import { formatEventInstant } from "@/lib/format-date";
 
 type LatestPracticalCheck = Pick<PracticalCheck, "outcome" | "checked_on" | "assessor_name">;
 
-/** When the event ran — what a check-in's own time is compared against. */
-type EventTiming = { startsAt: string; endsAt: string | null; timeZone: string };
 
 const DIRECTORY_FIELD = REGISTRATION_SECTIONS.find((s) => s.id === "directory")!.fields[0];
 
@@ -186,8 +185,9 @@ export function EventRoster({
    * shift — only at an event that requires health history, and only for
    * admins and chapter leads; null otherwise (nothing shown). */
   practicalChecks?: Record<string, LatestPracticalCheck> | null;
-  /** Volunteers on this roster who haven't completed volunteer registration
-   * (event_unregistered_volunteer_ids) — flagged so they can be chased. */
+  /** Volunteers on this roster who hadn't completed volunteer registration
+   * by their shift's date (event_unregistered_volunteer_ids) — flagged so
+   * they can be chased. */
   unregisteredVolunteerIds?: string[];
   /** Every chapter (loadChapters) — the walk-up form's home chapter and
    * "Save as template". */
@@ -366,12 +366,16 @@ export function EventRoster({
     info: WaiverInfo;
     profileFields: Record<string, string> | null;
     existing: { name: string; missingCore: CoreProfileKey[] } | null;
+    eventEnded: boolean;
   } | null>(null);
   const [walkupSign, setWalkupSign] = useState<WaiverSignState>(EMPTY_WAIVER_SIGN);
   // The fallback behind "They signed a paper waiver instead": `open` swaps
   // the signing block for the paper confirmation, `held` is the lead's tick
   // that they hold the signed copy.
   const [walkupPaper, setWalkupPaper] = useState({ open: false, held: false });
+  // After the event there's no signing here: the lead's tick that there's
+  // no waiver at all, to record their attendance anyway ("No waiver on file").
+  const [walkupNoWaiver, setWalkupNoWaiver] = useState(false);
   const [walkupSectionValues, setWalkupSectionValues] = useState<Record<string, string>>({});
   // Bumped whenever the section inputs are re-seeded, so stateful inputs
   // (e.g. the dietary Yes/No) remount and pick up the new values.
@@ -397,6 +401,7 @@ export function EventRoster({
     info: WaiverInfo;
     profileFields: Record<string, string> | null;
     existing: { name: string; missingCore: CoreProfileKey[] } | null;
+    eventEnded: boolean;
   } | null> => {
     if (!email.trim()) return null;
     const result = await walkupLookupAction(eventId, email);
@@ -404,7 +409,12 @@ export function EventRoster({
       setWalkupError(result.error);
       return null;
     }
-    const lookup = { info: result.info, profileFields: result.profileFields, existing: result.existing };
+    const lookup = {
+      info: result.info,
+      profileFields: result.profileFields,
+      existing: result.existing,
+      eventEnded: result.eventEnded,
+    };
     setWalkupLookup(lookup);
     setWalkupSectionValues((prev) => withProfileValues(prev, result.profileFields));
     setWalkupSectionsKey((k) => k + 1);
@@ -515,6 +525,7 @@ export function EventRoster({
     setWalkupLookup(null);
     setWalkupSign(EMPTY_WAIVER_SIGN);
     setWalkupPaper({ open: false, held: false });
+    setWalkupNoWaiver(false);
     setWalkupSectionValues({});
     setWalkupSectionsKey((k) => k + 1);
     setVolunteerConflictShifts(null);
@@ -533,6 +544,7 @@ export function EventRoster({
     }
     setWalkupLookup(null);
     setWalkupPaper({ open: false, held: false });
+    setWalkupNoWaiver(false);
     setVolunteerConflictShifts(null);
     setVolunteerConflictAcked(false);
   };
@@ -570,13 +582,19 @@ export function EventRoster({
     const sectionValues = withProfileValues(walkupSectionValues, lookup.profileFields);
 
     const info = lookup.info;
-    const onPaper = info?.status === "unsigned" && walkupPaper.open;
+    const onPaper = info.status === "unsigned" && walkupPaper.open;
     if (onPaper && !walkupPaper.held) {
       setIsSubmittingWalkup(false);
       setWalkupError("Tick the box to confirm you hold their signed paper waiver.");
       return;
     }
-    if (info && !onPaper && waiverNeedsInput(info, walkupSign)) {
+    const noWaiverOnFile = info.status === "unsigned" && lookup.eventEnded && !onPaper;
+    if (noWaiverOnFile && !walkupNoWaiver) {
+      setIsSubmittingWalkup(false);
+      setWalkupError("Record the paper waiver you hold, or tick No waiver on file.");
+      return;
+    }
+    if (!onPaper && !noWaiverOnFile && waiverNeedsInput(info, walkupSign)) {
       setIsSubmittingWalkup(false);
       setWalkupError(
         info.status === "unavailable"
@@ -615,6 +633,7 @@ export function EventRoster({
       waiverName: walkupSign.name,
       waiverAgreed: walkupSign.agreed,
       paperWaiverHeld: onPaper,
+      noWaiverOnFile,
       sections: sectionValues,
       allowVolunteerConflict: volunteerConflictAcked || volunteerConflictShifts != null,
       force: capacityConfirmPending,
@@ -1424,8 +1443,42 @@ export function EventRoster({
                           className="w-fit text-sm underline underline-offset-4"
                           onClick={() => setWalkupPaper({ open: false, held: false })}
                         >
-                          Sign here instead
+                          {walkupLookup.eventEnded ? "No paper waiver?" : "Sign here instead"}
                         </button>
+                      </div>
+                    ) : walkupLookup.info.status === "unsigned" && walkupLookup.eventEnded ? (
+                      // After the event they usually aren't there, and a
+                      // signature typed now would count for the whole year:
+                      // no signing here (addWalkupRsvpAction refuses it too).
+                      <div className="grid gap-3">
+                        <p className="text-sm text-muted-foreground">
+                          This event has ended, so they can&apos;t sign in the portal for it now.
+                        </p>
+                        <button
+                          type="button"
+                          className="w-fit text-sm underline underline-offset-4"
+                          onClick={() => {
+                            setWalkupNoWaiver(false);
+                            setWalkupPaper({ open: true, held: false });
+                          }}
+                        >
+                          I hold their signed paper waiver
+                        </button>
+                        <label className="flex items-start gap-2 text-sm font-medium">
+                          <input
+                            id="walkup_no_waiver"
+                            type="checkbox"
+                            className="mt-1"
+                            checked={walkupNoWaiver}
+                            onChange={(e) => setWalkupNoWaiver(e.target.checked)}
+                          />
+                          No waiver on file: record their attendance anyway
+                        </label>
+                        <p className="text-xs text-muted-foreground">
+                          Flagged on the roster and in the admin digest, with your name and the time,
+                          so it can be followed up. It isn&apos;t a waiver: they still sign before
+                          their next event.
+                        </p>
                       </div>
                     ) : (
                       <>
@@ -1730,6 +1783,16 @@ function RosterRow({
             <span className="w-fit rounded bg-red-600 px-2 py-0.5 text-xs font-bold tracking-wide text-white">
               WAIVER NOT SIGNED
             </span>
+            {person.noWaiverRecord && (
+              <>
+                <span className="w-fit text-sm font-medium text-amber-700 dark:text-amber-400">
+                  No waiver on file — attendance recorded after the event
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  Recorded by {person.noWaiverRecord.recordedBy} · {person.noWaiverRecord.recordedLabel}
+                </span>
+              </>
+            )}
             {person.paperWaiverRemoved && (
               <span className="text-xs text-muted-foreground">
                 Paper waiver record removed by {person.paperWaiverRemoved.removedBy} ·{" "}
@@ -1809,7 +1872,8 @@ function VolunteerRosterRow({
         </span>
         {unregistered && (
           <span className="w-fit text-sm font-medium text-amber-700 dark:text-amber-400">
-            Not registered — hasn&apos;t completed volunteer registration or signed this year&apos;s volunteer waiver
+            Not registered by the shift&apos;s date — hadn&apos;t completed volunteer registration or signed
+            this year&apos;s volunteer waiver by then
           </span>
         )}
         <span className="text-sm text-muted-foreground">{person.shiftLabel}</span>
@@ -1844,7 +1908,7 @@ function VolunteerRosterRow({
           </Link>
         )}
         {health}
-        <CheckInTime at={person.checkedInAt} timing={timing} />
+        <CheckInTime at={person.checkedInAt} timing={{ startsAt: person.shiftStart, endsAt: person.shiftEnd, timeZone: timing.timeZone }} />
       </div>
       <button
         type="button"
@@ -1980,18 +2044,13 @@ function EditDetails({
  * tapped (or the walk-up added), not the event's date, so a lead catching up
  * from the car park or the next morning shows as exactly that: marked "after
  * the event" once it's past the event's end — or, for an event with no end
- * time, on a later day than it started.
+ * time, on a later day than it started (isAfterEvent). A volunteer row
+ * passes its shift's end as endsAt, so a shift that ended before the event
+ * did is measured against the shift.
  */
 function CheckInTime({ at, timing }: { at: string | null; timing: EventTiming }) {
   if (!at) return null;
-  const entered = new Date(at).getTime();
-  const start = new Date(timing.startsAt).getTime();
-  const end = timing.endsAt ? new Date(timing.endsAt).getTime() : start;
-  const afterEvent =
-    end > start
-      ? entered > end
-      : entered > start &&
-        formatDateInZone(at, timing.timeZone) !== formatDateInZone(timing.startsAt, timing.timeZone);
+  const afterEvent = isAfterEvent(at, timing);
 
   return (
     <span className="text-xs text-muted-foreground">

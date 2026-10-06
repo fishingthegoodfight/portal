@@ -64,6 +64,10 @@ export type RosterPerson = {
   /** The latest time an admin removed a paper waiver record from this RSVP
    * as a mistake (event_paper_waiver_removals), or null. */
   paperWaiverRemoved: { removedBy: string; removedLabel: string } | null;
+  /** Their attendance was recorded after the event with no waiver at all
+   * (event_no_waiver_records) — flagged for follow-up. Not a waiver. Null
+   * when there's none. */
+  noWaiverRecord: { recordedBy: string; recordedLabel: string } | null;
   /** Every registration field's value from their profile, keyed by column —
    * the event's other sections (sizing, …) are shown from here, same as for
    * volunteers. Dietary keeps using dietaryNotes above. */
@@ -113,6 +117,10 @@ export type VolunteerRosterPerson = {
   role: string;
   /** Pre-formatted in the event's own timezone. */
   shiftLabel: string;
+  /** The shift's own times (ISO): what its check-in is measured against
+   * for "after the event". */
+  shiftStart: string;
+  shiftEnd: string;
   firstName: string;
   lastName: string;
   email: string;
@@ -273,6 +281,22 @@ export async function loadEventRoster(
     ]),
   );
 
+  // Attendance recorded after the event with no waiver on file, by RSVP. A
+  // failed read (e.g. the table isn't there yet) shows none.
+  const { data: noWaiverRows } = await supabase
+    .from("event_no_waiver_records")
+    .select("rsvp_id, recorded_by_name, recorded_at")
+    .eq("event_id", eventId);
+  const noWaiverByRsvp = new Map(
+    (noWaiverRows ?? []).map((w) => [
+      w.rsvp_id as number,
+      {
+        recordedBy: w.recorded_by_name as string,
+        recordedLabel: formatEventInstant(w.recorded_at as string, event.timezone as string),
+      },
+    ]),
+  );
+
   // Records an admin removed as a mistake — oldest first, so the map keeps
   // each RSVP's latest.
   const { data: removalRows } = await supabase
@@ -313,6 +337,7 @@ export async function loadEventRoster(
           : null,
         paperWaiver: paperByRsvp.get(r.id as number) ?? null,
         paperWaiverRemoved: paperRemovalByRsvp.get(r.id as number) ?? null,
+        noWaiverRecord: noWaiverByRsvp.get(r.id as number) ?? null,
         profileFields: profileFieldsOf(profile),
       };
     });
@@ -394,6 +419,7 @@ export async function loadEventRoster(
   if (opportunities.length > 0) {
     const shiftLabelByOpportunity = new Map(volunteerRoles.map((r) => [r.opportunityId, r.shiftLabel]));
     const roleByOpportunity = new Map(opportunities.map((o) => [o.id, o.role]));
+    const opportunityById = new Map(opportunities.map((o) => [o.id, o]));
 
     const { data: signupRows } = await supabase
       .from("volunteer_signups")
@@ -421,6 +447,8 @@ export async function loadEventRoster(
         opportunityId: s.opportunity_id,
         role: roleByOpportunity.get(s.opportunity_id) ?? "",
         shiftLabel: shiftLabelByOpportunity.get(s.opportunity_id) ?? "",
+        shiftStart: opportunityById.get(s.opportunity_id)?.shift_start ?? (event.starts_at as string),
+        shiftEnd: opportunityById.get(s.opportunity_id)?.shift_end ?? (event.starts_at as string),
         firstName: text("first_name"),
         lastName: text("last_name"),
         email: text("email"),

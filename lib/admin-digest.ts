@@ -358,7 +358,59 @@ const autoAssignedLeads: DigestNote = async (admin) => {
 export const DIGEST_NOTES: DigestNote[] = [paperWaivers, autoAssignedLeads];
 
 /** In the order the sections appear — most pressing first. */
+/** How far back attendance with no waiver on file is listed, in days. */
+const NO_WAIVER_WINDOW_DAYS = 30;
+
+/** Attendance a lead recorded after an event with no waiver at all
+ * (event_no_waiver_records, "No waiver on file" on the walk-up form): the
+ * liability already happened, so each is named for follow-up, every day for
+ * NO_WAIVER_WINDOW_DAYS after it was recorded. A failure (e.g. the table
+ * isn't there yet) is logged and leaves the section empty rather than
+ * stopping the digest. */
+const attendedWithoutWaiver: DigestSource = async (admin) => {
+  const title = (count: number) => `Attended with no waiver on file (${count})`;
+  try {
+    const { data, error } = await admin
+      .from("event_no_waiver_records")
+      .select("event_id, recorded_by_name, recorded_at, rsvp:rsvps(user_id), event:events(name, starts_at, timezone)")
+      .gte("recorded_at", new Date(Date.now() - NO_WAIVER_WINDOW_DAYS * 86_400_000).toISOString())
+      .order("recorded_at");
+    if (error) throw new Error(error.message);
+    const rows = (data ?? []) as unknown as {
+      event_id: number;
+      recorded_by_name: string;
+      rsvp: { user_id: string } | null;
+      event: { name: string; starts_at: string; timezone: string } | null;
+    }[];
+    const userIds = [...new Set(rows.map((row) => row.rsvp?.user_id).filter((id): id is string => Boolean(id)))];
+    const { data: profiles } = userIds.length
+      ? await admin.from("profiles").select("id, first_name, last_name, email").in("id", userIds)
+      : { data: [] };
+    const nameById = new Map(
+      ((profiles ?? []) as { id: string; first_name: string | null; last_name: string | null; email: string | null }[]).map(
+        (p) => [p.id, [p.first_name, p.last_name].filter(Boolean).join(" ") || p.email || "Someone"],
+      ),
+    );
+    return {
+      section: {
+        title: title(rows.length),
+        intro: `Recorded after the event in the last ${NO_WAIVER_WINDOW_DAYS} days with no waiver signed or on paper. Follow up with the lead who recorded it.`,
+        items: rows.map((row) => ({
+          label: nameById.get(row.rsvp?.user_id ?? "") ?? "Someone",
+          detail: `${row.event ? `${row.event.name} (${formatDateInZone(row.event.starts_at, row.event.timezone)})` : "An event"} · recorded by ${row.recorded_by_name}`,
+          url: `${getSiteUrl()}/protected/admin/events/${row.event_id}`,
+        })),
+      },
+      markSent: async () => {},
+    };
+  } catch (err) {
+    console.error("[admin-digest] listing attendance with no waiver on file failed:", err);
+    return { section: { title: title(0), items: [] }, markSent: async () => {} };
+  }
+};
+
 export const DIGEST_SOURCES: DigestSource[] = [
+  attendedWithoutWaiver,
   readyApplications,
   screeningDecisions,
   referencesNeedingReplacement,

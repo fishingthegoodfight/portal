@@ -12447,3 +12447,466 @@ end $function$;
 
 revoke all on function public.event_person_candidates(bigint, text) from public, anon;
 grant execute on function public.event_person_candidates(bigint, text) to authenticated;
+
+-- =============================================================================
+-- 2026-10-06 — Recording a past event: gates judged as of the shift's date,
+--              no signing after the event, "No waiver on file"
+-- =============================================================================
+-- Adding people to an event after it happened (someone missed at check-in)
+-- exposed three things written with upcoming events in mind:
+--
+-- 1. Practical instruction check, as of the shift's date. The shift block
+--    (volunteer_signups_practical_check_guard) read the person's latest
+--    check as of TODAY. For a past shift that accepted someone who only
+--    passed after instructing, and refused someone who had passed then but
+--    failed a later check. It now reads the latest check dated on or before
+--    the shift's date (event time zone): latest_practical_check_outcome
+--    (user, as_of). For an upcoming shift that's the same answer as before.
+--    The admin override with a recorded reason is unchanged.
+--
+-- 2. Volunteer registration, as of the shift's date. The registration gate
+--    (volunteer_signups_registration_guard), the signup blocker's
+--    'not_registered' and the roster's "Not registered" flag
+--    (event_unregistered_volunteer_ids) asked whether they're registered
+--    NOW. They now ask whether they had registered on or before the shift's
+--    date (volunteer_registered_by): someone registered since needs the
+--    admin override and its reason, like anyone unregistered. The override
+--    never signs a waiver or marks anyone registered. For an upcoming shift
+--    nothing changes. The shift's date rather than the event's first day, so
+--    a volunteer registering on day 2 of a retreat can still take a day-3
+--    shift.
+--
+-- 3. No waiver on file. Once an event has ended (event_has_ended: past
+--    ends_at; with no end time, a later day than it started, in its time
+--    zone — the same line the roster's "after the event" uses), the walk-up
+--    form no longer offers signing in the portal: the person isn't there,
+--    and a signature typed then would count as their waiver for the whole
+--    year. (Enforced in addWalkupRsvpAction, which is what records walk-up
+--    signatures.) Their options are a waiver already signed, a paper waiver
+--    the lead holds (event_paper_waivers, this event only), or, new, "No
+--    waiver on file": admin_upsert_walkup_rsvp(p_no_waiver) records the
+--    attendance and an event_no_waiver_records row (who recorded it, when).
+--    That row is not a signature and satisfies nothing: has_signed_event_
+--    waiver, the RSVP and shift gates and the annual waiver all ignore it.
+--    The roster flags the person and the daily digest lists them.
+--    Refused for an event that hasn't ended.
+--
+-- One new table (event_no_waiver_records): RLS, one select policy for
+-- whoever manages the event, grants to match; no sequence. Safe to re-run.
+-- One transaction.
+
+begin;
+
+-- ---- 1. Practical check as of the shift's date ---------------------------------------
+-- The latest check dated on or before p_as_of, or null for none. Internal.
+create or replace function public.latest_practical_check_outcome(p_user_id uuid, p_as_of date)
+returns text
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select c.outcome from public.practical_instruction_checks c
+   where c.user_id = p_user_id
+     and c.checked_on <= p_as_of
+   order by c.checked_on desc, c.recorded_at desc
+   limit 1;
+$function$;
+
+revoke all on function public.latest_practical_check_outcome(uuid, date) from public, anon, authenticated;
+
+-- The day a shift falls on, in its event's time zone. Internal.
+create or replace function public.opportunity_shift_date(p_opportunity_id bigint)
+returns date
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select (vo.shift_start at time zone e.timezone)::date
+    from public.volunteer_opportunities vo
+    join public.events e on e.id = vo.event_id
+   where vo.id = p_opportunity_id;
+$function$;
+
+revoke all on function public.opportunity_shift_date(bigint) from public, anon, authenticated;
+
+-- Same as the 2026-09-25 version apart from the check being read as of the
+-- shift's date, and saying so when they only passed later.
+create or replace function public.volunteer_signups_practical_check_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_needs_check boolean;
+  v_shift_date date;
+  v_outcome text;
+  v_passed_later boolean;
+  v_override text := nullif(btrim(coalesce(current_setting('ftgf.practical_check_override', true), '')), '');
+begin
+  if new.status <> 'confirmed' or (tg_op = 'UPDATE' and old.status = 'confirmed') then
+    return new;
+  end if;
+
+  select e.requires_health_history and rt.key in ('fishing_instructor', 'lead_fly_fishing_instructor')
+    into v_needs_check
+    from public.volunteer_opportunities vo
+    join public.events e on e.id = vo.event_id
+    left join public.volunteer_role_types rt on rt.id = vo.role_type_id
+   where vo.id = new.opportunity_id;
+  if not coalesce(v_needs_check, false) then
+    return new;
+  end if;
+
+  v_shift_date := public.opportunity_shift_date(new.opportunity_id);
+  v_outcome := public.latest_practical_check_outcome(new.user_id, v_shift_date);
+  if v_outcome = 'passed' then
+    return new;
+  end if;
+  v_passed_later := public.latest_practical_check_outcome(new.user_id) = 'passed';
+
+  if v_override is not null and public.is_admin() then
+    new.practical_check_override_reason := v_override;
+    new.practical_check_override_by := auth.uid();
+    new.practical_check_override_at := now();
+    return new;
+  end if;
+
+  raise exception '%', case
+    when auth.uid() is not null and new.user_id = auth.uid() then
+      'This shift is fishing instruction at a retreat or on-the-water event, which needs a practical instruction check first — 45 minutes on the water with an experienced instructor. Contact your chapter lead to set one up.'
+    else
+      'This person hadn''t passed a practical instruction check by this shift''s date' ||
+        case
+          when v_passed_later then ' (they passed one later)'
+          when v_outcome is not null then ' (their latest check by then wasn''t a pass)'
+          else ''
+        end ||
+        ', which instructor shifts at this event need.' ||
+        case when public.is_admin() then ' You can add them anyway with a reason.'
+             else ' Only an admin can override that.' end
+  end
+  using errcode = 'P0001', hint = 'practical_check_required';
+end $function$;
+
+-- ---- 2. Registration as of the shift's date ------------------------------------------
+-- Had they completed volunteer registration on or before the shift's date
+-- (event time zone)? Internal.
+create or replace function public.volunteer_registered_by(p_user_id uuid, p_opportunity_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select exists (
+    select 1
+      from public.volunteers v
+      join public.volunteer_opportunities vo on vo.id = p_opportunity_id
+      join public.events e on e.id = vo.event_id
+     where v.user_id = p_user_id
+       and v.registered_at is not null
+       and (v.registered_at at time zone e.timezone)::date <= (vo.shift_start at time zone e.timezone)::date
+  );
+$function$;
+
+revoke all on function public.volunteer_registered_by(uuid, bigint) from public, anon, authenticated;
+
+-- Same as the 2026-09-29 version apart from registration being judged as of
+-- the shift's date.
+create or replace function public.volunteer_signups_registration_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_override text := nullif(btrim(coalesce(current_setting('ftgf.registration_override', true), '')), '');
+  v_registered_now boolean;
+begin
+  if new.status <> 'confirmed' or (tg_op = 'UPDATE' and old.status = 'confirmed') then
+    return new;
+  end if;
+
+  if public.volunteer_registered_by(new.user_id, new.opportunity_id) then
+    return new;
+  end if;
+
+  if v_override is not null and public.is_admin() then
+    new.registration_override_reason := v_override;
+    new.registration_override_by := auth.uid();
+    new.registration_override_at := now();
+    return new;
+  end if;
+
+  v_registered_now := exists (
+    select 1 from public.volunteers where user_id = new.user_id and registered_at is not null
+  );
+
+  raise exception '%', case
+    when auth.uid() is not null and new.user_id = auth.uid() then
+      'Complete your volunteer registration before signing up for a shift — it''s where this year''s volunteer waiver is signed.'
+    else
+      case when v_registered_now
+        then 'This person completed volunteer registration (where this year''s volunteer waiver is signed) only after this shift''s date.'
+        else 'This person hasn''t completed volunteer registration, where this year''s volunteer waiver is signed.'
+      end ||
+      case when public.is_admin() then ' You can add them anyway with a reason.'
+           else ' Only an admin can add them anyway.' end
+  end
+  using errcode = 'P0001', hint = 'registration_required';
+end $function$;
+
+-- Same as the 2026-09-29 version apart from 'not_registered' being judged as
+-- of the shift's date.
+create or replace function public.volunteer_signup_blocker(p_user_id uuid, p_opportunity_id bigint)
+returns text
+language plpgsql
+stable
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_role_type_id bigint;
+  v_event_id bigint;
+begin
+  if not exists (
+    select 1 from public.volunteers where user_id = p_user_id and status = 'approved'
+  ) then
+    return 'not_approved';
+  end if;
+
+  select vo.role_type_id, vo.event_id into v_role_type_id, v_event_id
+    from public.volunteer_opportunities vo
+   where vo.id = p_opportunity_id;
+  if not found then
+    return 'not_found';
+  end if;
+
+  -- A role with no role_type_id ("Custom / other") is open to any approved
+  -- volunteer, same as isRoleEligible.
+  if v_role_type_id is not null and not exists (
+    select 1 from public.volunteer_role_approvals
+     where volunteer_id = p_user_id
+       and role_type_id = v_role_type_id
+       and revoked_at is null
+  ) then
+    return 'role_not_approved';
+  end if;
+
+  if not public.volunteer_registered_by(p_user_id, p_opportunity_id) then
+    return 'not_registered';
+  end if;
+
+  if not public.has_signed_event_waiver(p_user_id, v_event_id, 'volunteer') then
+    return 'waiver_unsigned';
+  end if;
+
+  if public.registration_incomplete_section(p_user_id, v_event_id) is not null then
+    return 'registration_incomplete';
+  end if;
+
+  return null;
+end $function$;
+
+-- Same as the 2026-09-29 version apart from "registered" meaning by the
+-- shift's date.
+create or replace function public.event_unregistered_volunteer_ids(p_event_id bigint)
+returns setof uuid
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select distinct s.user_id
+    from public.volunteer_signups s
+    join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+   where public.can_manage_event(p_event_id)
+     and vo.event_id = p_event_id
+     and s.status = 'confirmed'
+     and not public.volunteer_registered_by(s.user_id, s.opportunity_id);
+$function$;
+
+revoke all on function public.event_unregistered_volunteer_ids(bigint) from public, anon;
+grant execute on function public.event_unregistered_volunteer_ids(bigint) to authenticated;
+
+-- ---- 3a. Has the event ended? ---------------------------------------------------------
+-- Past its ends_at; with no end time, a later day (event time zone) than it
+-- started. The roster's "after the event" label draws the same line.
+create or replace function public.event_has_ended(p_event_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select case
+           when e.ends_at is not null then e.ends_at < now()
+           else (now() at time zone e.timezone)::date > (e.starts_at at time zone e.timezone)::date
+         end
+    from public.events e
+   where e.id = p_event_id;
+$function$;
+
+revoke all on function public.event_has_ended(bigint) from public, anon, authenticated;
+
+-- ---- 3b. No waiver on file --------------------------------------------------------------
+create table if not exists public.event_no_waiver_records (
+  rsvp_id bigint primary key references public.rsvps(id) on delete cascade,
+  event_id bigint not null references public.events(id) on delete cascade,
+  -- Who recorded the attendance without a waiver. The name is kept as it
+  -- was then, so the roster still says who after that person is removed.
+  recorded_by uuid references auth.users(id) on delete set null,
+  recorded_by_name text not null,
+  recorded_at timestamptz not null default now()
+);
+
+create index if not exists event_no_waiver_records_event_idx
+  on public.event_no_waiver_records (event_id);
+create index if not exists event_no_waiver_records_recorded_idx
+  on public.event_no_waiver_records (recorded_at);
+
+alter table public.event_no_waiver_records enable row level security;
+
+-- Whoever manages the event sees them on the roster. No insert, update or
+-- delete policy: only admin_upsert_walkup_rsvp writes.
+drop policy if exists event_no_waiver_records_select_managed on public.event_no_waiver_records;
+create policy event_no_waiver_records_select_managed on public.event_no_waiver_records
+  for select to authenticated
+  using (public.can_manage_event(event_id));
+
+revoke all on public.event_no_waiver_records from anon;
+revoke all on public.event_no_waiver_records from authenticated;
+grant select on public.event_no_waiver_records to authenticated;
+-- The daily digest lists them with the service role.
+grant all on public.event_no_waiver_records to service_role;
+
+-- ---- 3c. Walk-ups: "No waiver on file" on an ended event ------------------------------
+drop function if exists public.admin_upsert_walkup_rsvp(bigint, uuid, boolean, boolean);
+
+-- Same as the 2026-09-30 version apart from p_no_waiver.
+create or replace function public.admin_upsert_walkup_rsvp(
+  p_event_id bigint,
+  p_profile_id uuid,
+  p_force boolean default false,
+  p_paper_waiver boolean default false,
+  p_no_waiver boolean default false
+)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_rsvp_id bigint;
+  v_existing_status text;
+  v_signed boolean;
+  v_claimed boolean;
+  v_full boolean;
+  v_recorder_name text;
+begin
+  if not public.can_manage_event(p_event_id) then
+    raise exception 'Only someone who manages this event can add walk-ups';
+  end if;
+
+  if not exists (
+    select 1 from public.events where id = p_event_id and status = 'scheduled'
+  ) then
+    raise exception 'Event is not scheduled';
+  end if;
+
+  if coalesce(p_no_waiver, false) and not public.event_has_ended(p_event_id) then
+    raise exception '"No waiver on file" is only for an event that has ended';
+  end if;
+
+  select id, status into v_rsvp_id, v_existing_status
+    from public.rsvps
+   where event_id = p_event_id and user_id = p_profile_id;
+
+  -- A signature in the portal, a paper waiver or a no-waiver record being
+  -- recorded now, or one already recorded for this RSVP.
+  v_signed := public.has_signed_event_waiver(p_profile_id, p_event_id, 'participant');
+  if not v_signed
+     and not coalesce(p_paper_waiver, false)
+     and not coalesce(p_no_waiver, false)
+     and not exists (select 1 from public.event_paper_waivers w where w.rsvp_id = v_rsvp_id)
+     and not exists (select 1 from public.event_no_waiver_records w where w.rsvp_id = v_rsvp_id) then
+    return 'waiver_unsigned';
+  end if;
+
+  if public.registration_incomplete_section(p_profile_id, p_event_id) is not null then
+    return 'registration_incomplete';
+  end if;
+
+  if v_existing_status = 'confirmed' then
+    update public.rsvps
+       set checked_in_at = now(), updated_at = now()
+     where id = v_rsvp_id;
+  else
+    v_claimed := public.try_claim_event_spot(p_event_id, p_profile_id);
+
+    if not v_claimed then
+      -- try_claim_event_spot refuses an unpublished event as well as a full
+      -- one (it still holds the event's row lock). Only a full one is
+      -- 'capacity_exceeded'; same sum as its own check.
+      select e.capacity is not null
+             and coalesce(e.spots_taken, 0) + (
+                   select count(*)
+                     from public.rsvps r
+                    where r.event_id = e.id
+                      and r.status = 'offered'
+                      and r.user_id is distinct from p_profile_id
+                 ) >= e.capacity
+        into v_full
+        from public.events e
+       where e.id = p_event_id;
+
+      if v_full and not p_force then
+        return 'capacity_exceeded';
+      end if;
+
+      update public.events
+         set spots_taken = coalesce(spots_taken, 0) + 1, updated_at = now()
+       where id = p_event_id;
+    end if;
+
+    insert into public.rsvps (event_id, user_id, status, checked_in_at)
+    values (p_event_id, p_profile_id, 'confirmed', now())
+    on conflict (event_id, user_id)
+    do update set status = excluded.status,
+                  checked_in_at = excluded.checked_in_at,
+                  offer_expires_at = null,
+                  updated_at = now()
+    returning id into v_rsvp_id;
+  end if;
+
+  v_recorder_name := coalesce(
+    (select coalesce(nullif(btrim(concat_ws(' ', p.first_name, p.last_name)), ''), p.email)
+       from public.profiles p
+      where p.id = auth.uid()),
+    'Unknown'
+  );
+
+  -- Recorded only when it's what let them in: someone with a portal
+  -- signature has no use for a paper note. The first record stands. A paper
+  -- waiver wins over "no waiver on file" if both are sent.
+  if coalesce(p_paper_waiver, false) and not v_signed then
+    insert into public.event_paper_waivers (rsvp_id, event_id, recorded_by, recorded_by_name)
+    values (v_rsvp_id, p_event_id, auth.uid(), v_recorder_name)
+    on conflict (rsvp_id) do nothing;
+  elsif coalesce(p_no_waiver, false) and not v_signed
+        and not exists (select 1 from public.event_paper_waivers w where w.rsvp_id = v_rsvp_id) then
+    insert into public.event_no_waiver_records (rsvp_id, event_id, recorded_by, recorded_by_name)
+    values (v_rsvp_id, p_event_id, auth.uid(), v_recorder_name)
+    on conflict (rsvp_id) do nothing;
+  end if;
+
+  return 'confirmed';
+end $function$;
+
+revoke all on function public.admin_upsert_walkup_rsvp(bigint, uuid, boolean, boolean, boolean) from public, anon;
+grant execute on function public.admin_upsert_walkup_rsvp(bigint, uuid, boolean, boolean, boolean) to authenticated;
+
+commit;
