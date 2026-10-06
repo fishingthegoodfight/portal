@@ -13,3 +13,9 @@ export function normalizeEmail(email: string | null | undefined): string {
 export function profileEmailPattern(email: string | null | undefined): string {
   return normalizeEmail(email).replace(/[\\%_]/g, (c) => `\\${c}`);
 }
+
+/** Whether `text` looks like a complete email address (the same loose check
+ * the lead picker and new-link form use). */
+export function isEmailAddress(text: string | null | undefined): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(text));
+}

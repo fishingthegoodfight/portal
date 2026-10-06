@@ -24,7 +24,9 @@ import { SaveAsTemplateButton } from "@/components/admin/save-as-template-button
 import { ShareEventCard } from "@/components/admin/share-event-card";
 import { EventCard, type EventCardEvent } from "@/components/event-card";
 import { EmergencyContactFields } from "@/components/emergency-contact-fields";
-import { EventPersonSearch } from "@/components/admin/event-person-search";
+import { EventPersonResults, EventPersonSearch } from "@/components/admin/event-person-search";
+import type { EventPersonCandidate } from "@/lib/actions/event-people";
+import { isEmailAddress } from "@/lib/profile-email";
 import { Button } from "@/components/ui/button";
 import { RevealPanel } from "@/components/reveal-panel";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -376,6 +378,9 @@ export function EventRoster({
   // After the event there's no signing here: the lead's tick that there's
   // no waiver at all, to record their attendance anyway ("No waiver on file").
   const [walkupNoWaiver, setWalkupNoWaiver] = useState(false);
+  // The latest matches for what's typed in the walk-up's Name or email
+  // field, so Continue can tell "nobody found" from "found, not picked".
+  const [walkupMatches, setWalkupMatches] = useState<EventPersonCandidate[] | null>(null);
   const [walkupSectionValues, setWalkupSectionValues] = useState<Record<string, string>>({});
   // Bumped whenever the section inputs are re-seeded, so stateful inputs
   // (e.g. the dietary Yes/No) remount and pick up the new values.
@@ -526,6 +531,7 @@ export function EventRoster({
     setWalkupSign(EMPTY_WAIVER_SIGN);
     setWalkupPaper({ open: false, held: false });
     setWalkupNoWaiver(false);
+    setWalkupMatches(null);
     setWalkupSectionValues({});
     setWalkupSectionsKey((k) => k + 1);
     setVolunteerConflictShifts(null);
@@ -538,6 +544,7 @@ export function EventRoster({
   // can't carry over.
   const changeWalkupEmail = (email: string) => {
     setWalkupForm((prev) => ({ ...prev, email }));
+    setWalkupError(null);
     if (walkupLookup?.profileFields) {
       setWalkupSectionValues({});
       setWalkupSectionsKey((k) => k + 1);
@@ -545,6 +552,7 @@ export function EventRoster({
     setWalkupLookup(null);
     setWalkupPaper({ open: false, held: false });
     setWalkupNoWaiver(false);
+    setWalkupMatches(null);
     setVolunteerConflictShifts(null);
     setVolunteerConflictAcked(false);
   };
@@ -573,9 +581,20 @@ export function EventRoster({
     // Email first: until it's been looked up, submitting (Continue, or
     // Enter in the email field) only looks it up, so the lead sees whether
     // they're already on file before anything else is asked or added.
+    // Continue with nothing picked: an email is looked up exactly (which
+    // also finds people outside the search's chapter scope); anything else
+    // asks for one.
     const lookup = walkupLookup;
     if (!lookup) {
-      await lookUpWalkup(walkupForm.email);
+      if (isEmailAddress(walkupForm.email)) {
+        await lookUpWalkup(walkupForm.email);
+      } else {
+        setWalkupError(
+          walkupMatches && walkupMatches.length > 0
+            ? "Pick them from the list, or type their email address."
+            : "No one found by that name. Type their email address instead.",
+        );
+      }
       setIsSubmittingWalkup(false);
       return;
     }
@@ -1269,33 +1288,40 @@ export function EventRoster({
                 <CardTitle>Add walk-up</CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
-                {!walkupLookup && (
-                  <EventPersonSearch
-                    eventId={eventId}
-                    idPrefix="walkup"
-                    onPick={(person) => {
-                      changeWalkupEmail(person.email);
-                      void lookUpWalkup(person.email);
-                    }}
-                  />
-                )}
+                {/* One field: a name or email to search with until someone
+                    is found (or an email is looked up), then their email.
+                    Editing it afterwards starts the search over. */}
                 <div className="grid gap-2">
-                  <Label htmlFor="walkup_email">Email</Label>
+                  <Label htmlFor="walkup_email">{walkupLookup ? "Email" : "Name or email"}</Label>
                   <Input
                     id="walkup_email"
-                    type="email"
-                    inputMode="email"
-                    autoComplete="email"
+                    type={walkupLookup ? "email" : "text"}
+                    autoComplete="off"
                     autoFocus
                     required
                     value={walkupForm.email}
                     onChange={(e) => changeWalkupEmail(e.target.value)}
-                    onBlur={(e) => void lookUpWalkup(e.target.value)}
                   />
                   {!walkupLookup && (
-                    <p className="text-xs text-muted-foreground">
-                      We&apos;ll check whether they&apos;re already in the system first.
-                    </p>
+                    <>
+                      <EventPersonResults
+                        eventId={eventId}
+                        query={walkupForm.email}
+                        onResults={setWalkupMatches}
+                        emptyText={
+                          isEmailAddress(walkupForm.email)
+                            ? "No match in your search. Press Continue to look this email up."
+                            : "No one found. Try another spelling, or type their email address."
+                        }
+                        onPick={(person) => {
+                          changeWalkupEmail(person.email);
+                          void lookUpWalkup(person.email);
+                        }}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        We&apos;ll check whether they&apos;re already in the system first.
+                      </p>
+                    </>
                   )}
                 </div>
                 {walkupLookup?.existing && (
