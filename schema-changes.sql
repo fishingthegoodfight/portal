@@ -12279,6 +12279,8 @@ commit;
 -- 2026-10-06 — One profile per email: profiles.email stored normalized,
 --              unique on lower(btrim(email))
 -- =============================================================================
+-- Run 2026-10-06, after the matching code was pushed to main.
+--
 -- profiles.email had no uniqueness of its own: one account per email was
 -- only true because profiles.id is the auth user's id and Supabase Auth
 -- allows one account per email. Nothing stopped a profile's email from
@@ -12364,6 +12366,8 @@ commit;
 -- =============================================================================
 -- 2026-10-06 — Finding people already in the system from an event's roster
 -- =============================================================================
+-- Run 2026-10-06, after the matching code was pushed to main.
+--
 -- The roster's Add walk-up and Add volunteer forms can search existing
 -- people by name or email instead of retyping their details: mostly for
 -- adding someone to a past event who was missed at check-in. Picking a
@@ -12452,6 +12456,8 @@ grant execute on function public.event_person_candidates(bigint, text) to authen
 -- 2026-10-06 — Recording a past event: gates judged as of the shift's date,
 --              no signing after the event, "No waiver on file"
 -- =============================================================================
+-- Run 2026-10-06, after the matching code was pushed to main.
+--
 -- Adding people to an event after it happened (someone missed at check-in)
 -- exposed three things written with upcoming events in mind:
 --
@@ -12914,6 +12920,8 @@ commit;
 -- =============================================================================
 -- 2026-10-06 — profiles.email is the login email: only trusted roles change it
 -- =============================================================================
+-- Run 2026-10-06, after the matching code was pushed to main.
+--
 -- profiles.email is the email someone logs in with. The profile page and
 -- the volunteer registration form now show it read-only and never send it,
 -- but the Data API still let a signed-in user change their own row's email,
