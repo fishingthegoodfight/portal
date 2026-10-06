@@ -1,6 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { findProfileByEmail } from "@/lib/profile-lookup";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { assignLeadEventsToNewAccount } from "@/lib/admin/lead-account";
 import { requireAdmin, requireEventManager } from "@/lib/admin/require-admin";
@@ -47,7 +48,7 @@ export type WalkupResult =
  * duplicating it); the caller re-submits with force=true once the admin
  * confirms adding them over capacity.
  */
-export async function addWalkupRsvpAction(input: {
+type WalkupInput = {
   eventId: number;
   firstName: string;
   lastName: string;
@@ -81,7 +82,15 @@ export async function addWalkupRsvpAction(input: {
   /** Set once the admin has seen the volunteer_conflict warning. */
   allowVolunteerConflict?: boolean;
   force: boolean;
-}): Promise<WalkupResult> {
+};
+
+export async function addWalkupRsvpAction(input: WalkupInput): Promise<WalkupResult> {
+  return addWalkup(input, false);
+}
+
+/** isRetry: this is the one re-run after createUser found the email already
+ * taken (see below), so it can't loop. */
+async function addWalkup(input: WalkupInput, isRetry: boolean): Promise<WalkupResult> {
   const supabase = await createClient();
   const adminCheck = await requireEventManager(supabase, input.eventId);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
@@ -130,11 +139,7 @@ export async function addWalkupRsvpAction(input: {
   const secondContactError = secondContactProblem(secondContact.name, secondContact.phone);
   if (secondContactError) return { ok: false, error: secondContactError };
 
-  const { data: existingProfile } = await lookup
-    .from("profiles")
-    .select("*")
-    .ilike("email", email)
-    .maybeSingle();
+  const existingProfile = await findProfileByEmail(lookup, email);
 
   // Home chapter is part of the core profile (lib/core-profile.ts): asked at
   // the desk only when there isn't one on file.
@@ -291,6 +296,12 @@ export async function addWalkupRsvpAction(input: {
       email_confirm: true,
       user_metadata: { first_name: firstName, last_name: lastName },
     });
+    if (createError?.code === "email_exists" && !isRetry) {
+      // The account appeared after the lookup above (another lead adding
+      // the same person at the same moment). Run once more: the lookup
+      // finds it now and links the walk-up to it.
+      return addWalkup(input, true);
+    }
     if (createError || !created?.user) {
       return { ok: false, error: createError?.message ?? "Failed to create profile" };
     }

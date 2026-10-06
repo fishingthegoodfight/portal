@@ -12274,3 +12274,89 @@ revoke all on function public.assign_lead_events(uuid) from public, anon;
 grant execute on function public.assign_lead_events(uuid) to authenticated, service_role;
 
 commit;
+
+-- =============================================================================
+-- 2026-10-06 — One profile per email: profiles.email stored normalized,
+--              unique on lower(btrim(email))
+-- =============================================================================
+-- profiles.email had no uniqueness of its own: one account per email was
+-- only true because profiles.id is the auth user's id and Supabase Auth
+-- allows one account per email. Nothing stopped a profile's email from
+-- matching another profile's in a different case or with stray spaces.
+-- Checked on 2026-10-06 before this was written: no duplicates, no profile
+-- whose email differs from its login email, and no index on email at all
+-- (profiles_pkey only).
+--
+-- 1. profiles_normalize_email (BEFORE INSERT OR UPDATE OF email): stores
+--    lower(btrim(email)), and a blank email as null so blanks can't collide.
+-- 2. Existing rows rewritten the same way (a no-op for rows already
+--    normalized).
+-- 3. profiles_email_normalized_key: unique on lower(btrim(email)) where
+--    email is not null. On the expression, not the column, so it holds even
+--    if the trigger is ever dropped.
+--
+-- 4. auth_user_id_by_email(email): the auth user id for a login email, for
+--    the service role only. The walk-up uses it when no profile has the
+--    email, so someone whose profile email drifted from their login email
+--    is linked, not refused by Supabase Auth as "already registered"
+--    (lib/profile-lookup.ts).
+--
+-- Every lookup by email in the app now escapes LIKE wildcards
+-- (lib/profile-email.ts), and the profile page no longer lets people edit
+-- their email (it's their login email).
+--
+-- Can be run before or after the matching code: without 4, the walk-up
+-- just doesn't find drifted accounts, as before.
+--
+-- Existing table, no new tables, so no new table grants. Safe to re-run. One
+-- transaction: if step 3 finds a duplicate, nothing is applied.
+
+begin;
+
+-- ---- 1. Store it normalized ----------------------------------------------------
+create or replace function public.profiles_normalize_email()
+returns trigger
+language plpgsql
+set search_path to 'public'
+as $function$
+begin
+  new.email := nullif(lower(btrim(new.email)), '');
+  return new;
+end $function$;
+
+revoke all on function public.profiles_normalize_email() from public, anon, authenticated;
+
+drop trigger if exists profiles_normalize_email on public.profiles;
+create trigger profiles_normalize_email
+  before insert or update of email on public.profiles
+  for each row execute function public.profiles_normalize_email();
+
+-- ---- 2. Existing rows ----------------------------------------------------------
+update public.profiles
+   set email = nullif(lower(btrim(email)), '')
+ where email is distinct from nullif(lower(btrim(email)), '');
+
+-- ---- 3. One profile per email --------------------------------------------------
+create unique index if not exists profiles_email_normalized_key
+  on public.profiles (lower(btrim(email)))
+  where email is not null;
+
+-- ---- 4. Login email -> auth user id (service role only) -----------------------
+create or replace function public.auth_user_id_by_email(p_email text)
+returns uuid
+language sql
+stable
+security definer
+set search_path to ''
+as $function$
+  select u.id
+    from auth.users u
+   where lower(btrim(u.email)) = lower(btrim(p_email))
+   order by u.created_at
+   limit 1
+$function$;
+
+revoke all on function public.auth_user_id_by_email(text) from public, anon, authenticated;
+grant execute on function public.auth_user_id_by_email(text) to service_role;
+
+commit;

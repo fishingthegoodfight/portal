@@ -1,6 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { profileEmailPattern } from "@/lib/profile-email";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { assignLeadEventsToNewAccount } from "@/lib/admin/lead-account";
 import { requireAdmin } from "@/lib/admin/require-admin";
@@ -133,7 +134,7 @@ async function inviteOne(
   const { data: existingProfile } = await supabase
     .from("profiles")
     .select("id, first_name, last_name")
-    .ilike("email", email)
+    .ilike("email", profileEmailPattern(email))
     .maybeSingle();
 
   let userId: string;

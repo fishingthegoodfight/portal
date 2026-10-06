@@ -1,6 +1,7 @@
 "use server";
 
 import { createAdminClient } from "@/lib/supabase/admin";
+import { profileEmailPattern } from "@/lib/profile-email";
 import { buildConfirmUrl } from "@/lib/auth-confirm-link";
 import { sendNewLinkEmail } from "@/lib/email/send";
 
@@ -35,8 +36,7 @@ export async function requestNewLinkAction(emailInput: string): Promise<NewLinkR
     const { data: profile } = await admin
       .from("profiles")
       .select("id, first_name, access_removed_at")
-      // Typed by a stranger: % and _ must match themselves.
-      .ilike("email", email.replace(/[\\%_]/g, (c) => `\\${c}`))
+      .ilike("email", profileEmailPattern(email))
       .maybeSingle();
     if (!profile || profile.access_removed_at) return { ok: true };
     const userId = profile.id as string;

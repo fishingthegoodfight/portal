@@ -40,6 +40,9 @@ export function SignUpForm({
   const [repeatPassword, setRepeatPassword] = useState("");
   const [directoryOptIn, setDirectoryOptIn] = useState("false");
   const [error, setError] = useState<string | null>(null);
+  // Their email already has an account — usually one we made when they
+  // checked in at an event, which has no password yet.
+  const [existingAccount, setExistingAccount] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
   const handleSignUp = async (e: React.FormEvent) => {
@@ -47,6 +50,7 @@ export function SignUpForm({
     const supabase = createClient();
     setIsLoading(true);
     setError(null);
+    setExistingAccount(false);
 
     if (!firstName.trim() || !lastName.trim()) {
       setError("Your first and last name are required");
@@ -88,6 +92,16 @@ export function SignUpForm({
           },
         },
       });
+      // An email that already has an account: with email confirmation on,
+      // Supabase answers with a stand-in user with no identities and sends
+      // nothing (so it doesn't reveal who has an account); with it off, it
+      // returns user_already_exists. Either way the password above wasn't
+      // saved, so point them at Forgot password instead of "check your
+      // email".
+      if (error?.code === "user_already_exists" || (!error && data.user?.identities?.length === 0)) {
+        setExistingAccount(true);
+        return;
+      }
       if (error) throw error;
       // Hard navigation: if email confirmation is off, signUp establishes a
       // session immediately, same as signInWithPassword — see the comments
@@ -191,6 +205,16 @@ export function SignUpForm({
                 onChange={(_key, value) => setDirectoryOptIn(value)}
               />
               {error && <p className="text-sm text-red-500">{error}</p>}
+              {existingAccount && (
+                <p className="rounded-md border bg-muted/50 p-3 text-sm">
+                  You already have an account. We may have created it when you checked in at
+                  an event. Use{" "}
+                  <Link href="/auth/forgot-password" className="underline underline-offset-4">
+                    Forgot password
+                  </Link>{" "}
+                  to set your password.
+                </p>
+              )}
               <Button type="submit" className="w-full" disabled={isLoading}>
                 {isLoading ? "Creating an account..." : "Sign up"}
               </Button>

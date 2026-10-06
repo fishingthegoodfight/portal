@@ -1,4 +1,5 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import { profileEmailPattern } from "@/lib/profile-email";
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -46,7 +47,7 @@ export async function leadAssignmentProblem(
   const { data: owner } = await admin
     .from("profiles")
     .select("id, first_name, last_name, email")
-    .ilike("email", email.replace(/[\\%_]/g, (c) => `\\${c}`))
+    .ilike("email", profileEmailPattern(email))
     .limit(1)
     .maybeSingle();
   if (!owner || owner.id === leadUserId) return null;

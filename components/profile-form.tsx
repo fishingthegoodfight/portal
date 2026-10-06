@@ -36,7 +36,6 @@ import { cn } from "@/lib/utils";
 type ProfileData = {
   first_name: string;
   last_name: string;
-  email: string;
   phone: string;
   chapter: string;
   address_line1: string;
@@ -52,6 +51,7 @@ const MEDICAL_INFO_HREF = "/protected/profile/medical";
 
 export function ProfileForm({
   userId,
+  loginEmail,
   initialProfile,
   initialRegistrationFields,
   returnTo,
@@ -59,6 +59,9 @@ export function ProfileForm({
   initialOpportunitiesEmail,
 }: {
   userId: string;
+  /** Shown read-only: it's the email they log in with, and the profile page
+   * doesn't change it. */
+  loginEmail: string;
   initialProfile: ProfileData;
   /** Every chapter (loadChapters), for the home chapter dropdown. */
   chapters: Chapter[];
@@ -299,13 +302,14 @@ export function ProfileForm({
           </div>
           <div className="grid gap-2">
             <Label htmlFor="email">Email</Label>
-            <Input
-              id="email"
-              type="email"
-              required
-              value={profile.email}
-              onChange={updateField("email")}
-            />
+            <Input id="email" type="email" value={loginEmail} readOnly aria-describedby="email-note" />
+            <p id="email-note" className="text-sm text-muted-foreground">
+              This is the email you log in with. To change it, contact{" "}
+              <a href="mailto:tcramer@fishingthegoodfight.org" className="underline underline-offset-4">
+                tcramer@fishingthegoodfight.org
+              </a>
+              .
+            </p>
           </div>
           <div className="grid gap-2">
             <Label htmlFor="phone">Phone</Label>

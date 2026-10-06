@@ -1,6 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { findProfileByEmail } from "@/lib/profile-lookup";
 import { requireAdmin, requireEventManager } from "@/lib/admin/require-admin";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { profileValueFromColumn, REGISTRATION_SECTIONS } from "@/lib/registration-sections";
@@ -162,8 +163,7 @@ export async function walkupLookupAction(
   const trimmed = email.trim().toLowerCase();
   let profile: Record<string, unknown> | null = null;
   if (trimmed) {
-    const { data } = await lookup.from("profiles").select("*").ilike("email", trimmed).maybeSingle();
-    profile = data as Record<string, unknown> | null;
+    profile = await findProfileByEmail(lookup, trimmed);
   }
 
   let profileFields: Record<string, string> | null = null;

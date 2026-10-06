@@ -58,11 +58,11 @@ async function ProfileFormLoader({
   return (
     <ProfileForm
       userId={userId}
+      loginEmail={profile?.email ?? userEmail ?? ""}
       returnTo={returnTo}
       initialProfile={{
         first_name: profile?.first_name ?? "",
         last_name: profile?.last_name ?? "",
-        email: profile?.email ?? userEmail ?? "",
         // Reformat in case the stored value predates the phone mask (e.g.
         // pasted or entered before this field forced a format) so the
         // display is always standardized, not just newly-typed input.

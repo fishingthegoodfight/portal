@@ -1,6 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { profileEmailPattern } from "@/lib/profile-email";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { assignLeadEventsToNewAccount } from "@/lib/admin/lead-account";
 import { requireAdmin } from "@/lib/admin/require-admin";
@@ -184,7 +185,7 @@ export async function createApprovedVolunteerAction(input: {
   const { data: existingProfile } = await supabase
     .from("profiles")
     .select("id")
-    .ilike("email", email)
+    .ilike("email", profileEmailPattern(email))
     .maybeSingle();
 
   let userId: string;

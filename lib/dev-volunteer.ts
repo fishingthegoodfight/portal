@@ -1,4 +1,5 @@
 import type { createAdminClient } from "@/lib/supabase/admin";
+import { profileEmailPattern } from "@/lib/profile-email";
 
 /** The dev endpoints' ?email= or ?user_id= — one person, by profile. */
 export async function resolveDevVolunteer(
@@ -12,7 +13,11 @@ export async function resolveDevVolunteer(
   }
   const email = searchParams.get("email")?.trim().toLowerCase();
   if (!email) return { error: "Give ?email=<address> or ?user_id=<uuid>" };
-  const { data, error } = await admin.from("profiles").select("id").ilike("email", email).limit(2);
+  const { data, error } = await admin
+    .from("profiles")
+    .select("id")
+    .ilike("email", profileEmailPattern(email))
+    .limit(2);
   if (error) return { error: error.message };
   if (!data || data.length === 0) return { error: `No profile with email ${email}` };
   if (data.length > 1) return { error: `More than one profile with email ${email} — use ?user_id=` };
