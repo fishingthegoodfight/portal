@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { findProfileByEmail } from "@/lib/profile-lookup";
+import { missingCoreFields, type CoreProfileKey } from "@/lib/core-profile";
 import { requireAdmin, requireEventManager } from "@/lib/admin/require-admin";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { profileValueFromColumn, REGISTRATION_SECTIONS } from "@/lib/registration-sections";
@@ -124,9 +125,10 @@ export type WalkupLookupResult =
        * keyed by profile column — or null when there's no profile for that
        * email yet (a brand-new person). */
       profileFields: Record<string, string> | null;
-      /** Their profile already has a home chapter — the walk-up form asks
-       * for one only when it doesn't. */
-      hasChapterOnFile: boolean;
+      /** Who the email belongs to, when it matches a profile: the walk-up
+       * form then collapses to their name and asks only for the core fields
+       * blank on their record (`missingCore`). Null for someone new. */
+      existing: { name: string; missingCore: CoreProfileKey[] } | null;
     }
   | { ok: false; error: string };
 
@@ -151,8 +153,8 @@ export async function walkupLookupAction(
   // The walk-up usually isn't on any of a chapter lead's events yet, so RLS
   // wouldn't show their profile or signatures — looked up with the
   // service-role client, authorized by the gate above (same as
-  // addWalkupRsvpAction). Only the waiver status and registration answers
-  // go back to the form.
+  // addWalkupRsvpAction). Only the waiver status, registration answers, their
+  // name and which core fields are blank go back to the form.
   let lookup: ReturnType<typeof createAdminClient>;
   try {
     lookup = createAdminClient();
@@ -180,7 +182,15 @@ export async function walkupLookupAction(
     ok: true,
     info: await waiverInfoForUser(lookup, event, (profile?.id as string | undefined) ?? null),
     profileFields,
-    hasChapterOnFile: Boolean((profile?.chapter as string | null | undefined)?.trim()),
+    existing: profile
+      ? {
+          name: [profile.first_name, profile.last_name]
+            .map((part) => (typeof part === "string" ? part.trim() : ""))
+            .filter(Boolean)
+            .join(" "),
+          missingCore: missingCoreFields(profile),
+        }
+      : null,
   };
 }
 

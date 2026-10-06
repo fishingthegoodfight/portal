@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { findProfileByEmail } from "@/lib/profile-lookup";
+import { missingCoreFields } from "@/lib/core-profile";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { assignLeadEventsToNewAccount } from "@/lib/admin/lead-account";
 import { requireAdmin, requireEventManager } from "@/lib/admin/require-admin";
@@ -130,22 +131,28 @@ async function addWalkup(input: WalkupInput, isRetry: boolean): Promise<WalkupRe
       ? input.chapter
       : null;
 
-  if (!firstName || !lastName) return { ok: false, error: "Name is required" };
   if (!email) return { ok: false, error: "Email is required" };
-  if (!phone) return { ok: false, error: "Phone is required" };
-  if (!emergencyContactName || !emergencyContactPhone) {
-    return { ok: false, error: "Emergency contact name and phone are required" };
-  }
   const secondContactError = secondContactProblem(secondContact.name, secondContact.phone);
   if (secondContactError) return { ok: false, error: secondContactError };
 
   const existingProfile = await findProfileByEmail(lookup, email);
 
-  // Home chapter is part of the core profile (lib/core-profile.ts): asked at
-  // the desk only when there isn't one on file.
-  if (!chapter && !((existingProfile?.chapter as string | null | undefined)?.trim())) {
-    return { ok: false, error: "Choose their home chapter" };
+  // The core profile (lib/core-profile.ts) is required, but only what isn't
+  // on file: someone already in the system is asked for nothing they've
+  // given before (the form hides those fields), and someone new for all of
+  // it. What's typed only ever fills blanks (below).
+  const missingCore = new Set(missingCoreFields(existingProfile));
+  if ((missingCore.has("first_name") && !firstName) || (missingCore.has("last_name") && !lastName)) {
+    return { ok: false, error: "Name is required" };
   }
+  if (missingCore.has("phone") && !phone) return { ok: false, error: "Phone is required" };
+  if (
+    (missingCore.has("emergency_contact") || missingCore.has("emergency_phone")) &&
+    (!emergencyContactName || !emergencyContactPhone)
+  ) {
+    return { ok: false, error: "Emergency contact name and phone are required" };
+  }
+  if (missingCore.has("chapter") && !chapter) return { ok: false, error: "Choose their home chapter" };
 
   // What the profile already has for every catalog field (empty for someone
   // with no profile yet) — sections complete here are skipped, exactly as on

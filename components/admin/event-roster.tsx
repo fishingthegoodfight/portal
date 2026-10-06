@@ -38,6 +38,7 @@ import {
   dietaryDisplay,
   firstIncompleteSection,
   incompleteSectionMessage,
+  isSectionComplete,
   secondContactProblem,
   REGISTRATION_SECTIONS,
   rosterAnswerSections,
@@ -59,6 +60,7 @@ import { RosterHealthLine, type RosterHealth } from "@/components/admin/roster-h
 import { practicalCheckSummary, type PracticalCheck } from "@/lib/practical-checks";
 import type { Chapter } from "@/lib/chapters";
 import { personDisplayName } from "@/lib/person-name";
+import { CORE_PROFILE_FIELDS, type CoreProfileKey } from "@/lib/core-profile";
 import { formatDateInZone, formatEventInstant } from "@/lib/format-date";
 
 type LatestPracticalCheck = Pick<PracticalCheck, "outcome" | "checked_on" | "assessor_name">;
@@ -358,7 +360,7 @@ export function EventRoster({
   const [walkupLookup, setWalkupLookup] = useState<{
     info: WaiverInfo;
     profileFields: Record<string, string> | null;
-    hasChapterOnFile: boolean;
+    existing: { name: string; missingCore: CoreProfileKey[] } | null;
   } | null>(null);
   const [walkupSign, setWalkupSign] = useState<WaiverSignState>(EMPTY_WAIVER_SIGN);
   // The fallback behind "They signed a paper waiver instead": `open` swaps
@@ -389,7 +391,7 @@ export function EventRoster({
   ): Promise<{
     info: WaiverInfo;
     profileFields: Record<string, string> | null;
-    hasChapterOnFile: boolean;
+    existing: { name: string; missingCore: CoreProfileKey[] } | null;
   } | null> => {
     if (!email.trim()) return null;
     const result = await walkupLookupAction(eventId, email);
@@ -397,12 +399,24 @@ export function EventRoster({
       setWalkupError(result.error);
       return null;
     }
-    const lookup = { info: result.info, profileFields: result.profileFields, hasChapterOnFile: result.hasChapterOnFile };
+    const lookup = { info: result.info, profileFields: result.profileFields, existing: result.existing };
     setWalkupLookup(lookup);
     setWalkupSectionValues((prev) => withProfileValues(prev, result.profileFields));
     setWalkupSectionsKey((k) => k + 1);
     return lookup;
   };
+
+  // What the walk-up form asks once the email is looked up: everything for
+  // someone new; for someone already in the system, only the core fields
+  // blank on their record and the event's sections not complete on file
+  // (plus the waiver, if unsigned). Typed values only ever fill blanks.
+  const walkupIsNew = walkupLookup != null && walkupLookup.existing == null;
+  const walkupAsks = (field: CoreProfileKey) =>
+    walkupLookup != null && (walkupLookup.existing?.missingCore ?? CORE_PROFILE_FIELDS.map((f) => f.key)).includes(field);
+  const walkupSectionsAsked = walkupLookup
+    ? walkupSections.filter((section) => walkupIsNew || !isSectionComplete(section, walkupLookup.profileFields ?? {}))
+    : [];
+  const walkupFirstName = walkupForm.firstName.trim() || walkupLookup?.existing?.name.split(" ")[0] || "";
 
   const confirmedCount = roster.filter((p) => p.status === "confirmed").length;
   const checkedInCount = roster.filter((p) => p.checkedInAt).length;
@@ -524,14 +538,18 @@ export function EventRoster({
     setIsSubmittingWalkup(true);
     setWalkupError(null);
 
-    // Make sure we know who they are even if the email field was never
-    // blurred (e.g. submitted with Enter): their waiver status and which
-    // sections their profile already covers.
-    let lookup = walkupLookup;
-    if (!lookup) lookup = await lookUpWalkup(walkupForm.email);
-    const sectionValues = withProfileValues(walkupSectionValues, lookup?.profileFields ?? null);
+    // Email first: until it's been looked up, submitting (Continue, or
+    // Enter in the email field) only looks it up, so the lead sees whether
+    // they're already on file before anything else is asked or added.
+    const lookup = walkupLookup;
+    if (!lookup) {
+      await lookUpWalkup(walkupForm.email);
+      setIsSubmittingWalkup(false);
+      return;
+    }
+    const sectionValues = withProfileValues(walkupSectionValues, lookup.profileFields);
 
-    const info = lookup?.info ?? null;
+    const info = lookup.info;
     const onPaper = info?.status === "unsigned" && walkupPaper.open;
     if (onPaper && !walkupPaper.held) {
       setIsSubmittingWalkup(false);
@@ -1197,29 +1215,6 @@ export function EventRoster({
                 <CardTitle>Add walk-up</CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col gap-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="grid gap-2">
-                    <Label htmlFor="walkup_first_name">First name</Label>
-                    <Input
-                      id="walkup_first_name"
-                      required
-                      autoFocus
-                      autoComplete="given-name"
-                      value={walkupForm.firstName}
-                      onChange={updateWalkupField("firstName")}
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="walkup_last_name">Last name</Label>
-                    <Input
-                      id="walkup_last_name"
-                      required
-                      autoComplete="family-name"
-                      value={walkupForm.lastName}
-                      onChange={updateWalkupField("lastName")}
-                    />
-                  </div>
-                </div>
                 <div className="grid gap-2">
                   <Label htmlFor="walkup_email">Email</Label>
                   <Input
@@ -1227,6 +1222,7 @@ export function EventRoster({
                     type="email"
                     inputMode="email"
                     autoComplete="email"
+                    autoFocus
                     required
                     value={walkupForm.email}
                     onChange={(e) => {
@@ -1245,65 +1241,118 @@ export function EventRoster({
                     }}
                     onBlur={(e) => void lookUpWalkup(e.target.value)}
                   />
+                  {!walkupLookup && (
+                    <p className="text-xs text-muted-foreground">
+                      We&apos;ll check whether they&apos;re already in the system first.
+                    </p>
+                  )}
                 </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="walkup_phone">Phone</Label>
-                  <Input
-                    id="walkup_phone"
-                    type="tel"
-                    inputMode="numeric"
-                    autoComplete="tel"
-                    placeholder="(303) 555-0100"
-                    maxLength={14}
-                    required
-                    value={walkupForm.phone}
-                    onChange={updateWalkupPhoneField("phone")}
-                  />
-                </div>
+                {walkupLookup?.existing && (
+                  <div className="grid gap-1 rounded-md border bg-muted/50 p-3">
+                    <span className="font-medium">{walkupLookup.existing.name || walkupForm.email.trim()}</span>
+                    <span className="text-sm text-muted-foreground">
+                      Already in the system. We have their details on file
+                      {walkupLookup.existing.missingCore.length > 0 || walkupSectionsAsked.length > 0
+                        ? ", apart from what's asked below"
+                        : ""}
+                      .
+                    </span>
+                  </div>
+                )}
+                {(walkupAsks("first_name") || walkupAsks("last_name")) && (
+                  <div className="grid grid-cols-2 gap-4">
+                    {walkupAsks("first_name") && (
+                      <div className="grid gap-2">
+                        <Label htmlFor="walkup_first_name">First name</Label>
+                        <Input
+                          id="walkup_first_name"
+                          required
+                          autoComplete="given-name"
+                          value={walkupForm.firstName}
+                          onChange={updateWalkupField("firstName")}
+                        />
+                      </div>
+                    )}
+                    {walkupAsks("last_name") && (
+                      <div className="grid gap-2">
+                        <Label htmlFor="walkup_last_name">Last name</Label>
+                        <Input
+                          id="walkup_last_name"
+                          required
+                          autoComplete="family-name"
+                          value={walkupForm.lastName}
+                          onChange={updateWalkupField("lastName")}
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+                {walkupAsks("phone") && (
+                  <div className="grid gap-2">
+                    <Label htmlFor="walkup_phone">Phone</Label>
+                    <Input
+                      id="walkup_phone"
+                      type="tel"
+                      inputMode="numeric"
+                      autoComplete="tel"
+                      placeholder="(303) 555-0100"
+                      maxLength={14}
+                      required
+                      value={walkupForm.phone}
+                      onChange={updateWalkupPhoneField("phone")}
+                    />
+                  </div>
+                )}
                 {/* Same shape as the RSVP form: one contact required
                     (relationship optional), a second one optional. */}
-                <EmergencyContactFields
-                  title="Emergency contact"
-                  idPrefix="walkup_ec1"
-                  required
-                  relationshipOptional
-                  name={walkupForm.emergencyContactName}
-                  phone={walkupForm.emergencyContactPhone}
-                  relationship={walkupForm.emergencyContactRelationship}
-                  onName={updateWalkupField("emergencyContactName")}
-                  onPhone={updateWalkupPhoneField("emergencyContactPhone")}
-                  onRelationship={updateWalkupField("emergencyContactRelationship")}
-                />
-                <EmergencyContactFields
-                  title="Second emergency contact (optional)"
-                  idPrefix="walkup_ec2"
-                  name={walkupForm.emergencyContact2Name}
-                  phone={walkupForm.emergencyContact2Phone}
-                  relationship={walkupForm.emergencyContact2Relationship}
-                  onName={updateWalkupField("emergencyContact2Name")}
-                  onPhone={updateWalkupPhoneField("emergencyContact2Phone")}
-                  onRelationship={updateWalkupField("emergencyContact2Relationship")}
-                />
-                {/* Required only when their profile has no chapter yet (a new
-                    person, or one who never gave one). */}
-                <HomeChapterField
-                  idPrefix="walkup"
-                  value={walkupForm.chapter}
-                  onChange={(value) => setWalkupForm((prev) => ({ ...prev, chapter: value }))}
-                  required={!walkupLookup?.hasChapterOnFile}
-                  chapters={chapters}
-                />
-                <RegistrationFieldInput
-                  field={DIRECTORY_FIELD}
-                  value={walkupForm.directoryOptIn ? "true" : "false"}
-                  onChange={(_key, value) =>
-                    setWalkupForm((prev) => ({
-                      ...prev,
-                      directoryOptIn: value === "true",
-                    }))
-                  }
-                />
-                {walkupSections.map((section) => (
+                {(walkupAsks("emergency_contact") || walkupAsks("emergency_phone")) && (
+                  <EmergencyContactFields
+                    title="Emergency contact"
+                    idPrefix="walkup_ec1"
+                    required
+                    relationshipOptional
+                    name={walkupForm.emergencyContactName}
+                    phone={walkupForm.emergencyContactPhone}
+                    relationship={walkupForm.emergencyContactRelationship}
+                    onName={updateWalkupField("emergencyContactName")}
+                    onPhone={updateWalkupPhoneField("emergencyContactPhone")}
+                    onRelationship={updateWalkupField("emergencyContactRelationship")}
+                  />
+                )}
+                {walkupIsNew && (
+                  <EmergencyContactFields
+                    title="Second emergency contact (optional)"
+                    idPrefix="walkup_ec2"
+                    name={walkupForm.emergencyContact2Name}
+                    phone={walkupForm.emergencyContact2Phone}
+                    relationship={walkupForm.emergencyContact2Relationship}
+                    onName={updateWalkupField("emergencyContact2Name")}
+                    onPhone={updateWalkupPhoneField("emergencyContact2Phone")}
+                    onRelationship={updateWalkupField("emergencyContact2Relationship")}
+                  />
+                )}
+                {walkupAsks("chapter") && (
+                  <HomeChapterField
+                    idPrefix="walkup"
+                    value={walkupForm.chapter}
+                    onChange={(value) => setWalkupForm((prev) => ({ ...prev, chapter: value }))}
+                    required
+                    chapters={chapters}
+                  />
+                )}
+                {walkupIsNew && (
+                  <RegistrationFieldInput
+                    field={DIRECTORY_FIELD}
+                    value={walkupForm.directoryOptIn ? "true" : "false"}
+                    onChange={(_key, value) =>
+                      setWalkupForm((prev) => ({
+                        ...prev,
+                        directoryOptIn: value === "true",
+                      }))
+                    }
+                  />
+                )}
+                {walkupSectionsAsked.map((section) => (
                   <RegistrationSectionField
                     key={`${section.id}-${walkupSectionsKey}`}
                     section={section}
@@ -1315,66 +1364,63 @@ export function EventRoster({
                     requiredNote="Required — none on file yet."
                   />
                 ))}
-                <div className="grid gap-1 rounded-md border p-3">
-                  <span className="text-sm font-medium">Liability waiver</span>
-                  {!walkupLookup ? null : walkupLookup.info.status === "unsigned" && walkupPaper.open ? (
-                    <div className="grid gap-3">
-                      <p className="text-sm font-medium">Paper waiver — this event only</p>
-                      <p className="text-sm text-muted-foreground">
-                        Only for when they couldn&apos;t sign here. It covers this event and nothing
-                        else: they&apos;ll be asked to sign in the portal at their next one.
-                      </p>
-                      <label className="flex items-start gap-2 text-sm font-medium">
-                        <input
-                          id="walkup_paper_waiver_held"
-                          type="checkbox"
-                          className="mt-1"
-                          checked={walkupPaper.held}
-                          onChange={(e) => setWalkupPaper({ open: true, held: e.target.checked })}
-                        />
-                        I hold their signed paper waiver for this event
-                      </label>
-                      <p className="text-xs text-muted-foreground">
-                        Recorded with your name and the time.
-                      </p>
-                      <button
-                        type="button"
-                        className="w-fit text-sm underline underline-offset-4"
-                        onClick={() => setWalkupPaper({ open: false, held: false })}
-                      >
-                        Sign here instead
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <WaiverSigning
-                        info={walkupLookup.info}
-                        value={walkupSign}
-                        onChange={setWalkupSign}
-                        idPrefix="walkup"
-                      />
-                      {/* Deliberately a quiet link, not a button beside the
-                          signing fields: signing here stays the obvious path. */}
-                      {walkupLookup.info.status === "unsigned" && (
+                {walkupLookup && (
+                  <div className="grid gap-1 rounded-md border p-3">
+                    <span className="text-sm font-medium">Liability waiver</span>
+                    {walkupLookup.info.status === "unsigned" && walkupPaper.open ? (
+                      <div className="grid gap-3">
+                        <p className="text-sm font-medium">Paper waiver — this event only</p>
+                        <p className="text-sm text-muted-foreground">
+                          Only for when they couldn&apos;t sign here. It covers this event and nothing
+                          else: they&apos;ll be asked to sign in the portal at their next one.
+                        </p>
+                        <label className="flex items-start gap-2 text-sm font-medium">
+                          <input
+                            id="walkup_paper_waiver_held"
+                            type="checkbox"
+                            className="mt-1"
+                            checked={walkupPaper.held}
+                            onChange={(e) => setWalkupPaper({ open: true, held: e.target.checked })}
+                          />
+                          I hold their signed paper waiver for this event
+                        </label>
+                        <p className="text-xs text-muted-foreground">
+                          Recorded with your name and the time.
+                        </p>
                         <button
                           type="button"
-                          className="mt-2 w-fit text-xs text-muted-foreground underline underline-offset-4"
-                          onClick={() => setWalkupPaper({ open: true, held: false })}
+                          className="w-fit text-sm underline underline-offset-4"
+                          onClick={() => setWalkupPaper({ open: false, held: false })}
                         >
-                          They signed a paper waiver instead
+                          Sign here instead
                         </button>
-                      )}
-                    </>
-                  )}
-                  {!walkupLookup && (
-                    <p className="text-sm text-muted-foreground">
-                      Enter their email to check whether they&apos;ve already signed.
-                    </p>
-                  )}
-                </div>
+                      </div>
+                    ) : (
+                      <>
+                        <WaiverSigning
+                          info={walkupLookup.info}
+                          value={walkupSign}
+                          onChange={setWalkupSign}
+                          idPrefix="walkup"
+                        />
+                        {/* Deliberately a quiet link, not a button beside the
+                            signing fields: signing here stays the obvious path. */}
+                        {walkupLookup.info.status === "unsigned" && (
+                          <button
+                            type="button"
+                            className="mt-2 w-fit text-xs text-muted-foreground underline underline-offset-4"
+                            onClick={() => setWalkupPaper({ open: true, held: false })}
+                          >
+                            They signed a paper waiver instead
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
                 {volunteerConflictShifts && (
                   <RevealPanel role="alert" className="text-sm text-amber-600">
-                    {walkupForm.firstName || "This person"} is signed up to volunteer at this event (
+                    {walkupFirstName || "This person"} is signed up to volunteer at this event (
                     {volunteerConflictShifts.join("; ")}). People normally attend or volunteer, not
                     both. Add them as a participant anyway? Their volunteer{" "}
                     {volunteerConflictShifts.length === 1 ? "shift stays" : "shifts stay"} as{" "}
@@ -1383,7 +1429,7 @@ export function EventRoster({
                 )}
                 {capacityConfirmPending && (
                   <RevealPanel role="alert" className="text-sm text-amber-600">
-                    This event is at capacity. Add {walkupForm.firstName || "them"} anyway?
+                    This event is at capacity. Add {walkupFirstName || "them"} anyway?
                   </RevealPanel>
                 )}
                 {walkupError && (
@@ -1404,9 +1450,11 @@ export function EventRoster({
                 <Button type="submit" disabled={isSubmittingWalkup}>
                   {isSubmittingWalkup
                     ? "Adding..."
-                    : capacityConfirmPending || volunteerConflictShifts
-                      ? "Add anyway"
-                      : "Add walk-up"}
+                    : !walkupLookup
+                      ? "Continue"
+                      : capacityConfirmPending || volunteerConflictShifts
+                        ? "Add anyway"
+                        : "Add walk-up"}
                 </Button>
               </CardFooter>
             </form>
