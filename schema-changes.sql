@@ -13181,3 +13181,142 @@ update storage.buckets
          'image/gif'
        ]
  where id = 'volunteer-certifications';
+
+-- =============================================================================
+-- 2026-10-08 — Event leads: linked within 14 days after the event, and a
+--              daily sweep
+-- =============================================================================
+-- assign_lead_events (2026-09-30 entry) only linked a lead to UPCOMING
+-- events, and only when it ran: as an admin-side action created the
+-- account, or on the account's first sign-in through an emailed link or
+-- code. A lead who signed up the morning after their event, or who already
+-- had an account when their email was typed on an event, stayed unlinked:
+-- "not assigned — no access" on the roster, and no lead in reporting.
+--
+-- 1. assign_lead_events: same rules, but the window is now upcoming events
+--    and ones that ended no more than 14 days ago. Two weeks is how long a
+--    past event's roster is still being worked (late check-ins, missed
+--    walk-ups, waiver follow-up) and covers a lead who signs up a week
+--    late; older events are history, and an admin can still assign one by
+--    hand.
+-- 2. assign_lead_events_sweep(): the same match for EVERY unassigned event
+--    in that window, whatever state the account is in. Run daily by the
+--    14:00 UTC admin-digest job (before the digest is built, so its "Event
+--    leads assigned automatically" line includes them). Same rules as the
+--    single-account version: exact login email (case and spaces aside, no
+--    name matching), never overwrites an assignment, not cancelled, access
+--    not removed. The email has to be trustworthy: confirmed, or an account
+--    an admin-side action made (an invite, a walk-up, the import). A self
+--    sign-up that hasn't confirmed its email gets nothing until it does.
+--    Each link is recorded in event_lead_auto_assignments, like the others.
+--    Service role only.
+--
+-- No new tables, so no new grants. Safe to re-run. One transaction.
+
+begin;
+
+create or replace function public.assign_lead_events(p_user_id uuid default auth.uid())
+returns integer
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_email text;
+  v_name text;
+  v_count integer := 0;
+begin
+  if p_user_id is null then
+    return 0;
+  end if;
+  if auth.uid() is not null then
+    if auth.uid() <> p_user_id then
+      raise exception 'Not allowed' using errcode = '42501';
+    end if;
+    -- First sign-in only: claim the stamp, or stop.
+    update public.profiles
+       set lead_events_checked_at = now()
+     where id = p_user_id and lead_events_checked_at is null;
+    if not found then
+      return 0;
+    end if;
+  end if;
+
+  select lower(btrim(u.email)),
+         coalesce(nullif(btrim(concat_ws(' ', p.first_name, p.last_name)), ''), btrim(u.email))
+    into v_email, v_name
+    from auth.users u
+    join public.profiles p on p.id = u.id
+   where u.id = p_user_id
+     and p.access_removed_at is null
+     -- The service role only runs this for accounts admins created; a
+     -- signed-in caller's email must be confirmed.
+     and (auth.uid() is null or u.email_confirmed_at is not null);
+  if coalesce(v_email, '') = '' then
+    return 0;
+  end if;
+
+  with assigned as (
+    update public.events e
+       set lead_user_id = p_user_id, updated_at = now()
+     where e.lead_user_id is null
+       and lower(btrim(e.lead_email)) = v_email
+       -- Upcoming, or ended no more than 14 days ago (the same window as
+       -- assign_lead_events_sweep).
+       and coalesce(e.ends_at, e.starts_at) >= now() - interval '14 days'
+       and coalesce(e.status, 'scheduled') <> 'cancelled'
+    returning e.id
+  )
+  insert into public.event_lead_auto_assignments (event_id, user_id, person_name, email)
+  select a.id, p_user_id, v_name, v_email from assigned a;
+  get diagnostics v_count = row_count;
+  return v_count;
+end $function$;
+
+revoke all on function public.assign_lead_events(uuid) from public, anon;
+grant execute on function public.assign_lead_events(uuid) to authenticated, service_role;
+
+create or replace function public.assign_lead_events_sweep()
+returns integer
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_count integer := 0;
+begin
+  with candidates as (
+    select e.id as event_id,
+           u.id as user_id,
+           lower(btrim(u.email)) as email,
+           coalesce(nullif(btrim(concat_ws(' ', p.first_name, p.last_name)), ''), btrim(u.email)) as person_name
+      from public.events e
+      join auth.users u on lower(btrim(u.email)) = lower(btrim(e.lead_email))
+      join public.profiles p on p.id = u.id
+     where e.lead_user_id is null
+       and nullif(btrim(e.lead_email), '') is not null
+       and coalesce(e.status, 'scheduled') <> 'cancelled'
+       and coalesce(e.ends_at, e.starts_at) >= now() - interval '14 days'
+       and p.access_removed_at is null
+       -- Confirmed, or made by an admin-side action (never sent a sign-up
+       -- confirmation). Not a pending self sign-up.
+       and (u.email_confirmed_at is not null or u.confirmation_sent_at is null)
+  ),
+  assigned as (
+    update public.events e
+       set lead_user_id = c.user_id, updated_at = now()
+      from candidates c
+     where e.id = c.event_id
+       and e.lead_user_id is null
+    returning e.id, c.user_id, c.person_name, c.email
+  )
+  insert into public.event_lead_auto_assignments (event_id, user_id, person_name, email)
+  select a.id, a.user_id, a.person_name, a.email from assigned a;
+  get diagnostics v_count = row_count;
+  return v_count;
+end $function$;
+
+revoke all on function public.assign_lead_events_sweep() from public, anon, authenticated;
+grant execute on function public.assign_lead_events_sweep() to service_role;
+
+commit;
