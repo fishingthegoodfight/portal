@@ -13323,3 +13323,81 @@ revoke all on function public.assign_lead_events_sweep() from public, anon, auth
 grant execute on function public.assign_lead_events_sweep() to service_role;
 
 commit;
+
+-- =============================================================================
+-- 2026-10-08 — Fly fishing section asks right- or left-handed
+-- =============================================================================
+-- "Are you right- or left-handed?" joins the "Fly fishing experience & gear
+-- sizing" registration section (lib/registration-sections.ts), asked of
+-- everyone whether or not they borrow gear: it's how a rod and reel are set
+-- up for them and how casting is taught. Like the rest of the section it's
+-- saved on the profile and filled in from then on.
+--
+-- 1. profiles.casting_hand: 'right' or 'left', null until answered. Its own
+--    column with fixed values, so it can be counted and reported on
+--    directly.
+-- 2. registration_incomplete_section (the database's copy of the catalog's
+--    required fields, checked by the RSVP and volunteer sign-up functions):
+--    same as the 2026-09-23 version, plus casting_hand in the fly fishing
+--    section. Someone whose section was already complete is asked this one
+--    question on their next RSVP to an event with that section, then never
+--    again. Existing RSVPs are untouched.
+--
+-- An existing table: authenticated already updates its own profile row, so
+-- the new column needs no grant. Safe to re-run. One transaction.
+
+begin;
+
+alter table public.profiles
+  add column if not exists casting_hand text
+    check (casting_hand in ('right', 'left'));
+
+create or replace function public.registration_incomplete_section(p_user_id uuid, p_event_id bigint)
+returns text
+language plpgsql
+stable
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_sections text[];
+  p public.profiles%rowtype;
+  blank constant text := '';
+begin
+  select coalesce(registration_sections, '{}') into v_sections
+    from public.events where id = p_event_id;
+  select * into p from public.profiles where id = p_user_id;
+  if not found then
+    return 'emergency_contact';
+  end if;
+
+  -- Always required.
+  if coalesce(btrim(p.emergency_contact), blank) = blank
+     or coalesce(btrim(p.emergency_phone), blank) = blank then
+    return 'emergency_contact';
+  end if;
+
+  if 'dietary' = any(v_sections)
+     and coalesce(btrim(p.dietary_notes), blank) = blank then
+    return 'dietary';
+  end if;
+
+  if 'fly_fishing_sizing' = any(v_sections) and (
+       coalesce(btrim(p.fly_fishing_experience), blank) = blank
+       or coalesce(btrim(p.casting_hand), blank) = blank
+       or p.needs_boots is null
+       or (p.needs_boots and coalesce(btrim(p.boot_size), blank) = blank)
+       or p.needs_waders is null
+       or (p.needs_waders and coalesce(btrim(p.wader_size), blank) = blank)
+       or p.needs_rod_reel is null
+     ) then
+    return 'fly_fishing_sizing';
+  end if;
+
+  return null;
+end $function$;
+
+revoke all on function public.registration_incomplete_section(uuid, bigint) from public, anon, authenticated;
+grant execute on function public.registration_incomplete_section(uuid, bigint) to service_role;
+
+commit;

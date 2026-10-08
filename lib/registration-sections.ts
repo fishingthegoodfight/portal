@@ -103,6 +103,11 @@ export type RegistrationSection = {
 
 export const FLY_FISHING_EXPERIENCE = ["None", "Beginner", "Intermediate", "Advanced"] as const;
 export const WADER_SIZES = ["S", "M", "L", "XL", "XXL"] as const;
+/** profiles.casting_hand: stored value → what's shown. */
+export const CASTING_HANDS = [
+  { value: "right", label: "Right-handed" },
+  { value: "left", label: "Left-handed" },
+] as const;
 /** US men's 6 through 15, including half sizes. */
 export const BOOT_SIZES: string[] = Array.from({ length: 19 }, (_, i) =>
   String(6 + i * 0.5),
@@ -203,6 +208,15 @@ export const REGISTRATION_SECTIONS: RegistrationSection[] = [
         options: FLY_FISHING_EXPERIENCE.map((v) => ({ value: v, label: v })),
       },
       {
+        // Asked of everyone, gear or not: how a rod and reel are set up for
+        // them, and how casting is taught.
+        key: "casting_hand",
+        label: "Are you right- or left-handed?",
+        type: "select",
+        required: true,
+        options: CASTING_HANDS.map((h) => ({ value: h.value, label: h.label })),
+      },
+      {
         key: "needs_boots",
         label: "Do you need to borrow boots?",
         type: "yesno_bool",
@@ -242,6 +256,7 @@ export const REGISTRATION_SECTIONS: RegistrationSection[] = [
         needs === "true" ? `${label} ${size || "?"}` : null;
       return [
         p.fly_fishing_experience,
+        CASTING_HANDS.find((h) => h.value === p.casting_hand)?.label,
         gear(p.needs_boots, "boots", p.boot_size),
         gear(p.needs_waders, "waders", p.wader_size),
         p.needs_rod_reel === "true" ? "rod & reel" : null,
