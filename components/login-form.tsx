@@ -16,6 +16,7 @@ import Link from "next/link";
 import { useState } from "react";
 
 import { safeNext, withNext } from "@/lib/safe-next";
+import { codePagePath } from "@/lib/code-page";
 
 export function LoginForm({
   className,
@@ -91,8 +92,12 @@ export function LoginForm({
               <div className="grid gap-2">
                 <div className="flex items-center">
                   <Label htmlFor="password">Password</Label>
+                  {/* Straight to the code page, carrying where they were
+                      headed (e.g. an event's RSVP) and any email already
+                      typed — so a walk-up who never had a password ends up
+                      on the RSVP, not the events list. */}
                   <Link
-                    href="/auth/forgot-password"
+                    href={codePagePath({ mode: "reset", email: email.trim() || null, next })}
                     className="ml-auto inline-block text-sm underline-offset-4 hover:underline"
                   >
                     Forgot your password?
