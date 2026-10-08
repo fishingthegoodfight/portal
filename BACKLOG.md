@@ -70,21 +70,24 @@ Separately, an **event lead** (`events.lead_user_id`) can manage just that one e
 - **Failures:** the whole run failing, or any single reminder failing, now goes at the top of that day's admin digest as "Reference reminders failed (N)", with the reason. That's enough on its own to send the digest.
 - **Clean runs:** every run now logs `[reference-reminders] done` with how many it checked, reminded and gave up on, so a quiet day can be told apart from one that never ran.
 
-### 4. Chapter directory and engagement
-**What:** a per-chapter list of members with an engagement signal, so leads see who's active, who's new and who has gone quiet.
+### 4. Members (chapter people and engagement): Part 1 done 2026-10-08, Part 2 next
+**Part 1 (done):** `/protected/members` and Setup → Members (2026-10-08 "Members" entry in `schema-changes.sql`).
+- **Who sees it:** admins (all chapters, plus a "No chapter" group with set-chapter), chapter leads (the chapters they lead), and anyone approved for a role type ticked **Chapter leadership team** (their home chapter). This is enforced in the database (`my_member_chapters`, `members_list`, `can_view_member`).
+- **Logic:** bands, touch due dates and drop alerts are derived in `lib/members.ts`, and nothing is stored. Touches are in `member_touches`.
+- **Naming:** it's called "Members". "Directory" is kept for the future opt-in participant directory (`profiles.directory_opt_in`, which nothing reads yet).
 
-**Why:** leads have no view of their chapter's people beyond single event rosters. Attendance history already drives the volunteer application's events-attended threshold, so it's the natural source.
+**Part 2 (next): the weekly "Members to reach out to this week" email.** As agreed:
+- **Who gets it:** each Monday, one person per chapter gets it: whoever holds the "directory role". Admins pick that role in Setup, from the role types ticked Chapter leadership team.
+- **What's in it:**
+  - new members this week;
+  - open drop alerts;
+  - people overdue for a touch.
 
-**Decided:**
-- **Membership:** home chapter (`profiles.chapter`) decides which list someone is on.
-- **Engagement:** worked out from activity, never a manual tag.
-- **Drop detection:** someone who was engaged and has stopped coming triggers its own alert, separate from the list.
-- **New members:**
-  - flagged on their first check-in;
-  - they get a two-week window for a lead to reach out.
-- **Quiet members:** a tighter contact cadence than active ones.
-- **Attendance counts as a touch:** checking in at an event resets the contact clock.
-- **Keeping history together:** this relies on one record per person. Emails are unique and normalized in `profiles` since the 2026-10-06 "One profile per email" entry, so walk-ups and sign-ups don't split someone's history.
+  Each row shows their last touch and links to their row on Members (`/protected/members?chapter=…#member-<id>`).
+- **When it's skipped:** if every section is empty, don't send it.
+- **Admins:** get one combined email for all chapters. It says which chapters have nobody in the directory role, so an admin knows to fill it.
+- **Setup:** the day and an on/off toggle, off by default.
+- **Where it runs:** inside the existing daily 15:00 UTC reminders job (`app/api/cron/reminders/route.ts`), not a new cron. Use `describeMember` from `lib/members.ts` so the email matches the page.
 
 ### 5. Change-email flow
 **What:** let someone change their login email themselves.

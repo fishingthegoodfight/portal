@@ -13689,6 +13689,8 @@ commit;
 -- =============================================================================
 -- 2026-10-08 — Members: each chapter's people, engagement and touches
 -- =============================================================================
+-- Run 2026-10-08, before the matching code was pushed to main.
+--
 -- Members (/protected/members, backlog item 4) lists every profile whose
 -- home chapter is a chapter, with first/last seen, check-ins in the last 6
 -- months, an engagement band, the last touch, and drop alerts. Bands, due
