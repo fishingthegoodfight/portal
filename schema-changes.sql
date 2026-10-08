@@ -13186,6 +13186,9 @@ update storage.buckets
 -- 2026-10-08 — Event leads: linked within 14 days after the event, and a
 --              daily sweep
 -- =============================================================================
+-- Run 2026-10-08, before the matching code was pushed to main; the first
+-- sweep was run by hand the same day.
+--
 -- assign_lead_events (2026-09-30 entry) only linked a lead to UPCOMING
 -- events, and only when it ran: as an admin-side action created the
 -- account, or on the account's first sign-in through an emailed link or
