@@ -1,3 +1,5 @@
+import { certState } from "@/lib/certifications";
+
 /**
  * Volunteer registry domain: statuses, role types, and the catalogs behind
  * the registration form's multi-selects. See the 2026-09-22
@@ -92,11 +94,11 @@ export const TSHIRT_SIZES = ["XS", "S", "M", "L", "XL", "XXL", "XXXL"] as const;
 export const CERTIFICATION_KINDS = { first_aid_cpr_aed: "First Aid/CPR/AED" } as const;
 
 /** A cert is "missing or expired" for the admin list's flag when the role
- * needs one and there's no row on file with a future (or no) expiry. */
+ * needs one and there's no row on file good through today (Denver) — see
+ * certState in lib/certifications.ts. Expiring soon still counts. */
 export function certIsCurrent(cert: { expires_on: string | null } | null | undefined): boolean {
   if (!cert) return false;
-  if (!cert.expires_on) return true;
-  return new Date(cert.expires_on).getTime() >= Date.now();
+  return certState(cert.expires_on) !== "expired";
 }
 
 /** Sort key + grouping for the role types admin screen: retreat-only,

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import { createClient } from "@/lib/supabase/client";
+import { CERT_ACCEPT, CERT_MAX_BYTES } from "@/lib/certifications";
 import {
   loadVolunteerWaiverInfoAction,
   submitVolunteerRegistrationAction,
@@ -155,6 +156,10 @@ export function VolunteerRegistrationForm({
     setIsSubmitting(true);
 
     let certification: SubmitVolunteerRegistrationInput["certification"];
+    if (wantsRetreats && certFile && certFile.size > CERT_MAX_BYTES) {
+      setCertError("That file is over 10 MB. Try a smaller photo or a PDF.");
+      return;
+    }
     if (wantsRetreats && certFile) {
       setCertUploading(true);
       try {
@@ -496,7 +501,7 @@ export function VolunteerRegistrationForm({
               <Input
                 id="v_cert_file"
                 type="file"
-                accept="image/*,application/pdf"
+                accept={CERT_ACCEPT}
                 onChange={(e) => setCertFile(e.target.files?.[0] ?? null)}
               />
             </div>

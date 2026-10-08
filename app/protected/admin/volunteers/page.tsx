@@ -6,7 +6,7 @@ import { InviteVolunteerForm } from "@/components/admin/invite-volunteer-form";
 import { VolunteerFilters } from "@/components/admin/volunteer-filters";
 import { VolunteersList } from "@/components/admin/volunteers-list";
 import { Button } from "@/components/ui/button";
-import { accountStateOf, NOT_REGISTERED_FILTER, type VolunteerStatus } from "@/lib/volunteers";
+import { accountStateOf, certIsCurrent, NOT_REGISTERED_FILTER, type VolunteerStatus } from "@/lib/volunteers";
 import { loadChapters, timezoneForChapter } from "@/lib/chapters";
 
 // "Send portal invite" runs on this page — a batch of up to
@@ -98,8 +98,7 @@ async function VolunteersListLoader({
   }
   const currentCertByVolunteer = new Map<string, boolean>();
   for (const c of (certs ?? []) as { volunteer_id: string; expires_on: string | null }[]) {
-    // eslint-disable-next-line react-hooks/purity -- Server Component: renders once per request on the server (after awaiting request data), so there's no re-render or hydration to disagree with this timestamp.
-    const current = !c.expires_on || new Date(c.expires_on).getTime() >= Date.now();
+    const current = certIsCurrent(c);
     if (current) currentCertByVolunteer.set(c.volunteer_id, true);
     else if (!currentCertByVolunteer.has(c.volunteer_id)) currentCertByVolunteer.set(c.volunteer_id, false);
   }
@@ -188,6 +187,9 @@ export default function AdminVolunteersPage({
         <div className="flex flex-wrap justify-end gap-2">
           <Button asChild variant="outline">
             <Link href="/protected/admin/volunteers/import">Import volunteers</Link>
+          </Button>
+          <Button asChild variant="outline">
+            <Link href="/protected/admin/volunteers/certifications">Certifications</Link>
           </Button>
           <Button asChild variant="outline">
             <Link href="/protected/admin/volunteers/roles">Role types</Link>

@@ -8,6 +8,8 @@ import { requireAdmin } from "@/lib/admin/require-admin";
 import { formatDateInZone } from "@/lib/format-date";
 import { loadChapters, timezoneForChapter } from "@/lib/chapters";
 import { accountStateOf, certIsCurrent, VOLUNTEER_STATUS_LABELS, type VolunteerStatus } from "@/lib/volunteers";
+import { certState, formatCertDate } from "@/lib/certifications";
+import { CertificationActions } from "@/components/admin/certification-actions";
 import { VolunteerStatusSelect } from "@/components/admin/volunteer-status-select";
 import { VolunteerRoleApprovals, type RoleTypeForApproval } from "@/components/admin/volunteer-role-approvals";
 import { VolunteerAdminNotes } from "@/components/admin/volunteer-admin-notes";
@@ -75,7 +77,7 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
         .is("revoked_at", null),
       supabase
         .from("volunteer_certifications")
-        .select("id, kind, file_path, issued_on, expires_on, verified_at")
+        .select("id, kind, file_path, issued_on, expires_on, verified_at, verified_by")
         .eq("volunteer_id", volunteerId)
         .order("created_at", { ascending: false }),
       supabase
@@ -242,16 +244,30 @@ async function VolunteerDetailLoader({ volunteerId }: { volunteerId: string }) {
           {(certs ?? []).length === 0 ? (
             <p className="text-muted-foreground">None on file.</p>
           ) : (
-            (certs ?? []).map((c) => (
-              <div key={c.id as number} className="flex items-center justify-between gap-3">
-                <span>
-                  First Aid/CPR/AED — issued {c.issued_on ?? "—"}, expires {c.expires_on ?? "—"}
-                </span>
-                <Badge variant={certIsCurrent(c as { expires_on: string | null }) ? "secondary" : "destructive"}>
-                  {certIsCurrent(c as { expires_on: string | null }) ? "Current" : "Expired"}
-                </Badge>
-              </div>
-            ))
+            (certs ?? []).map((c) => {
+              const state = certState(c.expires_on as string | null);
+              return (
+                <div
+                  key={c.id as number}
+                  className="flex flex-col gap-2 border-b pb-2 last:border-b-0 sm:flex-row sm:items-start sm:justify-between"
+                >
+                  <span className="flex flex-wrap items-center gap-2">
+                    First Aid/CPR/AED — issued {formatCertDate(c.issued_on as string | null)}, expires{" "}
+                    {formatCertDate(c.expires_on as string | null)}
+                    <Badge variant={state === "expired" ? "destructive" : state === "expiring" ? "outline" : "secondary"}>
+                      {state === "expired" ? "Expired" : state === "expiring" ? "Expiring soon" : "Current"}
+                    </Badge>
+                  </span>
+                  <CertificationActions
+                    certId={c.id as number}
+                    hasFile={Boolean(c.file_path)}
+                    verifiedLabel={
+                      c.verified_at ? `Verified ${formatCertDate((c.verified_at as string).slice(0, 10))}` : null
+                    }
+                  />
+                </div>
+              );
+            })
           )}
         </CardContent>
       </Card>

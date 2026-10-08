@@ -8,6 +8,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { certIsCurrent, VOLUNTEER_STATUS_LABELS, type VolunteerStatus } from "@/lib/volunteers";
+import { certState, formatCertDate, latestCert } from "@/lib/certifications";
+import { OwnCertificationUpload } from "@/components/own-certification-upload";
 import { formatDateInZone, formatEventDateRange } from "@/lib/format-date";
 import { VolunteerShiftsList, type VolunteerShift } from "@/components/volunteer-shifts-list";
 import { loadOpenShiftsForVolunteer } from "@/lib/volunteer-signups";
@@ -84,23 +86,36 @@ async function VolunteerHomeLoader({
   const [{ data: approvals }, { data: certs }] = await Promise.all([
     supabase
       .from("volunteer_role_approvals")
-      .select("id, role_type:volunteer_role_types(name)")
+      .select("id, role_type:volunteer_role_types(name, requires_cert)")
       .eq("volunteer_id", userId)
       .is("revoked_at", null),
     supabase
       .from("volunteer_certifications")
-      .select("id, kind, issued_on, expires_on")
+      .select("id, kind, file_path, issued_on, expires_on")
       .eq("volunteer_id", userId)
       .order("created_at", { ascending: false }),
   ]);
 
-  const approvedRoles = ((approvals ?? []) as unknown as { id: number; role_type: { name: string } | null }[])
-    .map((a) => a.role_type?.name)
-    .filter((name): name is string => Boolean(name));
+  const approvalRows = (approvals ?? []) as unknown as {
+    id: number;
+    role_type: { name: string; requires_cert: boolean } | null;
+  }[];
+  const approvedRoles = approvalRows.map((a) => a.role_type?.name).filter((name): name is string => Boolean(name));
 
   const wantsRetreats = (profile?.program_interests as string[] | null)?.includes("Retreats") ?? false;
-  const certList = (certs ?? []) as { id: number; kind: string; issued_on: string | null; expires_on: string | null }[];
+  const certList = (certs ?? []) as {
+    id: number;
+    kind: string;
+    file_path: string | null;
+    issued_on: string | null;
+    expires_on: string | null;
+  }[];
   const hasCurrentCert = certList.some((c) => certIsCurrent(c));
+  // Asked of anyone approved for a role that needs one (the role type's
+  // "Requires First Aid/CPR/AED"), and of anyone interested in Retreats.
+  const certNeeded = wantsRetreats || approvalRows.some((a) => a.role_type?.requires_cert);
+  const latest = latestCert(certList);
+  const certExpiringSoon = latest != null && certState(latest.expires_on) === "expiring";
 
   const outstanding: string[] = [];
   // Only for shifts at events that require one (the same rule as for
@@ -111,12 +126,15 @@ async function VolunteerHomeLoader({
       `${healthNeeded[0].year} health form — needed for ${healthNeeded.map((e) => e.name).join(", ")}`,
     );
   }
-  if (wantsRetreats && !hasCurrentCert) {
+  if (certNeeded && !hasCurrentCert) {
     outstanding.push(
       certList.length > 0
         ? "Certification renewal (First Aid/CPR/AED expired)"
         : "First Aid/CPR/AED certification",
     );
+  }
+  if (certNeeded && hasCurrentCert && certExpiringSoon && latest?.expires_on) {
+    outstanding.push(`First Aid/CPR/AED renewal — yours expires ${formatCertDate(latest.expires_on)}`);
   }
 
   const status = volunteer.status as VolunteerStatus;
@@ -328,11 +346,36 @@ async function VolunteerHomeLoader({
             <div className="mt-3 flex flex-col gap-1 text-sm text-muted-foreground">
               {certList.map((c) => (
                 <p key={c.id}>
-                  First Aid/CPR/AED — issued {c.issued_on ?? "—"}, expires {c.expires_on ?? "—"}
+                  First Aid/CPR/AED — issued {formatCertDate(c.issued_on)}, expires {formatCertDate(c.expires_on)}
                   {" · "}
-                  {certIsCurrent(c) ? "current" : "expired"}
+                  {certState(c.expires_on) === "expired"
+                    ? "expired"
+                    : certState(c.expires_on) === "expiring"
+                      ? "expiring soon"
+                      : "current"}
+                  {c.file_path && (
+                    <>
+                      {" · "}
+                      <a
+                        href={`/protected/certifications/${c.id}/file`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="underline underline-offset-4"
+                      >
+                        View
+                      </a>
+                    </>
+                  )}
                 </p>
               ))}
+            </div>
+          )}
+          {(certNeeded || certList.length > 0) && (
+            <div className="mt-3">
+              <OwnCertificationUpload
+                userId={userId}
+                label={certList.length > 0 ? "Upload a new certification" : "Upload your First Aid/CPR/AED certification"}
+              />
             </div>
           )}
         </CardContent>

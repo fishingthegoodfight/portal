@@ -13147,3 +13147,35 @@ revoke all on function public.walkup_welcome_due(timestamptz) from public, anon,
 grant execute on function public.walkup_welcome_due(timestamptz) to service_role;
 
 commit;
+
+-- =============================================================================
+-- 2026-10-08 — Certification uploads: images and PDFs only, 10 MB
+-- =============================================================================
+-- Volunteers can now add a First Aid/CPR/AED certification from the
+-- Volunteer page (not only inside registration), and admins open the file
+-- and mark it verified from Volunteers → Certifications or a volunteer's
+-- page (lib/certifications.ts). Nothing about who can read or write
+-- changes: the existing volunteer_certifications policies (own and admin)
+-- and the bucket's storage policies already cover it, and the verify step
+-- uses the existing admin update policy.
+--
+-- The volunteer-certifications bucket was created with no limits, so the
+-- browser's "images or PDF" filter was the only check. Now the bucket
+-- itself refuses anything else, and anything over 10 MB (the forms check
+-- the same, so the message is a clear one). Phone photos come as JPEG,
+-- PNG, HEIC/HEIF or WebP.
+--
+-- No new tables, so no new grants. Safe to re-run.
+
+update storage.buckets
+   set file_size_limit = 10485760,
+       allowed_mime_types = array[
+         'application/pdf',
+         'image/jpeg',
+         'image/png',
+         'image/webp',
+         'image/heic',
+         'image/heif',
+         'image/gif'
+       ]
+ where id = 'volunteer-certifications';

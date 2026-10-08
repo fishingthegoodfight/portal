@@ -5,7 +5,7 @@ import { profileEmailPattern } from "@/lib/profile-email";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { assignLeadEventsToNewAccount } from "@/lib/admin/lead-account";
 import { requireAdmin } from "@/lib/admin/require-admin";
-import { VOLUNTEER_STATUSES, type VolunteerStatus } from "@/lib/volunteers";
+import { certIsCurrent, VOLUNTEER_STATUSES, type VolunteerStatus } from "@/lib/volunteers";
 
 export type ActionResult = { ok: true } | { ok: false; error: string };
 
@@ -128,9 +128,7 @@ export async function approveRoleAction(
       .select("expires_on")
       .eq("volunteer_id", volunteerId)
       .eq("kind", "first_aid_cpr_aed");
-    const hasCurrent = (certs ?? []).some(
-      (c) => !c.expires_on || new Date(c.expires_on).getTime() >= Date.now(),
-    );
+    const hasCurrent = (certs ?? []).some((c) => certIsCurrent(c as { expires_on: string | null }));
     certWarning = !hasCurrent;
   }
 
