@@ -12978,6 +12978,9 @@ create trigger profiles_protect_login_email
 -- =============================================================================
 -- 2026-10-06 — Welcome email for accounts created at a walk-up
 -- =============================================================================
+-- Run 2026-10-06, and the catch-up sent to the nine from Knot Just Fly
+-- Tying the same day.
+--
 -- A walk-up for someone with no account creates one for them (confirmed,
 -- with a random password nobody knows), so they have an account they don't
 -- know about and can't use. They now get a short welcome from the chapter

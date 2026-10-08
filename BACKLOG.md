@@ -18,7 +18,7 @@ Separately, an **event lead** (`events.lead_user_id`) can manage just that one e
 
 ## Items, in priority order
 
-### 1. Welcome email for walk-up accounts (top item, built 2026-10-06, catch-up not yet sent)
+### 1. Welcome email for walk-up accounts (done 2026-10-06)
 **What:** each account created by a walk-up gets a short welcome from the chapter with a one-time set-password link.
 
 **Why:** a walk-up for someone with no account creates one for them (`auth.admin.createUser`, email confirmed, random password nobody knows). They have an account they don't know about and can't log in to. Nine real people got accounts this way at the **Knot Just Fly Tying** event on the evening of 2026-10-05 (Denver time; 01:33–02:45 UTC on 2026-10-06).
@@ -30,7 +30,7 @@ Separately, an **event lead** (`events.lead_user_id`) can manage just that one e
   - The daily 15:00 UTC reminders job sends it the morning after the event's last day, in the event's time zone, within a week.
   - It skips anyone who has signed in, so someone who has already set a password never gets it.
   - A failed send is retried for up to 3 days.
-- **Catch-up:** Setup → **Walk-up welcome emails** lists everyone who should have had it and hasn't. Everyone is ticked by default; you can untick anyone. Nothing sends until an admin confirms. **The send for the nine from Oct 5 is the admin's to do by hand.**
+- **Catch-up:** Setup → **Walk-up welcome emails** lists everyone who should have had it and hasn't. Everyone is ticked by default; you can untick anyone. Nothing sends until an admin confirms. The nine from Oct 5 were sent it on 2026-10-06.
 - **Expired links:** a link that has expired lands on `/auth/error` ("This link has expired"), where they can email themselves a fresh one with no admin involved.
 
 **Known blind spot:** an email address typed wrong at the walk-up desk. The welcome goes nowhere, nothing in the portal shows it, and a typo looks the same as someone who just hasn't replied. See item 11.
