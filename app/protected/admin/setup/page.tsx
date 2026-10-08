@@ -42,7 +42,7 @@ const SETUP_LINKS = [
   {
     href: "/protected/admin/setup/walkup-welcome",
     title: "Walk-up welcome emails",
-    description: "The set-password email for accounts made at a walk-up. See who hasn't had it and send it to them.",
+    description: "The welcome email for accounts made at a walk-up. See who hasn't had it and send it to them.",
   },
   {
     href: "/protected/admin/setup/interest-areas",

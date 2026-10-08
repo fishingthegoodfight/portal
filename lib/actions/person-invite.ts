@@ -5,7 +5,8 @@ import { profileEmailPattern } from "@/lib/profile-email";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { assignLeadEventsToNewAccount } from "@/lib/admin/lead-account";
 import { requireAdmin } from "@/lib/admin/require-admin";
-import { authConfirmUrl, buildConfirmUrl } from "@/lib/auth-confirm-link";
+import { getSiteUrl } from "@/lib/site-url";
+import { codePagePath } from "@/lib/code-page";
 import { sendPersonInviteEmail } from "@/lib/email/send";
 import { setDataAccessAction, setUserRoleAction } from "@/lib/actions/roles";
 import type { Role } from "@/lib/roles";
@@ -15,7 +16,11 @@ import { isChapterName, loadChapters, VIRTUAL_CHAPTER } from "@/lib/chapters";
 // without the registration form. The /auth/update-password prefix is also
 // what app/auth/error recognizes as an expired/used invite.
 const PROFILE_PATH = "/protected/profile";
-const SET_PASSWORD_NEXT = `/auth/update-password?next=${encodeURIComponent(PROFILE_PATH)}`;
+/** The code page, email filled in, then their profile. No credential in it
+ * (lib/one-time-links.ts). */
+function setupUrl(email: string): string {
+  return `${getSiteUrl()}${codePagePath({ mode: "setup", email, next: PROFILE_PATH })}`;
+}
 
 const ROLES: Role[] = ["participant", "chapter_lead", "admin"];
 
@@ -44,10 +49,11 @@ export type InvitePersonResult =
  * email and adds the volunteers row to it.
  *
  * By account state:
- *  - No account: creates one (generateLink "invite") and emails a
- *    set-password link that lands on their profile.
+ *  - No account: creates one (generateLink "invite", link never sent) and
+ *    emails a button to the code page, where they ask for a code, set a
+ *    password and land on their profile.
  *  - An account that was never confirmed (an earlier invite, of either kind,
- *    they didn't finish): re-sends via "recovery" — same destination.
+ *    they didn't finish): re-sends the same button.
  *  - A confirmed account: refused, with a pointer to changing their role
  *    below. Nothing is sent and nothing changes.
  * Role and flags are applied through the same admin-only functions as the
@@ -95,11 +101,12 @@ export async function invitePersonAction(input: InvitePersonInput): Promise<Invi
   let actionUrl: string;
 
   if (!existingProfile) {
+    // generateLink "invite" only creates the account; its link is never
+    // sent — they get a code on the code page when they're there.
     const { data: link, error: linkError } = await adminClient.auth.admin.generateLink({
       type: "invite",
       email,
       options: {
-        redirectTo: authConfirmUrl(),
         data: { first_name: firstName, last_name: lastName },
       },
     });
@@ -107,7 +114,7 @@ export async function invitePersonAction(input: InvitePersonInput): Promise<Invi
       return { ok: false, error: linkError?.message ?? "Failed to create the account" };
     }
     userId = link.user.id;
-    actionUrl = buildConfirmUrl(link.properties.hashed_token, "invite", SET_PASSWORD_NEXT);
+    actionUrl = setupUrl(email);
     await assignLeadEventsToNewAccount(adminClient, userId);
 
     // handle_new_user() only copies id/email/directory_opt_in — the name is
@@ -129,14 +136,7 @@ export async function invitePersonAction(input: InvitePersonInput): Promise<Invi
         error: `${email} already has an account. Search for them under "Find someone" to change their role or access.`,
       };
     }
-    const { data: link, error: linkError } = await adminClient.auth.admin.generateLink({
-      type: "recovery",
-      email,
-    });
-    if (linkError || !link?.properties) {
-      return { ok: false, error: linkError?.message ?? "Failed to generate a new invite link" };
-    }
-    actionUrl = buildConfirmUrl(link.properties.hashed_token, "recovery", SET_PASSWORD_NEXT);
+    actionUrl = setupUrl(email);
   }
 
   // Only what differs from what's on file — a resend never re-saves a role

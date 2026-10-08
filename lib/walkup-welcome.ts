@@ -1,5 +1,5 @@
 import type { createAdminClient } from "@/lib/supabase/admin";
-import { buildConfirmUrl } from "@/lib/auth-confirm-link";
+import { getSiteUrl } from "@/lib/site-url";
 import { bulkSendGapMs, sendWalkupWelcomeEmail } from "@/lib/email/send";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
@@ -16,13 +16,13 @@ type AdminClient = ReturnType<typeof createAdminClient>;
  *  - Catch-up: accounts made before this existed, sent only when an admin
  *    picks them on Setup → Walk-up welcome emails.
  *
- * The link is a one-time set-password ("recovery") link, the same kind a
- * re-sent invite uses. Once it expires it lands on /auth/error, which lets
- * them email themselves a new one.
+ * The email carries no credential (lib/one-time-links.ts): its button is
+ * the public events list, and when they want to RSVP, Forgot password
+ * emails them a code while they're at the screen.
  */
 
-/** Where setting the password takes them. */
-const AFTER_PASSWORD_PATH = "/protected/events";
+/** The public upcoming-events list the welcome's button opens. */
+const PUBLIC_EVENTS_PATH = "/events";
 
 /** A failed automatic send is retried on later runs up to this many tries. */
 export const WALKUP_WELCOME_MAX_ATTEMPTS = 3;
@@ -87,14 +87,10 @@ export function eventDayPhrase(startsAt: string, timeZone: string, now: Date): s
   return `on ${label}`;
 }
 
-/** Sends one welcome. Throws on failure; recording it is the caller's job. */
-export async function sendWalkupWelcome(
-  admin: AdminClient,
-  recipient: WalkupWelcomeRecipient,
-  now: Date,
-): Promise<void> {
-  const { data: link, error } = await admin.auth.admin.generateLink({ type: "recovery", email: recipient.email });
-  if (error || !link?.properties) throw error ?? new Error("no link returned");
+/** Sends one welcome. Throws on failure; recording it is the caller's job.
+ * Carries no credential: the button is the public events list, and Forgot
+ * password emails a code when they want in. */
+export async function sendWalkupWelcome(recipient: WalkupWelcomeRecipient, now: Date): Promise<void> {
   await sendWalkupWelcomeEmail({
     toEmail: recipient.email,
     firstName: recipient.firstName || null,
@@ -102,11 +98,7 @@ export async function sendWalkupWelcome(
     dayPhrase: eventDayPhrase(recipient.eventStartsAt, recipient.timeZone, now),
     leadName: recipient.leadName,
     chapterName: recipient.chapterName,
-    actionUrl: buildConfirmUrl(
-      link.properties.hashed_token,
-      "recovery",
-      `/auth/update-password?next=${encodeURIComponent(AFTER_PASSWORD_PATH)}`,
-    ),
+    eventsUrl: `${getSiteUrl()}${PUBLIC_EVENTS_PATH}`,
   });
 }
 
@@ -145,7 +137,7 @@ export async function runWalkupWelcomeEmails(
   for (const [index, recipient] of due.entries()) {
     if (index > 0) await new Promise((resolve) => setTimeout(resolve, gap));
     try {
-      await sendWalkupWelcome(admin, recipient, now);
+      await sendWalkupWelcome(recipient, now);
       await admin
         .from("walkup_welcome_emails")
         .update({ sent_at: new Date().toISOString(), last_error: null })

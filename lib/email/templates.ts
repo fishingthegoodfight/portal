@@ -5,12 +5,10 @@
  * styles (email clients strip <style> blocks unreliably), no images.
  */
 
-import { ONE_TIME_LINK_NOTE } from "@/lib/one-time-links";
+import { CODE_LIFETIME } from "@/lib/one-time-links";
 
 const ORG_NAME = "Fishing the Good Fight";
 
-/** Under the button of every email carrying a one-time account link. */
-const ONE_TIME_LINK_NOTE_HTML = `<p style="margin:0 0 8px;font-size:13px;color:#57534e;">${ONE_TIME_LINK_NOTE}</p>`;
 
 export type RsvpEmailEventInfo = {
   name: string;
@@ -704,11 +702,20 @@ function waitlistSpotRemovedEmail(info: RsvpEmailEventInfo): RenderedEmail {
   return { subject, html, text };
 }
 
+const BUTTON_STYLE =
+  "display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;";
+
+/** Under the button of an invite: how getting in works, with no credential
+ * in the email (lib/one-time-links.ts). */
+const CODE_ON_REQUEST_NOTE =
+  "The button takes you to a page where you can ask for a sign-in code. It's emailed to you right then, while you're there, and you type it in to set your password. This email has nothing in it that expires.";
+
 /**
  * Sent when an admin invites someone to the volunteer registry — including a
- * re-send, which uses the same copy. `actionUrl` is either a Supabase invite
- * link (brand-new account, sets a password on first click) or a plain link
- * to the registration form (existing account — they just log in as usual).
+ * re-send, which uses the same copy. `actionUrl` is either the code page
+ * (/auth/code?mode=setup, their email filled in — they ask for a code there
+ * and set a password) or, for someone who already has a working account, a
+ * plain link to the registration form. Neither carries a credential.
  */
 export function volunteerInviteEmail({
   recipientName,
@@ -717,10 +724,9 @@ export function volunteerInviteEmail({
 }: {
   recipientName: string | null;
   actionUrl: string;
-  /** True whenever the link needs to take them through setting a password
-   * first — a brand-new account, or an earlier invite they never completed —
-   * before landing on the registration form. False only for someone who
-   * already has a working (password-set) account. */
+  /** True for an account that has no working password yet — a brand-new
+   * one, or an earlier invite they never completed. False only for someone
+   * who already has a working (password-set) account. */
   needsPasswordSetup: boolean;
 }): RenderedEmail {
   const subject = "You're invited to volunteer with Fishing the Good Fight";
@@ -739,10 +745,10 @@ export function volunteerInviteEmail({
       `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">You're invited to volunteer</p>`,
       `<p style="margin:0 0 16px;">${greeting}</p>`,
       `<p style="margin:0 0 16px;">${introHtml}</p>`,
-      `<p style="margin:24px 0 8px;"><a href="${actionUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
-      // Only a set-password link is one-time; the plain link to the
-      // registration form never expires.
-      ...(needsPasswordSetup ? [ONE_TIME_LINK_NOTE_HTML] : []),
+      `<p style="margin:24px 0 8px;"><a href="${actionUrl}" style="${BUTTON_STYLE}">${buttonLabel}</a></p>`,
+      ...(needsPasswordSetup
+        ? [`<p style="margin:0 0 8px;font-size:13px;color:#57534e;">${escapeHtml(CODE_ON_REQUEST_NOTE)}</p>`]
+        : []),
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Questions? Just reply to this email.</p>`,
     ].join("\n"),
   );
@@ -755,7 +761,7 @@ export function volunteerInviteEmail({
     introText,
     "",
     `${buttonLabel}: ${actionUrl}`,
-    ...(needsPasswordSetup ? ["", ONE_TIME_LINK_NOTE] : []),
+    ...(needsPasswordSetup ? ["", CODE_ON_REQUEST_NOTE] : []),
     "",
     "Questions? Just reply to this email.",
   ].join("\n");
@@ -766,7 +772,8 @@ export function volunteerInviteEmail({
 /**
  * An invite to the portal itself — staff, board members, anyone who needs an
  * account but isn't joining the volunteer team (that's volunteerInviteEmail).
- * The link sets a password, then lands on their profile.
+ * The button goes to the code page, where they ask for a code and set a
+ * password, then land on their profile.
  */
 export function personInviteEmail({
   recipientName,
@@ -787,8 +794,8 @@ export function personInviteEmail({
       `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">You're invited to the portal</p>`,
       `<p style="margin:0 0 16px;">${greeting}</p>`,
       `<p style="margin:0 0 16px;">${intro}</p>`,
-      `<p style="margin:24px 0 8px;"><a href="${actionUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
-      ONE_TIME_LINK_NOTE_HTML,
+      `<p style="margin:24px 0 8px;"><a href="${actionUrl}" style="${BUTTON_STYLE}">${buttonLabel}</a></p>`,
+      `<p style="margin:0 0 8px;font-size:13px;color:#57534e;">${escapeHtml(CODE_ON_REQUEST_NOTE)}</p>`,
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Questions? Just reply to this email.</p>`,
     ].join("\n"),
   );
@@ -802,7 +809,7 @@ export function personInviteEmail({
     "",
     `${buttonLabel}: ${actionUrl}`,
     "",
-    ONE_TIME_LINK_NOTE,
+    CODE_ON_REQUEST_NOTE,
     "",
     "Questions? Just reply to this email.",
   ].join("\n");
@@ -811,46 +818,49 @@ export function personInviteEmail({
 }
 
 /**
- * The fresh set-password link someone asked for from the expired-link page
- * (lib/actions/new-link.ts) — replaces an invite link that expired or was
- * already used.
+ * The six-digit code someone just asked for on the code page (/auth/code):
+ * to set a password for the first time, or to reset one. Only ever sent
+ * because they pressed "Send me a code", so they're at the screen. The link
+ * is to the page itself and carries nothing secret.
  */
-export function newLinkEmail({
+export function accessCodeEmail({
   recipientName,
-  actionUrl,
+  code,
+  pageUrl,
 }: {
   recipientName: string | null;
-  actionUrl: string;
+  code: string;
+  pageUrl: string;
 }): RenderedEmail {
-  const subject = "Your new Fishing the Good Fight portal link";
+  const subject = `Your Fishing the Good Fight code: ${code}`;
   const greeting = recipientName ? `Hi ${escapeHtml(recipientName)},` : "Hi,";
   const greetingText = recipientName ? `Hi ${recipientName},` : "Hi,";
-  const intro =
-    "Here's the new link you asked for. Click below to set your password and carry on where you left off.";
-  const ignore = "If you didn't ask for this, you can ignore this email — nothing changes unless the link is used.";
-  const buttonLabel = "Set your password";
+  const intro = "Here's the code you asked for. Type it on the page you have open to set your password.";
+  const lifetime = `It works once and expires in ${CODE_LIFETIME}. You can always ask for a new one on that page.`;
+  const lost = "Closed the page?";
+  const ignore = "If you didn't ask for this, you can ignore this email. Nothing changes unless the code is used.";
 
   const html = wrapHtml(
     [
-      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">Your new link</p>`,
       `<p style="margin:0 0 16px;">${greeting}</p>`,
       `<p style="margin:0 0 16px;">${intro}</p>`,
-      `<p style="margin:24px 0 8px;"><a href="${actionUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
-      ONE_TIME_LINK_NOTE_HTML,
+      `<p style="margin:8px 0 16px;font-size:32px;font-weight:700;letter-spacing:6px;font-family:ui-monospace,Menlo,Consolas,monospace;">${escapeHtml(code)}</p>`,
+      `<p style="margin:0 0 16px;font-size:13px;color:#57534e;">${escapeHtml(lifetime)}</p>`,
+      `<p style="margin:0 0 16px;">${lost} <a href="${pageUrl}" style="color:#166534;">Open it again</a> and enter your email, the code and a new password.</p>`,
       `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">${ignore}</p>`,
     ].join("\n"),
   );
 
   const text = [
-    "Your new link",
-    "",
     greetingText,
     "",
     intro,
     "",
-    `${buttonLabel}: ${actionUrl}`,
+    `Your code: ${code}`,
     "",
-    ONE_TIME_LINK_NOTE,
+    lifetime,
+    "",
+    `${lost} Open it again and enter your email, the code and a new password: ${pageUrl}`,
     "",
     ignore,
   ].join("\n");
@@ -862,8 +872,9 @@ export function newLinkEmail({
  * The welcome for someone whose account was created at a walk-up
  * (lib/walkup-welcome.ts): a short follow-up from the chapter, sent the
  * morning after the event, saying plainly why they have an account they
- * didn't create, with a one-time set-password link. Signed by the event's
- * lead when it has one.
+ * didn't create. No credential: the button goes to the public events list,
+ * and when they want to RSVP, "Forgot password" emails them a code while
+ * they're at the screen. Signed by the event's lead when it has one.
  */
 export function walkupWelcomeEmail({
   firstName,
@@ -871,7 +882,7 @@ export function walkupWelcomeEmail({
   dayPhrase,
   leadName,
   chapterName,
-  actionUrl,
+  eventsUrl,
 }: {
   firstName: string | null;
   eventName: string;
@@ -879,14 +890,16 @@ export function walkupWelcomeEmail({
   dayPhrase: string;
   leadName: string | null;
   chapterName: string | null;
-  actionUrl: string;
+  /** The public upcoming-events list (/events). */
+  eventsUrl: string;
 }): RenderedEmail {
   const subject = `Good to meet you at ${eventName}`;
   const greeting = firstName ? `Hi ${firstName},` : "Hi,";
   const thanks = `Thanks for coming to ${eventName} ${dayPhrase}. It was good to meet you.`;
   const why = `When you checked in, we set you up with an account on the ${ORG_NAME} portal so your check-in and waiver were on file. That's why you have an account you didn't create.`;
-  const ask = "Set a password and you can see what's coming up and RSVP:";
-  const buttonLabel = "Set your password";
+  const buttonLabel = "See what's coming up";
+  const rsvp =
+    "When you want to RSVP to something, sign in and use Forgot password: we'll email you a code to set your password.";
   const closing = "Hope to see you at the next one,";
   const signature = [
     leadName?.trim() || null,
@@ -898,9 +911,8 @@ export function walkupWelcomeEmail({
       `<p style="margin:0 0 16px;">${escapeHtml(greeting)}</p>`,
       `<p style="margin:0 0 16px;">${escapeHtml(thanks)}</p>`,
       `<p style="margin:0 0 16px;">${escapeHtml(why)}</p>`,
-      `<p style="margin:0 0 8px;">${escapeHtml(ask)}</p>`,
-      `<p style="margin:16px 0 8px;"><a href="${actionUrl}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
-      ONE_TIME_LINK_NOTE_HTML,
+      `<p style="margin:16px 0 16px;"><a href="${eventsUrl}" style="${BUTTON_STYLE}">${buttonLabel}</a></p>`,
+      `<p style="margin:0 0 16px;">${escapeHtml(rsvp)}</p>`,
       `<p style="margin:16px 0 0;">${escapeHtml(closing)}<br>${signature.map(escapeHtml).join("<br>")}</p>`,
     ].join("\n"),
   );
@@ -912,11 +924,9 @@ export function walkupWelcomeEmail({
     "",
     why,
     "",
-    ask,
+    `${buttonLabel}: ${eventsUrl}`,
     "",
-    `${buttonLabel}: ${actionUrl}`,
-    "",
-    ONE_TIME_LINK_NOTE,
+    rsvp,
     "",
     closing,
     ...signature,

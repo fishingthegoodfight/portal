@@ -1,9 +1,9 @@
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ONE_TIME_LINK_LIFETIME } from "@/lib/one-time-links";
 import { Suspense } from "react";
 
-import { NewLinkForm } from "@/components/new-link-form";
+import { Button } from "@/components/ui/button";
+import { codePagePath } from "@/lib/code-page";
 
 async function ErrorContent({
   searchParams,
@@ -20,40 +20,29 @@ async function ErrorContent({
   // is what keeps this specific to that flow instead of also firing for an
   // unrelated expired "forgot password" link, which is also `type=
   // recovery` but heads somewhere else.
-  // Expired is the normal case here, not an error (people open these days
-  // later), so it gets its own heading rather than "something went wrong".
-  if (params?.next?.startsWith("/auth/update-password")) {
+  // A password-setup or reset link from before codes (an invite, a resend,
+  // "send me a new link", the walk-up welcome, or Forgot password): those
+  // links are gone, often used up by a mail scanner before the person
+  // clicked. The code page is the way in now; nothing has to be asked of
+  // an admin.
+  if (params?.next?.startsWith("/auth/update-password") || params?.type === "recovery") {
+    const inner = params?.next?.startsWith("/auth/update-password")
+      ? new URLSearchParams(params.next.split("?")[1] ?? "").get("next")
+      : null;
     return (
       <div className="flex flex-col gap-4">
         <CardTitle className="text-2xl">This link has expired</CardTitle>
         <p className="text-sm text-muted-foreground">
-          Links to set your password last {ONE_TIME_LINK_LIFETIME} and work once. Enter your email
-          and we&apos;ll send you a fresh one.
+          We don&apos;t use links for this any more. Send yourself a code instead: it arrives while
+          you&apos;re on the page, and you type it in with a new password.
         </p>
-        <NewLinkForm />
+        <Button asChild className="w-full">
+          <Link href={codePagePath({ mode: "setup", next: inner })}>Send me a new code</Link>
+        </Button>
         <p className="text-sm text-muted-foreground">
           Already set a password?{" "}
           <Link href="/auth/login" className="underline underline-offset-4">
             Sign in
-          </Link>
-          , or use{" "}
-          <Link href="/auth/forgot-password" className="underline underline-offset-4">
-            Forgot password
-          </Link>
-          .
-        </p>
-      </div>
-    );
-  }
-
-  if (params?.type === "recovery") {
-    return (
-      <div className="flex flex-col gap-4">
-        <CardTitle className="text-2xl">Sorry, something went wrong.</CardTitle>
-        <p className="text-sm text-muted-foreground">
-          This password reset link has expired or was already used. Request a new one from the{" "}
-          <Link href="/auth/forgot-password" className="underline underline-offset-4">
-            forgot password page
           </Link>
           .
         </p>

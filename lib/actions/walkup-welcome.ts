@@ -65,7 +65,7 @@ export async function sendWalkupWelcomeCatchUpAction(userIds: string[]): Promise
       continue;
     }
     try {
-      await sendWalkupWelcome(admin, recipient, now);
+      await sendWalkupWelcome(recipient, now);
       await admin
         .from("walkup_welcome_emails")
         .update({ sent_at: new Date().toISOString() })

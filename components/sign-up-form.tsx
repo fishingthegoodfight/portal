@@ -18,6 +18,7 @@ import { useState } from "react";
 import { RegistrationFieldInput } from "@/components/registration-fields";
 import { formatPhoneNumber } from "@/lib/phone";
 import { withNext } from "@/lib/safe-next";
+import { codePagePath } from "@/lib/code-page";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
 
 const DIRECTORY_FIELD = REGISTRATION_SECTIONS.find((s) => s.id === "directory")!
@@ -107,10 +108,12 @@ export function SignUpForm({
       // session immediately, same as signInWithPassword — see the comments
       // in login-form.tsx / logout-button.tsx for why this can't be
       // router.push/refresh. With a session there's nothing to confirm, so
-      // go straight on.
+      // go straight on. Otherwise Supabase has emailed a six-digit code
+      // (Confirm signup template, {{ .Token }}), typed on the code page — a
+      // link there would be used up by mail scanners before they click.
       window.location.href = data.session
         ? destination
-        : withNext("/auth/sign-up-success", next);
+        : `${codePagePath({ mode: "signup", email: email.trim(), next })}&sent=1`;
     } catch (error: unknown) {
       setError(error instanceof Error ? error.message : "An error occurred");
     } finally {
@@ -209,7 +212,10 @@ export function SignUpForm({
                 <p className="rounded-md border bg-muted/50 p-3 text-sm">
                   You already have an account. We may have created it when you checked in at
                   an event. Use{" "}
-                  <Link href="/auth/forgot-password" className="underline underline-offset-4">
+                  <Link
+                    href={codePagePath({ mode: "reset", email: email.trim(), next })}
+                    className="underline underline-offset-4"
+                  >
                     Forgot password
                   </Link>{" "}
                   to set your password.

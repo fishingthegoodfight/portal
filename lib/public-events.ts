@@ -130,3 +130,24 @@ export function publicLocationSummary(event: PublicEvent): string | null {
 export function hasHappened(event: PublicEvent, now: Date): boolean {
   return new Date(event.ends_at ?? event.starts_at).getTime() < now.getTime();
 }
+
+/**
+ * Every upcoming published, scheduled event, soonest first, for the public
+ * list (app/events/page.tsx) — the same anon client and column list as a
+ * single public event page, so it can't show anything those don't.
+ * "Upcoming" is not yet over (hasHappened).
+ */
+export async function loadUpcomingPublicEvents(now: Date): Promise<PublicEvent[]> {
+  const supabase = createAnonClient();
+  // A day's slack on the start, so an event that started earlier and is
+  // still running is fetched; hasHappened then decides.
+  const { data, error } = await supabase
+    .from("events")
+    .select(PUBLIC_EVENT_COLUMNS)
+    .eq("status", "scheduled")
+    .gte("starts_at", new Date(now.getTime() - 86_400_000).toISOString())
+    .order("starts_at", { ascending: true })
+    .limit(200);
+  if (error) throw new Error(error.message);
+  return ((data ?? []) as PublicEvent[]).filter((event) => !hasHappened(event, now));
+}

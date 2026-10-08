@@ -31,7 +31,7 @@ Separately, an **event lead** (`events.lead_user_id`) can manage just that one e
   - It skips anyone who has signed in, so someone who has already set a password never gets it.
   - A failed send is retried for up to 3 days.
 - **Catch-up:** Setup → **Walk-up welcome emails** lists everyone who should have had it and hasn't. Everyone is ticked by default; you can untick anyone. Nothing sends until an admin confirms. The nine from Oct 5 were sent it on 2026-10-06.
-- **Expired links:** a link that has expired lands on `/auth/error` ("This link has expired"), where they can email themselves a fresh one with no admin involved.
+- **No credential in the email (changed 2026-10-08):** mail scanners were using up the one-time set-password links before people clicked. The welcome now has a "See what's coming up" button (the public `/events` list) and says to use Forgot password when they want to RSVP. That emails a six-digit code while they're at the screen (`/auth/code`; see `lib/one-time-links.ts`).
 
 **Known blind spot:** an email address typed wrong at the walk-up desk. The welcome goes nowhere, nothing in the portal shows it, and a typo looks the same as someone who just hasn't replied. See item 11.
 

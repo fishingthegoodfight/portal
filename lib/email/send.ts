@@ -22,7 +22,7 @@ import {
   volunteerShiftEventCancelledEmail,
   volunteerEventRestoredEmail,
   personInviteEmail,
-  newLinkEmail,
+  accessCodeEmail,
   walkupWelcomeEmail,
   adminDigestEmail,
   applicationAttendMoreEventsEmail,
@@ -574,18 +574,13 @@ export async function sendVolunteerInviteEmail({
   await deliverEmail({ to: toEmail, subject, html, text });
 }
 
-/** The fresh set-password link asked for on the expired-link page
- * (newLinkEmail). */
-export async function sendNewLinkEmail({
+/** A six-digit code someone just asked for on the code page
+ * (accessCodeEmail). */
+export async function sendAccessCodeEmail({
   toEmail,
-  recipientName,
-  actionUrl,
-}: {
-  toEmail: string;
-  recipientName: string | null;
-  actionUrl: string;
-}): Promise<void> {
-  const { subject, html, text } = newLinkEmail({ recipientName, actionUrl });
+  ...content
+}: { toEmail: string } & Parameters<typeof accessCodeEmail>[0]): Promise<void> {
+  const { subject, html, text } = accessCodeEmail(content);
   await deliverEmail({ to: toEmail, subject, html, text });
 }
 

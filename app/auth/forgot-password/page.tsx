@@ -1,11 +1,11 @@
-import { ForgotPasswordForm } from "@/components/forgot-password-form";
+import { redirect } from "next/navigation";
 
-export default function Page() {
-  return (
-    <div className="flex min-h-svh w-full items-center justify-center p-6 md:p-10">
-      <div className="w-full max-w-sm">
-        <ForgotPasswordForm />
-      </div>
-    </div>
-  );
+import { codePagePath } from "@/lib/code-page";
+
+/** "Forgot password" is the code page now (app/auth/code, mode reset):
+ * the code is emailed when they ask for it there. Kept as a redirect so
+ * old links and bookmarks still work. */
+export default async function Page({ searchParams }: { searchParams: Promise<{ email?: string }> }) {
+  const { email } = await searchParams;
+  redirect(codePagePath({ mode: "reset", email: email ?? null }));
 }

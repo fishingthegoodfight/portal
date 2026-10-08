@@ -6,15 +6,16 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { assignLeadEventsToNewAccount } from "@/lib/admin/lead-account";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { getSiteUrl } from "@/lib/site-url";
-import { authConfirmUrl, buildConfirmUrl } from "@/lib/auth-confirm-link";
+import { codePagePath } from "@/lib/code-page";
 import { sendVolunteerInviteEmail } from "@/lib/email/send";
 import { PORTAL_INVITE_BATCH_LIMIT } from "@/lib/volunteers";
 
 const REGISTER_PATH = "/protected/volunteer/register";
-// Where a password-setup link (see buildConfirmUrl) lands once verified —
-// set a password, then straight into the registration form. app/auth/error
-// also checks for this exact prefix to recognize an expired/used invite.
-const SET_PASSWORD_NEXT = `/auth/update-password?next=${encodeURIComponent(REGISTER_PATH)}`;
+/** Where someone setting up their account goes: the code page, email
+ * filled in, then registration. No credential in it (lib/one-time-links.ts). */
+function setupUrl(email: string): string {
+  return `${getSiteUrl()}${codePagePath({ mode: "setup", email, next: REGISTER_PATH })}`;
+}
 
 export type InviteVolunteerResult =
   | { ok: true; wasResend: boolean }
@@ -28,15 +29,15 @@ export type InviteVolunteerResult =
  *
  * Three cases, by account state:
  *  - No account at all: creates one via the Supabase Admin API
- *    (generateLink type "invite") and sends a password-setup link.
+ *    (generateLink type "invite"; its link is never sent) and emails a
+ *    button to the code page, where they ask for a code and set a password.
  *  - An account that has never signed in — an earlier invite never
  *    completed, a backfilled volunteer, or an imported one (the profiles row
  *    exists the instant the auth user is created, and backfill/import create
  *    accounts with no password, so "has a profile" or even "is confirmed"
  *    can't tell "done" from "still pending"; last_sign_in_at can):
- *    generateLink type "invite" would reject this email as already
- *    registered, so this sends a fresh "recovery" link instead — same
- *    password-setup destination. Every re-send is a new link.
+ *    the same code-page button. Nothing in the email expires, so a re-send
+ *    is just a reminder.
  *  - An account that has signed in: no new link is generated; the email
  *    just points at the registration form (they log in as usual).
  * Either way, a `volunteers` row is created at status 'invited' if one
@@ -148,11 +149,13 @@ async function inviteOne(
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : "Admin client unavailable" };
     }
+    // generateLink "invite" is only how the account is created (with
+    // invited_at); its link is never sent — they get a code on the code
+    // page when they're there to use it.
     const { data: link, error: linkError } = await adminClientForCreate.auth.admin.generateLink({
       type: "invite",
       email,
       options: {
-        redirectTo: authConfirmUrl(),
         data: firstName ? { first_name: firstName, last_name: lastName } : undefined,
       },
     });
@@ -161,7 +164,7 @@ async function inviteOne(
     }
     userId = link.user.id;
     needsPasswordSetup = true;
-    actionUrl = buildConfirmUrl(link.properties.hashed_token, "invite", SET_PASSWORD_NEXT);
+    actionUrl = setupUrl(email);
     await assignLeadEventsToNewAccount(adminClientForCreate, userId);
 
     // handle_new_user() (the signup trigger) only copies id/email/
@@ -197,22 +200,10 @@ async function inviteOne(
       actionUrl = `${getSiteUrl()}${REGISTER_PATH}`;
     } else {
       // The account exists but has never been used (an unfinished invite,
-      // a backfill or an import) — "invite" type would reject this as an
-      // already-registered email, so "recovery" is the path that works,
-      // landing on the same set-password step.
-      try {
-        const { data: link, error: linkError } = await getAdminClient().auth.admin.generateLink({
-          type: "recovery",
-          email,
-        });
-        if (linkError || !link?.properties) {
-          return { ok: false, error: linkError?.message ?? "Failed to generate a new invite link" };
-        }
-        needsPasswordSetup = true;
-        actionUrl = buildConfirmUrl(link.properties.hashed_token, "recovery", SET_PASSWORD_NEXT);
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : "Admin client unavailable" };
-      }
+      // a backfill or an import): the same code page, where they ask for a
+      // code and set a password.
+      needsPasswordSetup = true;
+      actionUrl = setupUrl(email);
     }
   }
 

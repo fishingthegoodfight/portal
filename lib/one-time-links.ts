@@ -1,18 +1,20 @@
 /**
- * How long a one-time account link lasts: the set-password links in the
- * volunteer and portal invites, and the "send me a new link" email. Each
- * works once.
+ * Sign-in codes. No email that arrives unasked carries a credential: mail
+ * scanners (Gmail, Outlook Safe Links, corporate filters) open links before
+ * the person does, which used up the old one-time links. Invites, the
+ * walk-up welcome and "Forgot password" all send people to the code page
+ * (/auth/code), and a six-digit code is emailed only when they press "Send
+ * me a code" there — so it arrives while they're at the screen. See
+ * lib/access-codes.ts.
  *
  * MUST MATCH the Supabase project's setting — Authentication > Sign In /
- * Providers > Email > "Email OTP Expiration", which is 86400 seconds = 24
- * hours (confirmed 2026-09-30). The app can't read that setting, so this is
- * only what the emails and pages SAY: change the setting and this together.
- * The sign-up confirmation and password reset emails are Supabase's own
- * templates (Authentication > Emails), so the same sentence has to be added
- * there by hand.
+ * Providers > Email > "Email OTP Expiration": 3600 seconds = 1 hour (set
+ * 2026-10-08). The app can't read that setting, so this is only what the
+ * emails and pages SAY: change the setting and this together. It also
+ * covers the sign-up confirmation code, which Supabase sends itself
+ * (Authentication > Emails > Confirm signup, using {{ .Token }}).
  */
-export const ONE_TIME_LINK_LIFETIME = "24 hours";
+export const CODE_LIFETIME = "1 hour";
 
-/** The sentence every email carrying one of these links ends its link
- * paragraph with. An expired link's page (app/auth/error) offers a new one. */
-export const ONE_TIME_LINK_NOTE = `This link works once and expires ${ONE_TIME_LINK_LIFETIME} after this email was sent. If it's expired by the time you get to it, click it anyway — the page will send you a new one.`;
+/** Minutes between two codes to the same address from "Send me a code". */
+export const CODE_MIN_GAP_MINUTES = 2;
