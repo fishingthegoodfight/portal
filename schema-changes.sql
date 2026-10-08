@@ -13327,6 +13327,8 @@ commit;
 -- =============================================================================
 -- 2026-10-08 — Fly fishing section asks right- or left-handed
 -- =============================================================================
+-- Run 2026-10-08, before the matching code was pushed to main.
+--
 -- "Are you right- or left-handed?" joins the "Fly fishing experience & gear
 -- sizing" registration section (lib/registration-sections.ts), asked of
 -- everyone whether or not they borrow gear: it's how a rod and reel are set
