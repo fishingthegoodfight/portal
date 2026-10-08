@@ -13407,6 +13407,8 @@ commit;
 -- =============================================================================
 -- 2026-10-08 — Attendance import (historical attendance from a CSV)
 -- =============================================================================
+-- Run 2026-10-08, before the matching code was pushed to main.
+--
 -- Setup → Import attendance brings past attendance in from a spreadsheet,
 -- so engagement and the volunteer application threshold start from real
 -- history (lib/actions/attendance-import.ts). Preview first; nothing is
