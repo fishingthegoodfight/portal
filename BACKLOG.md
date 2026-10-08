@@ -136,3 +136,21 @@ Separately, an **event lead** (`events.lead_user_id`) can manage just that one e
 - **Where bounces land:** they come back to the Google Workspace mailbox. Which provider sends is set by `EMAIL_PROVIDER` in `lib/email/send.ts`; replies go to `tcramer@fishingthegoodfight.org`.
 - **Where they should show:** on the walk-up welcome catch-up screen at least, and probably in the admin digest.
 - **After the Resend migration (item 9):** Resend reports bounces itself (webhooks), which may be the simpler source.
+
+### 12. Attend or volunteer at an event, never both
+**What:** someone can be recorded at an event as a participant **or** a volunteer, not both.
+
+**Why:** a person counted twice at one event muddies rosters, headcounts and engagement. (Members already counts an event once either way.)
+
+**Known (today it's a warning, not a rule):**
+- **Admin paths warn but let you go ahead:**
+  - the roster's **Add walk-up** warns when the person has a volunteer shift at the event ("volunteer_conflict", `lib/actions/admin-walkup.ts`);
+  - **Add volunteer** warns when they have an RSVP ("has_rsvp", `lib/actions/admin-volunteer-signup.ts`).
+  - Both offer "add anyway".
+- **Self-service sign-up:** check what self RSVP (`rsvp_to_event`) and self shift sign-up do when the other already exists.
+- **The attendance import:** can record both for one person at one event if the file has both rows.
+- **To decide:**
+  - Does the rule hold in the database for every path, or only in the forms?
+  - When someone is already one, does adding them as the other switch them over, or refuse?
+  - What happens to existing events where someone is already both? A read-only query should count those first.
+
