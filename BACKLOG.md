@@ -57,15 +57,18 @@ Separately, an **event lead** (`events.lead_user_id`) can manage just that one e
   - Georgia: Atlanta and Rome chapters
 - **Before turning it on:** check which chapters and regions each volunteer's email covers.
 
-### 3. Reference reminder job has never fired
-**What:** the weekly volunteer-reference reminders have never actually sent.
+### 3. Reference reminder job has never fired (done 2026-10-08)
+**Status:** done. It wasn't broken: it had nothing to do.
 
-**Why:** it fails silently, so references sit unanswered and applications stall without anyone noticing.
+**What we found:**
+- It runs at the start of every 14:00 UTC admin-digest job, with nothing in front of it.
+- Only two reference requests had ever been made, both on 2026-09-28, and both were answered (that application is approved).
+- A reminder needs a reference that's still unanswered on an application at References out, so the job checked, found none, and sent nothing.
+- A run that finds nothing used to log nothing, which is why it looked dead.
 
-**Decided / known:**
-- **Where it runs:** `runReferenceReminders` (`lib/reference-reminders.ts`), called at the start of the daily `/api/cron/admin-digest` job (14:00 UTC).
-- **How it fails silently:** failures are caught and only `console.error`-ed (`[reference-reminders]`), and the digest goes out anyway.
-- **To do:** find out why first (the Vercel cron logs and the route's JSON `references` field are the places to look), then fix it or remove it.
+**Changed:**
+- **Failures:** the whole run failing, or any single reminder failing, now goes at the top of that day's admin digest as "Reference reminders failed (N)", with the reason. That's enough on its own to send the digest.
+- **Clean runs:** every run now logs `[reference-reminders] done` with how many it checked, reminded and gave up on, so a quiet day can be told apart from one that never ran.
 
 ### 4. Chapter directory and engagement
 **What:** a per-chapter list of members with an engagement signal, so leads see who's active, who's new and who has gone quiet.

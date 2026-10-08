@@ -10,6 +10,9 @@ import {
 type AdminClient = ReturnType<typeof createAdminClient>;
 
 export type ReferenceReminderSummary = {
+  /** Live, unanswered requests on applications at References out: what the
+   * run looked at, whether or not anything was due. */
+  checked: number;
   reminded: string[];
   gaveUp: string[];
   failed: string[];
@@ -61,7 +64,7 @@ export async function runReferenceReminders(
   const { data, error } = await query;
   if (error) throw new Error(`loading reference requests: ${error.message}`);
 
-  const summary: ReferenceReminderSummary = { reminded: [], gaveUp: [], failed: [], dry };
+  const summary: ReferenceReminderSummary = { checked: (data ?? []).length, reminded: [], gaveUp: [], failed: [], dry };
   for (const row of (data ?? []) as unknown as DueRow[]) {
     const step = reminderStepDue(
       new Date(row.requested_at),
