@@ -40,6 +40,11 @@ const SETUP_LINKS = [
     description: "The every-other-week email of open volunteer roles: on or off, and which day it goes out.",
   },
   {
+    href: "/protected/admin/setup/attendance-import",
+    title: "Import attendance",
+    description: "Bring past attendance in from a CSV: people, events and who attended or volunteered, previewed before anything is written.",
+  },
+  {
     href: "/protected/admin/setup/walkup-welcome",
     title: "Walk-up welcome emails",
     description: "The welcome email for accounts made at a walk-up. See who hasn't had it and send it to them.",

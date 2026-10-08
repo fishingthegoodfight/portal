@@ -13403,3 +13403,283 @@ revoke all on function public.registration_incomplete_section(uuid, bigint) from
 grant execute on function public.registration_incomplete_section(uuid, bigint) to service_role;
 
 commit;
+
+-- =============================================================================
+-- 2026-10-08 — Attendance import (historical attendance from a CSV)
+-- =============================================================================
+-- Setup → Import attendance brings past attendance in from a spreadsheet,
+-- so engagement and the volunteer application threshold start from real
+-- history (lib/actions/attendance-import.ts). Preview first; nothing is
+-- written until an admin confirms.
+--
+-- 1. imported_at on events, rsvps and volunteer_signups: when the import
+--    created it. An imported event is a minimal past event (name, chapter,
+--    date; unpublished) made because no event matched; an imported RSVP or
+--    shift is shown on the roster as "Imported". No waiver is implied: the
+--    import never creates a signature.
+-- 2. import_attendance_row(event, person, 'attended' | 'volunteered'),
+--    service role only. Attended: a confirmed RSVP checked in at the
+--    event's start (an existing RSVP for the event is confirmed and checked
+--    in instead). Volunteered: a served shift on the event's "Volunteer
+--    (imported)" role, created the first time it's needed. Running the same
+--    row again changes nothing ('already'). A checked-in RSVP counts toward
+--    attendance_total (engagement, the application threshold) exactly like
+--    a live check-in, and its insert fires the same promotion trigger.
+-- 3. stamp_checked_in_at and volunteer_signups_registration_guard: while
+--    the import is writing (a transaction-local setting only that function
+--    sets, honored only for postgres/service_role), a check-in keeps the
+--    event's date instead of now(), and an unregistered volunteer's past
+--    shift is recorded with registration_override_reason "Imported
+--    attendance (historical)" instead of being refused.
+-- 4. walkup_welcome_candidates: same as the 2026-10-06 version, but an
+--    account whose first RSVP was imported isn't a walk-up, so it's never
+--    offered the walk-up welcome.
+--
+-- No new tables (columns on existing ones), so no new grants. Safe to
+-- re-run. One transaction.
+
+begin;
+
+alter table public.events add column if not exists imported_at timestamptz;
+alter table public.rsvps add column if not exists imported_at timestamptz;
+alter table public.volunteer_signups add column if not exists imported_at timestamptz;
+
+create or replace function public.stamp_checked_in_at()
+returns trigger
+language plpgsql
+set search_path to 'public'
+as $function$
+begin
+  if new.checked_in_at is not null
+     and (tg_op = 'INSERT' or new.checked_in_at is distinct from old.checked_in_at) then
+    -- The attendance import dates a check-in to its event, not to today.
+    if coalesce(current_setting('ftgf.attendance_import', true), '') = 'on'
+       and current_user in ('postgres', 'service_role') then
+      return new;
+    end if;
+    new.checked_in_at := now();
+  end if;
+  return new;
+end $function$;
+
+create or replace function public.volunteer_signups_registration_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_override text := nullif(btrim(coalesce(current_setting('ftgf.registration_override', true), '')), '');
+  v_registered_now boolean;
+begin
+  if new.status <> 'confirmed' or (tg_op = 'UPDATE' and old.status = 'confirmed') then
+    return new;
+  end if;
+
+  -- The attendance import (import_attendance_row) records shifts already
+  -- served; registration then is a fact to note, not a gate.
+  if coalesce(current_setting('ftgf.attendance_import', true), '') = 'on'
+     and current_user in ('postgres', 'service_role') then
+    if not public.volunteer_registered_by(new.user_id, new.opportunity_id) then
+      new.registration_override_reason := 'Imported attendance (historical)';
+      new.registration_override_at := now();
+    end if;
+    return new;
+  end if;
+
+  if public.volunteer_registered_by(new.user_id, new.opportunity_id) then
+    return new;
+  end if;
+
+  if v_override is not null and public.is_admin() then
+    new.registration_override_reason := v_override;
+    new.registration_override_by := auth.uid();
+    new.registration_override_at := now();
+    return new;
+  end if;
+
+  v_registered_now := exists (
+    select 1 from public.volunteers where user_id = new.user_id and registered_at is not null
+  );
+
+  raise exception '%', case
+    when auth.uid() is not null and new.user_id = auth.uid() then
+      'Complete your volunteer registration before signing up for a shift — it''s where this year''s volunteer waiver is signed.'
+    else
+      case when v_registered_now
+        then 'This person completed volunteer registration (where this year''s volunteer waiver is signed) only after this shift''s date.'
+        else 'This person hasn''t completed volunteer registration, where this year''s volunteer waiver is signed.'
+      end ||
+      case when public.is_admin() then ' You can add them anyway with a reason.'
+           else ' Only an admin can add them anyway.' end
+  end
+  using errcode = 'P0001', hint = 'registration_required';
+end $function$;
+
+create or replace function public.walkup_welcome_candidates()
+returns table (
+  user_id uuid,
+  email text,
+  first_name text,
+  last_name text,
+  event_id bigint,
+  event_name text,
+  event_starts_at timestamptz,
+  event_ends_at timestamptz,
+  event_timezone text,
+  lead_name text,
+  chapter_name text,
+  account_created_at timestamptz
+)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select u.id, p.email, p.first_name, p.last_name,
+         e.id, e.name, e.starts_at, e.ends_at, e.timezone, e.lead_name,
+         coalesce(c.display_name, c.name, e.chapter),
+         u.created_at
+    from auth.users u
+    join public.profiles p on p.id = u.id
+    join lateral (
+      select r.event_id
+        from public.rsvps r
+       where r.user_id = u.id
+         and r.created_at between u.created_at - interval '1 minute' and u.created_at + interval '10 minutes'
+         -- Not an account the attendance import made.
+         and r.imported_at is null
+       order by r.created_at
+       limit 1
+    ) w on true
+    join public.events e on e.id = w.event_id
+    left join public.chapters c on c.name = e.chapter
+   where u.last_sign_in_at is null
+     and u.invited_at is null
+     and u.confirmation_sent_at is null
+     and u.email_confirmed_at is not null
+     and u.email_confirmed_at - u.created_at < interval '10 seconds'
+     and p.access_removed_at is null
+     and coalesce(p.email, '') <> ''
+     -- Not already sent, and not still waiting for its automatic send (a
+     -- queued walk-up that failed 3 times or is past its week shows here).
+     and not exists (
+       select 1 from public.walkup_welcome_emails x
+        where x.user_id = u.id
+          and (
+            x.sent_at is not null
+            or (x.source = 'walkup'
+                and x.attempts < 3
+                and (now() at time zone e.timezone)::date
+                    <= (coalesce(e.ends_at, e.starts_at) at time zone e.timezone)::date + 7)
+          )
+     )
+   order by e.starts_at, p.first_name, p.last_name;
+$function$;
+
+revoke all on function public.walkup_welcome_candidates() from public, anon, authenticated;
+grant execute on function public.walkup_welcome_candidates() to service_role;
+
+create or replace function public.import_attendance_row(p_event_id bigint, p_user_id uuid, p_role text)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_event public.events%rowtype;
+  v_rsvp public.rsvps%rowtype;
+  v_opp_id bigint;
+  v_taken integer;
+begin
+  select * into v_event from public.events where id = p_event_id;
+  if not found then
+    return 'skipped: the event no longer exists';
+  end if;
+  if not exists (select 1 from public.profiles where id = p_user_id) then
+    return 'skipped: the person no longer exists';
+  end if;
+
+  perform set_config('ftgf.attendance_import', 'on', true);
+
+  if p_role = 'attended' then
+    select * into v_rsvp from public.rsvps where event_id = p_event_id and user_id = p_user_id;
+    if found and v_rsvp.status = 'confirmed' and v_rsvp.checked_in_at is not null then
+      return 'already';
+    end if;
+    if found then
+      update public.rsvps
+         set status = 'confirmed',
+             checked_in_at = v_event.starts_at,
+             offer_expires_at = null,
+             imported_at = now(),
+             updated_at = now()
+       where id = v_rsvp.id;
+      if v_rsvp.status <> 'confirmed' then
+        update public.events set spots_taken = coalesce(spots_taken, 0) + 1 where id = p_event_id;
+      end if;
+      perform set_config('ftgf.attendance_import', '', true);
+      return 'checked in their existing RSVP';
+    end if;
+    insert into public.rsvps (event_id, user_id, status, checked_in_at, imported_at)
+    values (p_event_id, p_user_id, 'confirmed', v_event.starts_at, now());
+    update public.events set spots_taken = coalesce(spots_taken, 0) + 1 where id = p_event_id;
+    perform set_config('ftgf.attendance_import', '', true);
+    return 'created';
+  end if;
+
+  if p_role = 'volunteered' then
+    if exists (
+      select 1 from public.volunteer_signups s
+        join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+       where vo.event_id = p_event_id and s.user_id = p_user_id
+         and s.status = 'confirmed' and s.checked_in_at is not null
+    ) then
+      return 'already';
+    end if;
+
+    select id into v_opp_id
+      from public.volunteer_opportunities
+     where event_id = p_event_id and role = 'Volunteer (imported)' and cancelled_at is null
+     order by id
+     limit 1;
+    if v_opp_id is null then
+      insert into public.volunteer_opportunities (event_id, role, description, slots, slots_taken, shift_start, shift_end)
+      values (
+        p_event_id,
+        'Volunteer (imported)',
+        'Added by the attendance import for people recorded as having volunteered at this event.',
+        1,
+        0,
+        v_event.starts_at,
+        coalesce(v_event.ends_at, v_event.starts_at + interval '2 hours')
+      )
+      returning id into v_opp_id;
+    end if;
+
+    insert into public.volunteer_signups (opportunity_id, user_id, status, signed_up_at, checked_in_at, imported_at)
+    values (v_opp_id, p_user_id, 'confirmed', v_event.starts_at, v_event.starts_at, now())
+    on conflict (opportunity_id, user_id)
+    do update set status = 'confirmed',
+                  cancelled_at = null,
+                  checked_in_at = excluded.checked_in_at,
+                  imported_at = excluded.imported_at;
+
+    select count(*)::int into v_taken
+      from public.volunteer_signups where opportunity_id = v_opp_id and status = 'confirmed';
+    update public.volunteer_opportunities
+       set slots_taken = v_taken, slots = greatest(slots, v_taken)
+     where id = v_opp_id;
+    perform set_config('ftgf.attendance_import', '', true);
+    return 'created';
+  end if;
+
+  return 'skipped: role must be attended or volunteered';
+exception when others then
+  return 'skipped: ' || sqlerrm;
+end $function$;
+
+revoke all on function public.import_attendance_row(bigint, uuid, text) from public, anon, authenticated;
+grant execute on function public.import_attendance_row(bigint, uuid, text) to service_role;
+
+commit;

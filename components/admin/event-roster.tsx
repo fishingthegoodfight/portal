@@ -1741,6 +1741,11 @@ function RosterRow({
       <div className="flex min-w-0 flex-1 flex-col gap-0.5 [overflow-wrap:anywhere]">
         <span className="font-medium">
           {personDisplayName(person)}
+          {person.imported && (
+            <span className="ml-2 inline-flex rounded border px-1.5 py-0.5 align-middle text-xs font-medium text-muted-foreground">
+              Imported
+            </span>
+          )}
         </span>
         <span className="text-sm text-muted-foreground">{contact || "—"}</span>
         {editDetails}
@@ -1803,6 +1808,12 @@ function RosterRow({
         ) : person.waiverSignedOn ? (
           <span className="text-sm text-muted-foreground">
             Waiver signed {person.waiverSignedOn}
+          </span>
+        ) : person.imported && !person.noWaiverRecord ? (
+          // Historical attendance from the import: no waiver was ever
+          // implied, so it's noted rather than flagged red.
+          <span className="text-sm text-muted-foreground">
+            Imported from past attendance records · no waiver on record
           </span>
         ) : (
           <>
@@ -1895,6 +1906,11 @@ function VolunteerRosterRow({
       <div className="flex min-w-0 flex-1 flex-col gap-0.5 [overflow-wrap:anywhere]">
         <span className="font-medium">
           {personDisplayName(person)} · {person.role}
+          {person.imported && (
+            <span className="ml-2 inline-flex rounded border px-1.5 py-0.5 align-middle text-xs font-medium text-muted-foreground">
+              Imported
+            </span>
+          )}
         </span>
         {unregistered && (
           <span className="w-fit text-sm font-medium text-amber-700 dark:text-amber-400">

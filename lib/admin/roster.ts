@@ -68,6 +68,9 @@ export type RosterPerson = {
    * (event_no_waiver_records) — flagged for follow-up. Not a waiver. Null
    * when there's none. */
   noWaiverRecord: { recordedBy: string; recordedLabel: string } | null;
+  /** Brought in by the attendance import (rsvps.imported_at): historical,
+   * with no waiver implied. */
+  imported: boolean;
   /** Every registration field's value from their profile, keyed by column —
    * the event's other sections (sizing, …) are shown from here, same as for
    * volunteers. Dietary keeps using dietaryNotes above. */
@@ -121,6 +124,8 @@ export type VolunteerRosterPerson = {
    * for "after the event". */
   shiftStart: string;
   shiftEnd: string;
+  /** A shift brought in by the attendance import (historical). */
+  imported: boolean;
   firstName: string;
   lastName: string;
   email: string;
@@ -219,7 +224,7 @@ export async function loadEventRoster(
 
   const { data: rsvpRows } = await supabase
     .from("rsvps")
-    .select("id, user_id, status, checked_in_at, dietary_notes, joined_at, offer_expires_at")
+    .select("id, user_id, status, checked_in_at, dietary_notes, joined_at, offer_expires_at, imported_at")
     .eq("event_id", eventId)
     .neq("status", "cancelled");
 
@@ -338,6 +343,7 @@ export async function loadEventRoster(
         paperWaiver: paperByRsvp.get(r.id as number) ?? null,
         paperWaiverRemoved: paperRemovalByRsvp.get(r.id as number) ?? null,
         noWaiverRecord: noWaiverByRsvp.get(r.id as number) ?? null,
+        imported: r.imported_at != null,
         profileFields: profileFieldsOf(profile),
       };
     });
@@ -425,7 +431,7 @@ export async function loadEventRoster(
       .from("volunteer_signups")
       // profiles(*) so a new registration section's column is picked up with
       // no edit here, same as the RSVP page's profile read.
-      .select("id, opportunity_id, checked_in_at, profile:profiles(*)")
+      .select("id, opportunity_id, checked_in_at, imported_at, profile:profiles(*)")
       .in(
         "opportunity_id",
         opportunities.map((o) => o.id),
@@ -436,6 +442,7 @@ export async function loadEventRoster(
       id: number;
       opportunity_id: number;
       checked_in_at: string | null;
+      imported_at: string | null;
       profile: Record<string, unknown> | null;
     }[]).map((s) => {
       const text = (key: string) => (s.profile?.[key] as string | null | undefined) ?? "";
@@ -456,6 +463,7 @@ export async function loadEventRoster(
         ...emergencyOf(s.profile),
         profileFields,
         checkedInAt: s.checked_in_at,
+        imported: s.imported_at != null,
         notes: "",
       };
     });
