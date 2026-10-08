@@ -61,6 +61,9 @@ export type VolunteerRoleType = {
   for_retreats: boolean;
   for_chapter_events: boolean;
   requires_cert: boolean;
+  /** "Chapter leadership team": anyone approved for it sees Members for
+   * their home chapter (my_member_chapters). */
+  leadership_team: boolean;
   sort_order: number;
   active: boolean;
 };

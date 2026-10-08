@@ -29,6 +29,7 @@ const EMPTY_INPUT: RoleTypeInput = {
   forRetreats: false,
   forChapterEvents: false,
   requiresCert: false,
+  leadershipTeam: false,
 };
 
 function toInput(role: VolunteerRoleType): RoleTypeInput {
@@ -38,6 +39,7 @@ function toInput(role: VolunteerRoleType): RoleTypeInput {
     forRetreats: role.for_retreats,
     forChapterEvents: role.for_chapter_events,
     requiresCert: role.requires_cert,
+    leadershipTeam: role.leadership_team,
   };
 }
 
@@ -90,6 +92,13 @@ function RoleTypeFields({
             onCheckedChange={(c) => onChange({ ...value, requiresCert: c === true })}
           />
           Requires First Aid/CPR/AED
+        </label>
+        <label className="flex items-center gap-2">
+          <Checkbox
+            checked={value.leadershipTeam}
+            onCheckedChange={(c) => onChange({ ...value, leadershipTeam: c === true })}
+          />
+          Chapter leadership team (sees Members for their home chapter)
         </label>
       </div>
     </div>
@@ -245,6 +254,7 @@ export function RoleTypesManager({ roleTypes }: { roleTypes: VolunteerRoleType[]
                           <div className="flex items-center gap-2">
                             <span className="font-medium">{role.name}</span>
                             {role.requires_cert && <Badge variant="outline">Cert required</Badge>}
+                            {role.leadership_team && <Badge variant="outline">Leadership team</Badge>}
                             {!role.active && <Badge variant="secondary">Inactive</Badge>}
                           </div>
                           {role.description && (

@@ -52,10 +52,12 @@ async function HeaderContent() {
   }
 
   const userId = claims.sub as string;
-  const [{ data: profile }, { data: volunteer }, { data: hasEventAdminAccess }] = await Promise.all([
+  const [{ data: profile }, { data: volunteer }, { data: hasEventAdminAccess }, { data: memberChapters }] = await Promise.all([
     supabase.from("profiles").select("role, first_name").eq("id", userId).maybeSingle(),
     supabase.from("volunteers").select("user_id").eq("user_id", userId).maybeSingle(),
     supabase.rpc("has_event_admin_access"),
+    // Members: admins, chapter leads, and the chapter leadership team.
+    supabase.rpc("my_member_chapters"),
   ]);
   // Admins get the whole admin area; chapter leads and event leads get the
   // same entry point, which shows them only their own events.
@@ -69,6 +71,9 @@ async function HeaderContent() {
         <NavLink href="/protected/events">Events</NavLink>
         <NavLink href="/protected/profile">Profile</NavLink>
         {volunteer && <NavLink href="/protected/volunteer">Volunteer</NavLink>}
+        {(profile?.role === "admin" || ((memberChapters as string[] | null) ?? []).length > 0) && (
+          <NavLink href="/protected/members">Members</NavLink>
+        )}
         {profile?.role === "admin" ? (
           <NavLink href="/protected/admin">Admin</NavLink>
         ) : (

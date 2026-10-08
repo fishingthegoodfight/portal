@@ -13685,3 +13685,300 @@ revoke all on function public.import_attendance_row(bigint, uuid, text) from pub
 grant execute on function public.import_attendance_row(bigint, uuid, text) to service_role;
 
 commit;
+
+-- =============================================================================
+-- 2026-10-08 — Members: each chapter's people, engagement and touches
+-- =============================================================================
+-- Members (/protected/members, backlog item 4) lists every profile whose
+-- home chapter is a chapter, with first/last seen, check-ins in the last 6
+-- months, an engagement band, the last touch, and drop alerts. Bands, due
+-- dates and alerts are worked out from activity each time
+-- (lib/members.ts), never stored. "Members" is the leaders' page; the
+-- word "directory" stays reserved for the future opt-in participant
+-- directory (profiles.directory_opt_in, which this doesn't read).
+--
+-- Who sees it, enforced here (not just in the page):
+--   * admins: every chapter, plus everyone with no home chapter;
+--   * chapter leads: the chapters they lead (profiles.led_chapters);
+--   * the chapter leadership team: anyone approved for a role whose role
+--     type has the new "Chapter leadership team" tick sees their own home
+--     chapter.
+-- Participants see nothing. No health information is read.
+--
+-- 1. volunteer_role_types.leadership_team: the tick.
+-- 2. app_settings: the band and touch thresholds (Setup → Members), in days.
+-- 3. my_member_chapters() / can_view_member(person): the access rule above.
+-- 4. members_list(chapter, all): one row per person in scope, with their
+--    attendance (distinct events they were checked in at — a checked-in
+--    RSVP or a served shift, imported ones included; an RSVP without a
+--    check-in doesn't count; dated by the event) and their latest touch.
+--    all = true (admins): every profile, including those with no chapter.
+-- 5. member_touches: a logged call, text, in-person conversation or email.
+--    Anyone who can see the person can log one (who and the chapter are
+--    stamped by a trigger); nobody edits or deletes them. No foreign key to
+--    the person, like email_preference_tokens: one would count as a
+--    reference in "Remove person". logged_by is a "who did it" column.
+-- 6. admin_set_member_chapter(person, chapter): an admin sets the home
+--    chapter of someone listed under "No chapter".
+--
+-- One new table (member_touches): RLS on, select and insert policies, grants
+-- to match, sequence grants. Safe to re-run. One transaction.
+
+begin;
+
+-- ---- 1. Chapter leadership team ---------------------------------------------------
+alter table public.volunteer_role_types
+  add column if not exists leadership_team boolean not null default false;
+
+-- ---- 2. Thresholds ------------------------------------------------------------------
+alter table public.app_settings
+  add column if not exists members_new_days integer not null default 14 check (members_new_days > 0),
+  add column if not exists members_active_days integer not null default 60 check (members_active_days > 0),
+  add column if not exists members_dropped_days integer not null default 120 check (members_dropped_days > 0),
+  add column if not exists members_touch_new_days integer not null default 14 check (members_touch_new_days > 0),
+  add column if not exists members_touch_active_days integer not null default 90 check (members_touch_active_days > 0),
+  add column if not exists members_touch_quiet_first_days integer not null default 14 check (members_touch_quiet_first_days > 0),
+  add column if not exists members_touch_quiet_repeat_days integer not null default 30 check (members_touch_quiet_repeat_days > 0),
+  add column if not exists members_touch_dropped_days integer not null default 60 check (members_touch_dropped_days > 0),
+  add column if not exists members_drop_alert_days integer not null default 45 check (members_drop_alert_days > 0),
+  add column if not exists members_regular_checkins integer not null default 3 check (members_regular_checkins > 0);
+
+-- ---- 3. Access ------------------------------------------------------------------------
+create or replace function public.my_member_chapters()
+returns text[]
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce(array_agg(distinct c) filter (where nullif(btrim(c), '') is not null), '{}'::text[])
+    from (
+      select unnest(p.led_chapters) as c
+        from public.profiles p
+       where p.id = auth.uid() and p.role = 'chapter_lead' and p.access_removed_at is null
+      union
+      select p.chapter
+        from public.profiles p
+       where p.id = auth.uid()
+         and p.access_removed_at is null
+         and exists (
+           select 1
+             from public.volunteer_role_approvals a
+             join public.volunteer_role_types rt on rt.id = a.role_type_id
+             join public.volunteers v on v.user_id = a.volunteer_id
+            where a.volunteer_id = p.id
+              and a.revoked_at is null
+              and rt.leadership_team
+              and v.status = 'approved'
+         )
+    ) x;
+$function$;
+
+revoke all on function public.my_member_chapters() from public, anon;
+grant execute on function public.my_member_chapters() to authenticated;
+
+create or replace function public.can_view_member(p_user_id uuid)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select public.is_admin()
+      or exists (
+        select 1 from public.profiles p
+         where p.id = p_user_id
+           and nullif(btrim(p.chapter), '') is not null
+           and p.chapter = any(public.my_member_chapters())
+      );
+$function$;
+
+revoke all on function public.can_view_member(uuid) from public, anon;
+grant execute on function public.can_view_member(uuid) to authenticated;
+
+-- ---- 5. Touches (before members_list, which reads them) -----------------------------
+create table if not exists public.member_touches (
+  id bigserial primary key,
+  member_id uuid not null,
+  touch_type text not null check (touch_type in ('call', 'text', 'in_person', 'email')),
+  touched_on date not null default (now() at time zone 'America/Denver')::date,
+  note text check (note is null or char_length(note) <= 280),
+  -- The member's home chapter when it was logged, for the record.
+  chapter text,
+  logged_by uuid references auth.users(id) on delete set null,
+  -- Kept as text too, so it still reads after that person is removed.
+  logged_by_name text not null,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists member_touches_member_idx
+  on public.member_touches (member_id, touched_on desc);
+
+create or replace function public.member_touches_stamp()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  new.logged_by := auth.uid();
+  new.logged_by_name := coalesce(
+    (select coalesce(nullif(btrim(concat_ws(' ', p.first_name, p.last_name)), ''), p.email)
+       from public.profiles p where p.id = auth.uid()),
+    'Unknown'
+  );
+  new.chapter := (select p.chapter from public.profiles p where p.id = new.member_id);
+  new.note := nullif(btrim(new.note), '');
+  if new.touched_on > (now() at time zone 'America/Denver')::date then
+    raise exception 'A touch can''t be dated in the future' using errcode = 'P0001';
+  end if;
+  return new;
+end $function$;
+
+revoke all on function public.member_touches_stamp() from public, anon, authenticated;
+
+drop trigger if exists member_touches_stamp on public.member_touches;
+create trigger member_touches_stamp
+  before insert on public.member_touches
+  for each row execute function public.member_touches_stamp();
+
+alter table public.member_touches enable row level security;
+
+drop policy if exists member_touches_select on public.member_touches;
+create policy member_touches_select on public.member_touches
+  for select to authenticated
+  using (public.can_view_member(member_id));
+
+drop policy if exists member_touches_insert on public.member_touches;
+create policy member_touches_insert on public.member_touches
+  for insert to authenticated
+  with check (public.can_view_member(member_id));
+
+revoke all on public.member_touches from anon;
+revoke all on public.member_touches from authenticated;
+grant select, insert on public.member_touches to authenticated;
+grant usage, select on sequence public.member_touches_id_seq to authenticated;
+grant all on public.member_touches to service_role;
+grant usage, select on sequence public.member_touches_id_seq to service_role;
+
+-- ---- 4. The list ----------------------------------------------------------------------
+create or replace function public.members_list(p_chapter text, p_all boolean default false)
+returns table (
+  user_id uuid,
+  first_name text,
+  last_name text,
+  email text,
+  phone text,
+  chapter text,
+  first_seen date,
+  last_seen date,
+  last_seen_event text,
+  total_checkins integer,
+  checkins_6mo integer,
+  checkins_6mo_before_last integer,
+  last_touch_on date,
+  last_touch_type text,
+  last_touch_by text,
+  last_touch_note text
+)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+begin
+  if p_all then
+    if not public.is_admin() then
+      raise exception 'Not allowed' using errcode = '42501';
+    end if;
+  elsif not (public.is_admin() or p_chapter = any(public.my_member_chapters())) then
+    raise exception 'Not allowed' using errcode = '42501';
+  end if;
+
+  return query
+    with scope as (
+      select p.*
+        from public.profiles p
+       where p.access_removed_at is null
+         and (p_all or p.chapter = p_chapter)
+    ),
+    att as (
+      select r.user_id, e.id as event_id, e.name, (e.starts_at at time zone e.timezone)::date as on_date
+        from public.rsvps r
+        join public.events e on e.id = r.event_id
+       where r.user_id in (select s.id from scope s)
+         and r.status = 'confirmed' and r.checked_in_at is not null
+         and e.starts_at <= now() and coalesce(e.status, 'scheduled') <> 'cancelled'
+      union
+      select s.user_id, e.id, e.name, (e.starts_at at time zone e.timezone)::date
+        from public.volunteer_signups s
+        join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+        join public.events e on e.id = vo.event_id
+       where s.user_id in (select sc.id from scope sc)
+         and s.status = 'confirmed' and s.checked_in_at is not null
+         and e.starts_at <= now() and coalesce(e.status, 'scheduled') <> 'cancelled'
+    ),
+    per_event as (
+      select a.user_id, a.event_id, min(a.name) as name, min(a.on_date) as on_date
+        from att a group by a.user_id, a.event_id
+    ),
+    stats as (
+      select pe.user_id,
+             min(pe.on_date) as first_seen,
+             max(pe.on_date) as last_seen,
+             count(*)::int as total,
+             count(*) filter (where pe.on_date > (now() at time zone 'America/Denver')::date - 182)::int as six_months
+        from per_event pe group by pe.user_id
+    )
+    select sc.id,
+           sc.first_name,
+           sc.last_name,
+           sc.email,
+           sc.phone,
+           sc.chapter,
+           st.first_seen,
+           st.last_seen,
+           (select pe.name from per_event pe where pe.user_id = sc.id order by pe.on_date desc, pe.event_id desc limit 1),
+           coalesce(st.total, 0),
+           coalesce(st.six_months, 0),
+           coalesce((select count(*)::int from per_event pe
+                      where pe.user_id = sc.id and pe.on_date > st.last_seen - 182), 0),
+           t.touched_on,
+           t.touch_type,
+           t.logged_by_name,
+           t.note
+      from scope sc
+      left join stats st on st.user_id = sc.id
+      left join lateral (
+        select mt.touched_on, mt.touch_type, mt.logged_by_name, mt.note
+          from public.member_touches mt
+         where mt.member_id = sc.id
+         order by mt.touched_on desc, mt.created_at desc
+         limit 1
+      ) t on true;
+end $function$;
+
+revoke all on function public.members_list(text, boolean) from public, anon;
+grant execute on function public.members_list(text, boolean) to authenticated;
+
+-- ---- 6. Setting a home chapter from the list (admins) -------------------------------
+create or replace function public.admin_set_member_chapter(p_user_id uuid, p_chapter text)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if not public.is_admin() then
+    raise exception 'Only an admin can set someone''s home chapter here' using errcode = '42501';
+  end if;
+  if not exists (select 1 from public.chapters c where c.name = p_chapter) then
+    raise exception 'That isn''t a chapter' using errcode = 'P0001';
+  end if;
+  update public.profiles set chapter = p_chapter where id = p_user_id;
+end $function$;
+
+revoke all on function public.admin_set_member_chapter(uuid, text) from public, anon;
+grant execute on function public.admin_set_member_chapter(uuid, text) to authenticated;
+
+commit;

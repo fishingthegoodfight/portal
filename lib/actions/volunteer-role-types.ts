@@ -12,6 +12,7 @@ export type RoleTypeInput = {
   forRetreats: boolean;
   forChapterEvents: boolean;
   requiresCert: boolean;
+  leadershipTeam: boolean;
 };
 
 /** kebab_case-ish key from the name, e.g. "Men's Night Lead" -> "mens_night_lead". */
@@ -59,6 +60,7 @@ export async function createRoleTypeAction(input: RoleTypeInput): Promise<Action
       for_retreats: input.forRetreats,
       for_chapter_events: input.forChapterEvents,
       requires_cert: input.requiresCert,
+      leadership_team: input.leadershipTeam,
       sort_order: nextSortOrder,
     });
     if (!error) return { ok: true };
@@ -87,6 +89,7 @@ export async function updateRoleTypeAction(
       for_retreats: input.forRetreats,
       for_chapter_events: input.forChapterEvents,
       requires_cert: input.requiresCert,
+      leadership_team: input.leadershipTeam,
     })
     .eq("id", id);
   if (error) return { ok: false, error: error.message };

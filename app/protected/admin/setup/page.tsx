@@ -40,6 +40,11 @@ const SETUP_LINKS = [
     description: "The every-other-week email of open volunteer roles: on or off, and which day it goes out.",
   },
   {
+    href: "/protected/admin/setup/members",
+    title: "Members",
+    description: "The thresholds behind Members: engagement bands, when someone needs a touch, and drop alerts.",
+  },
+  {
     href: "/protected/admin/setup/attendance-import",
     title: "Import attendance",
     description: "Bring past attendance in from a CSV: people, events and who attended or volunteered, previewed before anything is written.",

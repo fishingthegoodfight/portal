@@ -8,7 +8,7 @@ async function RoleTypesLoader() {
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("volunteer_role_types")
-    .select("id, key, name, description, for_retreats, for_chapter_events, requires_cert, sort_order, active")
+    .select("id, key, name, description, for_retreats, for_chapter_events, requires_cert, leadership_team, sort_order, active")
     .order("sort_order", { ascending: true });
 
   if (error) {
