@@ -13151,6 +13151,8 @@ commit;
 -- =============================================================================
 -- 2026-10-08 — Certification uploads: images and PDFs only, 10 MB
 -- =============================================================================
+-- Run 2026-10-08, before the matching code was pushed to main.
+--
 -- Volunteers can now add a First Aid/CPR/AED certification from the
 -- Volunteer page (not only inside registration), and admins open the file
 -- and mark it verified from Volunteers → Certifications or a volunteer's
