@@ -11,8 +11,7 @@ import {
   BAND_LABELS,
   MEMBER_BANDS,
   MEMBER_VIEWS,
-  OUTREACH_SECTIONS,
-  outreachDueSince,
+  outreachSections,
   TOUCH_TYPE_LABELS,
   type Member,
   type MemberBand,
@@ -83,16 +82,7 @@ export function MembersView({
     return c;
   }, [members]);
 
-  const outreachSections = useMemo(
-    () =>
-      OUTREACH_SECTIONS.map((section) => ({
-        ...section,
-        rows: due
-          .filter((m) => m.band === section.band)
-          .sort((a, b) => (outreachDueSince(a) ?? "").localeCompare(outreachDueSince(b) ?? "") || byName(a, b)),
-      })).filter((section) => section.rows.length > 0),
-    [due],
-  );
+  const sections = useMemo(() => outreachSections(members), [members]);
 
   const everyone = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -141,7 +131,7 @@ export function MembersView({
       </div>
 
       {view === "outreach" ? (
-        outreachSections.length === 0 ? (
+        sections.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             Nobody needs outreach right now.{" "}
             <Link href={href(selected, "everyone")} className="underline underline-offset-4">
@@ -149,7 +139,7 @@ export function MembersView({
             </Link>
           </p>
         ) : (
-          outreachSections.map((section) => (
+          sections.map((section) => (
             <section key={section.band} className="flex flex-col gap-2">
               <div>
                 <h2 className="text-lg font-semibold">

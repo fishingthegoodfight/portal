@@ -11,6 +11,7 @@ import {
 import type { ReminderKind } from "@/lib/email/templates";
 import { runOpportunitiesEmail, type OpportunitiesRunSummary } from "@/lib/volunteer-opportunities-email";
 import { runWalkupWelcomeEmails, type WalkupWelcomeRunSummary } from "@/lib/walkup-welcome";
+import { runMembersOutreachEmail, type MembersEmailRunSummary } from "@/lib/members-outreach-email";
 
 // The volunteer opportunities email runs here too and, on a send day, sends
 // one email per volunteer, spaced out — give it room. 300s is Vercel
@@ -45,6 +46,10 @@ const OPPORTUNITIES_MARGIN_MS = 30_000;
  * cut-off run didn't reach. Vercel Hobby allows daily crons only, so the
  * schedule lives there, not in vercel.json. A failure there is logged and
  * doesn't affect the reminders above.
+ *
+ * Then the weekly Members outreach email (lib/members-outreach-email.ts):
+ * each chapter's member engagement lead, and the admins' summary, on the
+ * weekday chosen in Setup → Members. Also logged-and-carry-on on failure.
  *
  * Dev only: ?today=YYYY-MM-DD pretends it's that day (15:00 UTC), and
  * ?dry=1 logs what would be sent without sending or claiming. The secret is
@@ -318,6 +323,18 @@ export async function GET(request: NextRequest) {
 
   console.log("[reminders] done", { now: now.toISOString(), dry, totals, volunteerTotals });
 
+  // A handful of emails, so before the opportunities email, which can run
+  // up to the time limit.
+  let membersOutreach: MembersEmailRunSummary | { error: string };
+  try {
+    membersOutreach = await runMembersOutreachEmail(supabase, { now, dry });
+    for (const failure of membersOutreach.failed) console.error("[members-outreach-email]", failure);
+    console.log("[members-outreach-email] done", membersOutreach);
+  } catch (err) {
+    console.error("[members-outreach-email] failed:", err);
+    membersOutreach = { error: err instanceof Error ? err.message : String(err) };
+  }
+
   let opportunities: OpportunitiesRunSummary | { error: string };
   try {
     opportunities = await runOpportunitiesEmail(supabase, {
@@ -343,5 +360,14 @@ export async function GET(request: NextRequest) {
     opportunities = { error: err instanceof Error ? err.message : String(err) };
   }
 
-  return NextResponse.json({ ok: true, now: now.toISOString(), dry, walkupWelcome, totals, volunteerTotals, opportunities });
+  return NextResponse.json({
+    ok: true,
+    now: now.toISOString(),
+    dry,
+    walkupWelcome,
+    totals,
+    volunteerTotals,
+    membersOutreach,
+    opportunities,
+  });
 }

@@ -70,3 +70,41 @@ export async function saveMemberSettingsAction(settings: MemberSettings): Promis
   if (error) return { ok: false, error: error.message };
   return { ok: true };
 }
+
+/** Admins: Setup → Members, the weekly outreach email. The role must be one
+ * ticked "Chapter leadership team", so whoever gets it can open Members. */
+export async function saveMembersEmailSettingsAction(input: {
+  enabled: boolean;
+  weekday: number;
+  roleTypeId: number | null;
+}): Promise<MembersActionResult> {
+  const supabase = await createClient();
+  const adminCheck = await requireAdmin(supabase);
+  if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
+  if (!Number.isInteger(input.weekday) || input.weekday < 0 || input.weekday > 6) {
+    return { ok: false, error: "Choose a day." };
+  }
+  if (input.roleTypeId != null) {
+    const { data: roleType } = await supabase
+      .from("volunteer_role_types")
+      .select("leadership_team")
+      .eq("id", input.roleTypeId)
+      .maybeSingle();
+    if (!roleType?.leadership_team) {
+      return { ok: false, error: "Choose a role ticked Chapter leadership team." };
+    }
+  }
+  if (input.enabled && input.roleTypeId == null) {
+    return { ok: false, error: "Choose who gets each chapter's email before turning it on." };
+  }
+  const { error } = await supabase
+    .from("app_settings")
+    .update({
+      members_email_enabled: input.enabled,
+      members_email_weekday: input.weekday,
+      members_email_role_type_id: input.roleTypeId,
+    })
+    .eq("id", true);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}

@@ -1844,3 +1844,178 @@ export function finishRegistrationEmail({
   ].join("\n");
   return { subject, html, text };
 }
+
+/** One person in the weekly outreach email, pre-formatted
+ * (lib/members-outreach-email.ts). */
+export type OutreachEmailPerson = {
+  name: string;
+  /** Their row on Members. */
+  url: string;
+  /** Short lines under the name: phone, attendance, last outreach. */
+  lines: string[];
+};
+
+/** One "Needs outreach" section: New, One visit, Quiet, Dropped, Active. */
+export type OutreachEmailSection = {
+  title: string;
+  hint: string;
+  people: OutreachEmailPerson[];
+};
+
+function outreachSectionsHtml(sections: OutreachEmailSection[]): string {
+  return sections
+    .map((section) =>
+      [
+        `<p style="margin:20px 0 2px;font-weight:600;">${escapeHtml(section.title)} (${section.people.length})</p>`,
+        `<p style="margin:0 0 8px;font-size:13px;color:#57534e;">${escapeHtml(section.hint)}</p>`,
+        ...section.people.map(
+          (person) =>
+            `<p style="margin:0 0 10px;"><a href="${escapeHtml(person.url)}" style="font-weight:600;">${escapeHtml(person.name)}</a>${person.lines
+              .map((line) => `<br><span style="font-size:13px;color:#57534e;">${escapeHtml(line)}</span>`)
+              .join("")}</p>`,
+        ),
+      ].join("\n"),
+    )
+    .join("\n");
+}
+
+function outreachSectionsText(sections: OutreachEmailSection[]): string[] {
+  return sections.flatMap((section) => [
+    "",
+    `${section.title} (${section.people.length})`,
+    section.hint,
+    ...section.people.flatMap((person) => [`- ${person.name}: ${person.url}`, ...person.lines.map((line) => `  ${line}`)]),
+  ]);
+}
+
+const peopleCount = (n: number) => `${n} ${n === 1 ? "person" : "people"}`;
+
+/**
+ * The weekly "who to reach out to" email to a chapter's member engagement
+ * lead: the chapter's "Needs outreach" sections, as on the Members page.
+ * Only sent when there's at least one person.
+ */
+export function memberOutreachEmail({
+  firstName,
+  chapter,
+  roleName,
+  sections,
+  membersUrl,
+}: {
+  firstName: string | null;
+  chapter: string;
+  /** The role that gets this email, e.g. "Member engagement lead". */
+  roleName: string;
+  sections: OutreachEmailSection[];
+  /** The chapter's Members page. */
+  membersUrl: string;
+}): RenderedEmail {
+  const total = sections.reduce((n, s) => n + s.people.length, 0);
+  const subject = `${chapter}: ${peopleCount(total)} to reach out to this week`;
+  const greeting = firstName ? `Hi ${firstName},` : "Hi,";
+  const intro = `Here's who in the ${chapter} chapter could use some outreach this week. A call, text, email or a word at the next event all count.`;
+  const howTo = "When you reach someone, log it on Members (Log outreach) so the rest of the team knows, and they'll drop off next week's list.";
+  const why = `You get this because you're the ${chapter} chapter's ${roleName}.`;
+  const buttonLabel = "Open Members";
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;">${escapeHtml(greeting)}</p>`,
+      `<p style="margin:0 0 8px;">${escapeHtml(intro)}</p>`,
+      outreachSectionsHtml(sections),
+      `<p style="margin:20px 0 16px;"><a href="${escapeHtml(membersUrl)}" style="${BUTTON_STYLE}">${buttonLabel}</a></p>`,
+      `<p style="margin:0 0 16px;">${escapeHtml(howTo)}</p>`,
+      `<p style="margin:0;font-size:12px;color:#78716c;">${escapeHtml(why)}</p>`,
+    ].join("\n"),
+  );
+  const text = [
+    greeting,
+    "",
+    intro,
+    ...outreachSectionsText(sections),
+    "",
+    `${buttonLabel}: ${membersUrl}`,
+    "",
+    howTo,
+    "",
+    why,
+  ].join("\n");
+  return { subject, html, text };
+}
+
+/** One chapter in the admins' weekly outreach summary. */
+export type AdminOutreachChapter = {
+  chapter: string;
+  total: number;
+  /** Who this chapter's email went to; empty when nobody holds the role. */
+  sentTo: string[];
+  /** The full list, only for a chapter nobody was sent it for. */
+  sections: OutreachEmailSection[];
+};
+
+/**
+ * The admins' one weekly outreach email: each chapter's count and who it
+ * went to, and the whole list for any chapter with nobody to send it to,
+ * so an admin can fill the role (or do the outreach).
+ */
+export function adminMemberOutreachEmail({
+  roleName,
+  chapters,
+  noChapterCount,
+  membersUrl,
+  setupUrl,
+}: {
+  roleName: string | null;
+  chapters: AdminOutreachChapter[];
+  /** People with no home chapter who need outreach (only admins see them). */
+  noChapterCount: number;
+  /** Members, all chapters. */
+  membersUrl: string;
+  /** Setup → Members, where the role is chosen. */
+  setupUrl: string;
+}): RenderedEmail {
+  const total = chapters.reduce((n, c) => n + c.total, 0) + noChapterCount;
+  const uncovered = chapters.filter((c) => c.sentTo.length === 0 && c.total > 0);
+  const subject = `Members: ${peopleCount(total)} to reach out to this week${
+    uncovered.length > 0 ? ` (${uncovered.length} ${uncovered.length === 1 ? "chapter has" : "chapters have"} no one to send it to)` : ""
+  }`;
+  const role = roleName ?? "the role chosen in Setup → Members";
+  const summaryLine = (c: AdminOutreachChapter) =>
+    `${c.chapter}: ${peopleCount(c.total)}${
+      c.total === 0 ? "" : c.sentTo.length > 0 ? ` · sent to ${c.sentTo.join(", ")}` : ` · nobody holds ${role}, so nobody was sent this list`
+    }`;
+  const noRole = roleName
+    ? null
+    : "No role is chosen to receive the chapter emails, so only this summary went out. Choose one in Setup → Members.";
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">Members outreach this week</p>`,
+      noRole ? `<p style="margin:0 0 16px;color:#b91c1c;">${escapeHtml(noRole)}</p>` : "",
+      `<ul style="margin:0 0 8px;padding-left:20px;">`,
+      ...chapters.map((c) => `<li style="margin:0 0 4px;">${escapeHtml(summaryLine(c))}</li>`),
+      noChapterCount > 0
+        ? `<li style="margin:0 0 4px;">${escapeHtml(`No home chapter: ${peopleCount(noChapterCount)} (only admins see them)`)}</li>`
+        : "",
+      `</ul>`,
+      ...uncovered.map(
+        (c) =>
+          `<p style="margin:24px 0 0;font-size:16px;font-weight:600;">${escapeHtml(c.chapter)}: nobody was sent this list</p>${outreachSectionsHtml(c.sections)}`,
+      ),
+      `<p style="margin:20px 0 16px;"><a href="${escapeHtml(membersUrl)}" style="${BUTTON_STYLE}">Open Members</a></p>`,
+      `<p style="margin:0;font-size:12px;color:#78716c;">Who gets each chapter's email, and on which day: <a href="${escapeHtml(setupUrl)}">Setup → Members</a>.</p>`,
+    ].join("\n"),
+  );
+  const text = [
+    "Members outreach this week",
+    ...(noRole ? ["", noRole] : []),
+    "",
+    ...chapters.map((c) => `- ${summaryLine(c)}`),
+    ...(noChapterCount > 0 ? [`- No home chapter: ${peopleCount(noChapterCount)} (only admins see them)`] : []),
+    ...uncovered.flatMap((c) => ["", `${c.chapter}: nobody was sent this list`, ...outreachSectionsText(c.sections)]),
+    "",
+    `Open Members: ${membersUrl}`,
+    `Who gets each chapter's email, and on which day: ${setupUrl}`,
+  ].join("\n");
+  return { subject, html, text };
+}

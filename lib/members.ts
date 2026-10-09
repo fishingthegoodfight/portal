@@ -260,3 +260,25 @@ export function attendanceSummary(m: MemberStats, today: string): string {
   if (m.total_checkins === 1) return `Came once, ${agoLabel(m.last_seen, today)}`;
   return `Came ${m.total_checkins} times, most recently ${agoLabel(m.last_seen, today)}`;
 }
+
+/** "Needs outreach" as sections (OUTREACH_SECTIONS order), most overdue
+ * first, empty ones left out. The Members page and the weekly email. */
+export function outreachSections(members: Member[]) {
+  return OUTREACH_SECTIONS.map((section) => ({
+    ...section,
+    rows: members
+      .filter((m) => m.needsOutreach && m.band === section.band)
+      .sort(
+        (a, b) =>
+          (outreachDueSince(a) ?? "").localeCompare(outreachDueSince(b) ?? "") || a.name.localeCompare(b.name),
+      ),
+  })).filter((section) => section.rows.length > 0);
+}
+
+/** Their last outreach in plain words, for the email: "Outreach 2 weeks
+ * ago by Sam Lee (call)" or "No outreach yet". */
+export function lastOutreachText(m: MemberStats, today: string): string {
+  if (!m.last_touch_on) return "No outreach yet";
+  const type = TOUCH_TYPE_LABELS[m.last_touch_type as TouchType] ?? m.last_touch_type;
+  return `Outreach ${agoLabel(m.last_touch_on, today)} by ${m.last_touch_by ?? "someone"} (${type})`;
+}

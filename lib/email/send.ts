@@ -25,6 +25,8 @@ import {
   accessCodeEmail,
   walkupWelcomeEmail,
   adminDigestEmail,
+  adminMemberOutreachEmail,
+  memberOutreachEmail,
   applicationAttendMoreEventsEmail,
   volunteerApprovedEmail,
   volunteerOpportunitiesEmail,
@@ -1057,4 +1059,30 @@ export async function sendOpportunitiesEmail(params: {
     ...params.rendered,
     headers: unsubscribeHeaders(opportunitiesEmailLinks(params.token).oneClickUrl),
   });
+}
+
+/** The weekly outreach email to one chapter's member engagement lead
+ * (memberOutreachEmail, lib/members-outreach-email.ts). */
+export async function sendMemberOutreachEmail({
+  toEmail,
+  ...content
+}: { toEmail: string } & Parameters<typeof memberOutreachEmail>[0]): Promise<void> {
+  const { subject, html, text } = memberOutreachEmail(content);
+  await deliverEmail({ to: toEmail, subject, html, text });
+}
+
+/** The admins' weekly outreach summary, to ADMIN_NOTIFICATION_EMAILS (the
+ * same list as the daily digest). Returns false, sending nothing, when that
+ * list is empty. */
+export async function sendAdminMemberOutreachEmail(
+  content: Parameters<typeof adminMemberOutreachEmail>[0],
+): Promise<boolean> {
+  const recipients = (process.env.ADMIN_NOTIFICATION_EMAILS ?? "")
+    .split(",")
+    .map((address) => address.trim())
+    .filter(Boolean);
+  if (recipients.length === 0) return false;
+  const { subject, html, text } = adminMemberOutreachEmail(content);
+  await deliverEmail({ to: recipients, subject, html, text });
+  return true;
 }

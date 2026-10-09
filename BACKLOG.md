@@ -70,7 +70,7 @@ Separately, an **event lead** (`events.lead_user_id`) can manage just that one e
 - **Failures:** the whole run failing, or any single reminder failing, now goes at the top of that day's admin digest as "Reference reminders failed (N)", with the reason. That's enough on its own to send the digest.
 - **Clean runs:** every run now logs `[reference-reminders] done` with how many it checked, reminded and gave up on, so a quiet day can be told apart from one that never ran.
 
-### 4. Members (chapter people and engagement): Part 1 done 2026-10-08, Part 2 next
+### 4. Members (chapter people and engagement): done 2026-10-09
 **Part 1 (done):** `/protected/members` and Setup → Members (2026-10-08 "Members" entry in `schema-changes.sql`).
 - **Who sees it:** admins (all chapters, plus a "No chapter" group with set-chapter), chapter leads (the chapters they lead), and anyone approved for a role type ticked **Chapter leadership team** (their home chapter). This is enforced in the database (`my_member_chapters`, `members_list`, `can_view_member`).
 - **Logic:** bands, outreach due dates and drop alerts are derived in `lib/members.ts`, and nothing is stored. On the page it's "outreach"; in the code and database it's a "touch" (`member_touches`).
@@ -78,17 +78,11 @@ Separately, an **event lead** (`events.lead_user_id`) can manage just that one e
 - **Contact profile (admins):** `/protected/admin/people/[id]`, opened from a name on Members or People & roles. Contact details and every registration section (editable), roles and volunteer approvals, outreach, participation history, waivers.
 - **Naming:** it's called "Members". "Directory" is kept for the future opt-in participant directory (`profiles.directory_opt_in`, which nothing reads yet).
 
-**Part 2 (next): the weekly "Members to reach out to this week" email.** As agreed:
-- **Who gets it:** each Monday, one person per chapter gets it: whoever holds the "directory role". Admins pick that role in Setup, from the role types ticked Chapter leadership team.
-- **What's in it:**
-  - new members this week;
-  - people who need outreach (`needsOutreach`, which includes open drop alerts).
-
-  Each row shows their last outreach and links to their row on Members (`/protected/members?chapter=…#member-<id>`).
-- **When it's skipped:** if every section is empty, don't send it.
-- **Admins:** get one combined email for all chapters. It says which chapters have nobody in the directory role, so an admin knows to fill it.
-- **Setup:** the day and an on/off toggle, off by default.
-- **Where it runs:** inside the existing daily 15:00 UTC reminders job (`app/api/cron/reminders/route.ts`), not a new cron. Use `describeMember` from `lib/members.ts` so the email matches the page.
+**Part 2 (done, 2026-10-09): the weekly outreach email** (`lib/members-outreach-email.ts`; 2026-10-09 "Members: the weekly outreach email" entry in `schema-changes.sql`).
+- **Who gets it:** everyone approved, as an approved volunteer, for the role chosen in Setup → Members (only role types ticked Chapter leadership team are offered) gets their home chapter's list. Setup shows who that is for each chapter.
+- **What's in it:** the chapter's "Needs outreach" sections, as on the page (`outreachSections`), each person linked to their row on Members. Skipped for a chapter with nobody.
+- **Admins:** one summary to `ADMIN_NOTIFICATION_EMAILS`: each chapter's count and who it went to, the full list for any chapter with nobody in the role, and a count of people with no home chapter. Skipped when nobody anywhere needs outreach.
+- **When:** the weekday set in Setup (Monday by default; off by default), in the daily 15:00 UTC reminders job, with two catch-up days. `member_outreach_emails` keeps it to one per person per week and retries a failed send up to 3 times.
 
 ### 5. Change-email flow
 **What:** let someone change their login email themselves.
