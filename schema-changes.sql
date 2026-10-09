@@ -14306,3 +14306,35 @@ grant execute on function public.members_list(text, boolean) to authenticated;
 grant execute on function public.members_list(text, boolean) to service_role;
 
 commit;
+
+-- =============================================================================
+-- 2026-10-09 — Members: pick each chapter's outreach email recipient directly
+-- =============================================================================
+-- Run 2026-10-09, before the matching code was pushed to main.
+--
+-- Replaces the role-type setting from "Members: the weekly outreach email"
+-- (same day). Instead of everyone approved for a volunteer role type, an
+-- admin picks one person per chapter in Setup → Members, from those who
+-- can open that chapter on Members: its chapter leads, and anyone on its
+-- leadership team. No volunteer role type is involved, so nothing shows
+-- up for approval or on event volunteer roles.
+--
+-- 1. chapters.outreach_email_to: who gets the chapter's weekly email; null
+--    = nobody (the admins' summary then carries its list). Cleared if that
+--    profile is deleted. On chapters, so it survives a rename. chapters
+--    grants UPDATE column by column, so this column is added to that grant
+--    (admins only, by the existing chapters_update_admin policy).
+-- 2. app_settings.members_email_role_type_id is dropped: nothing reads it.
+--
+-- No new tables. Safe to re-run. One transaction.
+
+begin;
+
+alter table public.chapters
+  add column if not exists outreach_email_to uuid references public.profiles(id) on delete set null;
+
+grant update (outreach_email_to) on public.chapters to authenticated;
+
+alter table public.app_settings drop column if exists members_email_role_type_id;
+
+commit;

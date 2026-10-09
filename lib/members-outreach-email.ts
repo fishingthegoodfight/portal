@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { createAdminClient } from "@/lib/supabase/admin";
-import { activeChapters, currentHomeChapterName, loadChapters } from "@/lib/chapters";
+import { activeChapters, loadChapters } from "@/lib/chapters";
 import { formatPhoneNumber } from "@/lib/phone";
 import { getSiteUrl } from "@/lib/site-url";
 import { bulkSendGapMs, sendAdminMemberOutreachEmail, sendMemberOutreachEmail } from "@/lib/email/send";
@@ -22,10 +22,10 @@ import { dateInZone, SCHEDULE_ZONE } from "@/lib/opportunities-schedule";
  * "Members: the weekly outreach email" entry in schema-changes.sql). Runs
  * inside the daily reminders cron.
  *
- *  - Each active chapter's member engagement lead (anyone approved, as an
- *    approved volunteer, for the role type chosen in Setup → Members, whose
- *    home chapter it is) gets their chapter's "Needs outreach" sections,
- *    built the same way as the Members page (lib/members.ts).
+ *  - Each active chapter's chosen recipient (chapters.outreach_email_to,
+ *    picked in Setup → Members from the people who can open that chapter on
+ *    Members) gets its "Needs outreach" sections, built the same way as the
+ *    Members page (lib/members.ts).
  *  - The admins (ADMIN_NOTIFICATION_EMAILS) get one combined summary, with
  *    the full list for any chapter nobody was sent it for.
  *  - Nothing goes to a chapter with nobody to reach out to, and the admin
@@ -49,19 +49,17 @@ export type MembersEmailSettings = {
   enabled: boolean;
   /** 0 = Sunday … 6 = Saturday. */
   weekday: number;
-  roleTypeId: number | null;
 };
 
 export async function loadMembersEmailSettings(client: SupabaseClient): Promise<MembersEmailSettings> {
   const { data, error } = await client
     .from("app_settings")
-    .select("members_email_enabled, members_email_weekday, members_email_role_type_id")
+    .select("members_email_enabled, members_email_weekday")
     .maybeSingle();
   if (error) throw new Error(`loading the outreach email settings: ${error.message}`);
   return {
     enabled: data?.members_email_enabled === true,
     weekday: (data?.members_email_weekday as number | undefined) ?? 1,
-    roleTypeId: (data?.members_email_role_type_id as number | null | undefined) ?? null,
   };
 }
 
@@ -73,43 +71,79 @@ export function weekOf(today: string, weekday: number): string {
   return day.toISOString().slice(0, 10);
 }
 
-export type EngagementLead = { userId: string; email: string; firstName: string; name: string; chapter: string };
+export type OutreachCandidate = { userId: string; email: string; firstName: string; name: string };
 
-/** Who holds the role, by home chapter: approved volunteers with an active
- * approval for it, access not removed, with an email. */
-export async function loadEngagementLeads(
-  client: SupabaseClient,
-  roleTypeId: number | null,
-): Promise<{ roleName: string | null; byChapter: Map<string, EngagementLead[]> }> {
-  const byChapter = new Map<string, EngagementLead[]>();
-  if (roleTypeId == null) return { roleName: null, byChapter };
+const personOf = (p: Record<string, unknown>): OutreachCandidate | null => {
+  const email = ((p.email as string | null) ?? "").trim();
+  if (!email) return null;
+  const firstName = ((p.first_name as string | null) ?? "").trim();
+  const name = [firstName, ((p.last_name as string | null) ?? "").trim()].filter(Boolean).join(" ") || email;
+  return { userId: p.id as string, email, firstName, name };
+};
 
-  const [{ data: roleType }, { data: approvals, error }] = await Promise.all([
-    client.from("volunteer_role_types").select("name").eq("id", roleTypeId).maybeSingle(),
-    client.from("volunteer_role_approvals").select("volunteer_id").eq("role_type_id", roleTypeId).is("revoked_at", null),
-  ]);
-  if (error) throw new Error(`loading role approvals: ${error.message}`);
-  const ids = [...new Set((approvals ?? []).map((a) => a.volunteer_id as string))];
-  if (ids.length === 0) return { roleName: (roleType?.name as string | undefined) ?? null, byChapter };
+/**
+ * Who can be picked for each chapter: the people who can open it on
+ * Members (my_member_chapters): its chapter leads, and anyone approved for
+ * a "Chapter leadership team" role type whose home chapter it is. Access
+ * not removed, with an email. Sorted by name.
+ */
+export async function loadOutreachCandidates(client: SupabaseClient): Promise<Map<string, OutreachCandidate[]>> {
+  const byChapter = new Map<string, OutreachCandidate[]>();
+  const add = (chapter: string, person: OutreachCandidate) => {
+    const list = byChapter.get(chapter) ?? [];
+    if (!list.some((c) => c.userId === person.userId)) byChapter.set(chapter, [...list, person]);
+  };
 
-  const [{ data: volunteers }, { data: profiles }] = await Promise.all([
-    client.from("volunteers").select("user_id").in("user_id", ids).eq("status", "approved"),
+  const [{ data: leads, error }, { data: teamTypes }] = await Promise.all([
     client
       .from("profiles")
-      .select("id, email, first_name, last_name, chapter")
-      .in("id", ids)
+      .select("id, email, first_name, last_name, led_chapters")
+      .eq("role", "chapter_lead")
       .is("access_removed_at", null),
+    client.from("volunteer_role_types").select("id").eq("leadership_team", true),
   ]);
-  const approved = new Set((volunteers ?? []).map((v) => v.user_id as string));
-  for (const p of profiles ?? []) {
-    const email = ((p.email as string | null) ?? "").trim();
-    const chapter = currentHomeChapterName(p.chapter as string | null);
-    if (!approved.has(p.id as string) || !email || !chapter) continue;
-    const firstName = ((p.first_name as string | null) ?? "").trim();
-    const name = [firstName, ((p.last_name as string | null) ?? "").trim()].filter(Boolean).join(" ") || email;
-    byChapter.set(chapter, [...(byChapter.get(chapter) ?? []), { userId: p.id as string, email, firstName, name, chapter }]);
+  if (error) throw new Error(`loading chapter leads: ${error.message}`);
+  for (const p of leads ?? []) {
+    const person = personOf(p);
+    if (person) for (const chapter of (p.led_chapters as string[] | null) ?? []) add(chapter, person);
   }
-  return { roleName: (roleType?.name as string | undefined) ?? null, byChapter };
+
+  const typeIds = (teamTypes ?? []).map((t) => t.id as number);
+  if (typeIds.length > 0) {
+    const { data: approvals } = await client
+      .from("volunteer_role_approvals")
+      .select("volunteer_id")
+      .in("role_type_id", typeIds)
+      .is("revoked_at", null);
+    const ids = [...new Set((approvals ?? []).map((a) => a.volunteer_id as string))];
+    if (ids.length > 0) {
+      const [{ data: volunteers }, { data: profiles }] = await Promise.all([
+        client.from("volunteers").select("user_id").in("user_id", ids).eq("status", "approved"),
+        client
+          .from("profiles")
+          .select("id, email, first_name, last_name, chapter")
+          .in("id", ids)
+          .is("access_removed_at", null),
+      ]);
+      const approved = new Set((volunteers ?? []).map((v) => v.user_id as string));
+      for (const p of profiles ?? []) {
+        const person = personOf(p);
+        const chapter = ((p.chapter as string | null) ?? "").trim();
+        if (person && chapter && approved.has(p.id as string)) add(chapter, person);
+      }
+    }
+  }
+  for (const list of byChapter.values()) list.sort((a, b) => a.name.localeCompare(b.name));
+  return byChapter;
+}
+
+/** Each chapter's chosen recipient (chapters.outreach_email_to), by name. */
+export async function loadOutreachRecipientIds(client: SupabaseClient): Promise<Map<string, string>> {
+  const { data, error } = await client.from("chapters").select("name, outreach_email_to");
+  if (error) throw new Error(`loading outreach recipients: ${error.message}`);
+  return new Map(
+    (data ?? []).filter((c) => c.outreach_email_to).map((c) => [c.name as string, c.outreach_email_to as string]),
+  );
 }
 
 /** A chapter's "Needs outreach" as email sections. */
@@ -168,11 +202,12 @@ export async function runMembersOutreachEmail(
   const attemptsSoFar = new Map((done ?? []).map((r) => [r.recipient as string, r.attempts as number]));
 
   // Everyone, once, grouped by home chapter (as stored, which Members matches).
-  const [{ data: rows, error }, { data: settingsRow }, chapters, leads] = await Promise.all([
+  const [{ data: rows, error }, { data: settingsRow }, chapters, candidates, recipientIds] = await Promise.all([
     admin.rpc("members_list", { p_chapter: null, p_all: true }),
     admin.from("app_settings").select("*").maybeSingle(),
     loadChapters(admin),
-    loadEngagementLeads(admin, settings.roleTypeId),
+    loadOutreachCandidates(admin),
+    loadOutreachRecipientIds(admin),
   ]);
   if (error) throw new Error(`members_list: ${error.message}`);
   const memberSettings = memberSettingsFrom(settingsRow as Record<string, unknown> | null);
@@ -207,40 +242,41 @@ export async function runMembersOutreachEmail(
   const adminChapters: AdminOutreachChapter[] = [];
   for (const chapter of chapterNames) {
     const sections = emailSections(byChapter.get(chapter) ?? [], chapter, today);
-    const chapterLeads = leads.byChapter.get(chapter) ?? [];
+    // Only while they can still open the chapter on Members: someone
+    // picked, then no longer a lead there, isn't sent it.
+    const chosenId = recipientIds.get(chapter);
+    const lead = (candidates.get(chapter) ?? []).find((c) => c.userId === chosenId) ?? null;
     adminChapters.push({
       chapter,
       total: countOf(sections),
-      sentTo: chapterLeads.map((l) => l.name),
-      sections: chapterLeads.length === 0 ? sections : [],
+      sentTo: lead?.name ?? null,
+      problem: chosenId && !lead ? "the person picked can no longer open this chapter on Members" : null,
+      sections: lead ? [] : sections,
     });
-    if (sections.length === 0 || !leads.roleName) continue;
-    for (const lead of chapterLeads) {
-      const label = `${lead.name} (${chapter})`;
-      if (handled.has(lead.userId)) {
-        summary.skipped.push(`${label}: already handled this week`);
-        continue;
-      }
-      if (dry) {
-        summary.sent.push(`${label}: would send ${countOf(sections)}`);
-        continue;
-      }
-      await pause();
-      try {
-        await sendMemberOutreachEmail({
-          toEmail: lead.email,
-          firstName: lead.firstName || null,
-          chapter,
-          roleName: leads.roleName,
-          sections,
-          membersUrl: `${getSiteUrl()}/protected/members?chapter=${encodeURIComponent(chapter)}`,
-        });
-        await record(lead.userId, chapter, null);
-        summary.sent.push(label);
-      } catch (err) {
-        await record(lead.userId, chapter, err);
-        summary.failed.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
-      }
+    if (sections.length === 0 || !lead) continue;
+    const label = `${lead.name} (${chapter})`;
+    if (handled.has(lead.userId)) {
+      summary.skipped.push(`${label}: already handled this week`);
+      continue;
+    }
+    if (dry) {
+      summary.sent.push(`${label}: would send ${countOf(sections)}`);
+      continue;
+    }
+    await pause();
+    try {
+      await sendMemberOutreachEmail({
+        toEmail: lead.email,
+        firstName: lead.firstName || null,
+        chapter,
+        sections,
+        membersUrl: `${getSiteUrl()}/protected/members?chapter=${encodeURIComponent(chapter)}`,
+      });
+      await record(lead.userId, chapter, null);
+      summary.sent.push(label);
+    } catch (err) {
+      await record(lead.userId, chapter, err);
+      summary.failed.push(`${label}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -257,7 +293,6 @@ export async function runMembersOutreachEmail(
     await pause();
     try {
       const sent = await sendAdminMemberOutreachEmail({
-        roleName: leads.roleName,
         chapters: adminChapters,
         noChapterCount,
         membersUrl: `${getSiteUrl()}/protected/members?chapter=all`,

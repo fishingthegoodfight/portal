@@ -79,9 +79,9 @@ Separately, an **event lead** (`events.lead_user_id`) can manage just that one e
 - **Naming:** it's called "Members". "Directory" is kept for the future opt-in participant directory (`profiles.directory_opt_in`, which nothing reads yet).
 
 **Part 2 (done, 2026-10-09): the weekly outreach email** (`lib/members-outreach-email.ts`; 2026-10-09 "Members: the weekly outreach email" entry in `schema-changes.sql`).
-- **Who gets it:** everyone approved, as an approved volunteer, for the role chosen in Setup → Members (only role types ticked Chapter leadership team are offered) gets their home chapter's list. Setup shows who that is for each chapter.
+- **Who gets it:** one person per chapter, picked in Setup → Members (`chapters.outreach_email_to`) from those who can open that chapter on Members: its chapter leads and its leadership team. Not a volunteer role type, so nothing shows up for approval or on event roles.
 - **What's in it:** the chapter's "Needs outreach" sections, as on the page (`outreachSections`), each person linked to their row on Members. Skipped for a chapter with nobody.
-- **Admins:** one summary to `ADMIN_NOTIFICATION_EMAILS`: each chapter's count and who it went to, the full list for any chapter with nobody in the role, and a count of people with no home chapter. Skipped when nobody anywhere needs outreach.
+- **Admins:** one summary to `ADMIN_NOTIFICATION_EMAILS`: each chapter's count and who it went to, the full list for any chapter with nobody picked, and a count of people with no home chapter. Skipped when nobody anywhere needs outreach.
 - **When:** the weekday set in Setup (Monday by default; off by default), in the daily 15:00 UTC reminders job, with two catch-up days. `member_outreach_emails` keeps it to one per person per week and retries a failed send up to 3 times.
 
 ### 5. Change-email flow

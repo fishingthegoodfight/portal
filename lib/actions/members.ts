@@ -8,6 +8,7 @@ import {
   type MemberSettings,
   type TouchType,
 } from "@/lib/members";
+import { loadOutreachCandidates, loadOutreachRecipientIds } from "@/lib/members-outreach-email";
 
 export type MembersActionResult = { ok: true } | { ok: false; error: string };
 
@@ -71,12 +72,14 @@ export async function saveMemberSettingsAction(settings: MemberSettings): Promis
   return { ok: true };
 }
 
-/** Admins: Setup → Members, the weekly outreach email. The role must be one
- * ticked "Chapter leadership team", so whoever gets it can open Members. */
+/** Admins: Setup → Members, the weekly outreach email: on/off, the day,
+ * and who gets each chapter's (chapters.outreach_email_to). Each pick must
+ * be someone who can open that chapter on Members. */
 export async function saveMembersEmailSettingsAction(input: {
   enabled: boolean;
   weekday: number;
-  roleTypeId: number | null;
+  /** Chapter name → profile id, or "" for nobody. */
+  recipients: Record<string, string>;
 }): Promise<MembersActionResult> {
   const supabase = await createClient();
   const adminCheck = await requireAdmin(supabase);
@@ -84,27 +87,29 @@ export async function saveMembersEmailSettingsAction(input: {
   if (!Number.isInteger(input.weekday) || input.weekday < 0 || input.weekday > 6) {
     return { ok: false, error: "Choose a day." };
   }
-  if (input.roleTypeId != null) {
-    const { data: roleType } = await supabase
-      .from("volunteer_role_types")
-      .select("leadership_team")
-      .eq("id", input.roleTypeId)
-      .maybeSingle();
-    if (!roleType?.leadership_team) {
-      return { ok: false, error: "Choose a role ticked Chapter leadership team." };
+
+  const [candidates, current] = await Promise.all([
+    loadOutreachCandidates(supabase),
+    loadOutreachRecipientIds(supabase),
+  ]);
+  for (const [chapter, userId] of Object.entries(input.recipients)) {
+    if (userId && !(candidates.get(chapter) ?? []).some((c) => c.userId === userId)) {
+      return { ok: false, error: `Choose someone who leads ${chapter}.` };
     }
   }
-  if (input.enabled && input.roleTypeId == null) {
-    return { ok: false, error: "Choose who gets each chapter's email before turning it on." };
-  }
+
   const { error } = await supabase
     .from("app_settings")
-    .update({
-      members_email_enabled: input.enabled,
-      members_email_weekday: input.weekday,
-      members_email_role_type_id: input.roleTypeId,
-    })
+    .update({ members_email_enabled: input.enabled, members_email_weekday: input.weekday })
     .eq("id", true);
   if (error) return { ok: false, error: error.message };
+  for (const [chapter, userId] of Object.entries(input.recipients)) {
+    if ((current.get(chapter) ?? "") === userId) continue;
+    const { error: chapterError } = await supabase
+      .from("chapters")
+      .update({ outreach_email_to: userId || null })
+      .eq("name", chapter);
+    if (chapterError) return { ok: false, error: chapterError.message };
+  }
   return { ok: true };
 }

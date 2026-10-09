@@ -1891,21 +1891,18 @@ function outreachSectionsText(sections: OutreachEmailSection[]): string[] {
 const peopleCount = (n: number) => `${n} ${n === 1 ? "person" : "people"}`;
 
 /**
- * The weekly "who to reach out to" email to a chapter's member engagement
- * lead: the chapter's "Needs outreach" sections, as on the Members page.
+ * The weekly "who to reach out to" email to the person picked for a
+ * chapter in Setup → Members: the chapter's "Needs outreach" sections, as on the Members page.
  * Only sent when there's at least one person.
  */
 export function memberOutreachEmail({
   firstName,
   chapter,
-  roleName,
   sections,
   membersUrl,
 }: {
   firstName: string | null;
   chapter: string;
-  /** The role that gets this email, e.g. "Member engagement lead". */
-  roleName: string;
   sections: OutreachEmailSection[];
   /** The chapter's Members page. */
   membersUrl: string;
@@ -1915,7 +1912,7 @@ export function memberOutreachEmail({
   const greeting = firstName ? `Hi ${firstName},` : "Hi,";
   const intro = `Here's who in the ${chapter} chapter could use some outreach this week. A call, text, email or a word at the next event all count.`;
   const howTo = "When you reach someone, log it on Members (Log outreach) so the rest of the team knows, and they'll drop off next week's list.";
-  const why = `You get this because you're the ${chapter} chapter's ${roleName}.`;
+  const why = `You get this because you're set to receive the ${chapter} chapter's weekly outreach list. An admin can change that in Setup → Members.`;
   const buttonLabel = "Open Members";
 
   const html = wrapHtml(
@@ -1947,8 +1944,10 @@ export function memberOutreachEmail({
 export type AdminOutreachChapter = {
   chapter: string;
   total: number;
-  /** Who this chapter's email went to; empty when nobody holds the role. */
-  sentTo: string[];
+  /** Who this chapter's email went to; null when nobody's picked. */
+  sentTo: string | null;
+  /** Why it went to nobody, when someone is picked but can't get it. */
+  problem: string | null;
   /** The full list, only for a chapter nobody was sent it for. */
   sections: OutreachEmailSection[];
 };
@@ -1959,13 +1958,11 @@ export type AdminOutreachChapter = {
  * so an admin can fill the role (or do the outreach).
  */
 export function adminMemberOutreachEmail({
-  roleName,
   chapters,
   noChapterCount,
   membersUrl,
   setupUrl,
 }: {
-  roleName: string | null;
   chapters: AdminOutreachChapter[];
   /** People with no home chapter who need outreach (only admins see them). */
   noChapterCount: number;
@@ -1975,23 +1972,22 @@ export function adminMemberOutreachEmail({
   setupUrl: string;
 }): RenderedEmail {
   const total = chapters.reduce((n, c) => n + c.total, 0) + noChapterCount;
-  const uncovered = chapters.filter((c) => c.sentTo.length === 0 && c.total > 0);
+  const uncovered = chapters.filter((c) => !c.sentTo && c.total > 0);
   const subject = `Members: ${peopleCount(total)} to reach out to this week${
     uncovered.length > 0 ? ` (${uncovered.length} ${uncovered.length === 1 ? "chapter has" : "chapters have"} no one to send it to)` : ""
   }`;
-  const role = roleName ?? "the role chosen in Setup → Members";
   const summaryLine = (c: AdminOutreachChapter) =>
     `${c.chapter}: ${peopleCount(c.total)}${
-      c.total === 0 ? "" : c.sentTo.length > 0 ? ` · sent to ${c.sentTo.join(", ")}` : ` · nobody holds ${role}, so nobody was sent this list`
+      c.total === 0
+        ? ""
+        : c.sentTo
+          ? ` · sent to ${c.sentTo}`
+          : ` · not sent to anyone (${c.problem ?? "nobody is picked to receive it"})`
     }`;
-  const noRole = roleName
-    ? null
-    : "No role is chosen to receive the chapter emails, so only this summary went out. Choose one in Setup → Members.";
 
   const html = wrapHtml(
     [
       `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">Members outreach this week</p>`,
-      noRole ? `<p style="margin:0 0 16px;color:#b91c1c;">${escapeHtml(noRole)}</p>` : "",
       `<ul style="margin:0 0 8px;padding-left:20px;">`,
       ...chapters.map((c) => `<li style="margin:0 0 4px;">${escapeHtml(summaryLine(c))}</li>`),
       noChapterCount > 0
@@ -2008,7 +2004,6 @@ export function adminMemberOutreachEmail({
   );
   const text = [
     "Members outreach this week",
-    ...(noRole ? ["", noRole] : []),
     "",
     ...chapters.map((c) => `- ${summaryLine(c)}`),
     ...(noChapterCount > 0 ? [`- No home chapter: ${peopleCount(noChapterCount)} (only admins see them)`] : []),
