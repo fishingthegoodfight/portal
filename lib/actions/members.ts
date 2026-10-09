@@ -12,10 +12,10 @@ import {
 export type MembersActionResult = { ok: true } | { ok: false; error: string };
 
 /**
- * Logs a touch on someone in Members. Anyone who can see them may (the
- * member_touches insert policy, can_view_member); who logged it and the
- * chapter are stamped by the database. Once logged, they drop off "needs a
- * touch" and their drop alert closes.
+ * Logs outreach (a touch, in the database) on someone in Members. Anyone who
+ * can see them may (the member_touches insert policy, can_view_member); who
+ * logged it and the chapter are stamped by the database. Once logged, they
+ * drop off "Needs outreach" and their drop alert closes.
  */
 export async function logMemberTouchAction(input: {
   memberId: string;
@@ -36,7 +36,7 @@ export async function logMemberTouchAction(input: {
     logged_by_name: "",
   });
   if (error) {
-    if (error.code === "42501") return { ok: false, error: "You can't log a touch for this person." };
+    if (error.code === "42501") return { ok: false, error: "You can't log outreach for this person." };
     return { ok: false, error: error.message };
   }
   return { ok: true };

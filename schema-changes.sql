@@ -13984,3 +13984,154 @@ revoke all on function public.admin_set_member_chapter(uuid, text) from public, 
 grant execute on function public.admin_set_member_chapter(uuid, text) to authenticated;
 
 commit;
+
+-- =============================================================================
+-- 2026-10-09 — Members: outreach caps for Dropped, and the old CO Springs spelling
+-- =============================================================================
+-- Run 2026-10-09, before the matching code was pushed to main.
+--
+-- Three changes to Members (2026-10-08 "Members" entry):
+--
+-- 1. Dropped people are due for outreach every 90 days (was 60), and after
+--    3 attempts with no check-in they stop coming back to "Needs outreach".
+--    The attempts limit is a new Setup -> Members setting,
+--    members_dropped_max_attempts. An attempt is outreach logged on or
+--    after the day they became Dropped (worked out in lib/members.ts).
+-- 2. members_list returns touches_since_seen: the dates of every touch on or
+--    after their last check-in, newest first, so the page can count
+--    attempts. A new output column changes the return type, so the
+--    function is dropped and created again, with its grants.
+-- 3. Profiles still on the older spelling "Colorado Springs" move to
+--    "CO Springs". Members matches the home chapter exactly, so until now
+--    they weren't on the CO Springs list. The same for chapter leads'
+--    led_chapters, which decide what Members shows them. Events keep
+--    their spelling: the waiver rules already treat both the same.
+--
+-- No new tables. Safe to re-run. One transaction.
+
+begin;
+
+-- ---- 1. Dropped: every 90 days, at most 3 attempts --------------------------------
+alter table public.app_settings
+  alter column members_touch_dropped_days set default 90,
+  add column if not exists members_dropped_max_attempts integer not null default 3
+    check (members_dropped_max_attempts > 0);
+
+update public.app_settings set members_touch_dropped_days = 90 where members_touch_dropped_days = 60;
+
+-- ---- 2. members_list: touch dates since their last check-in ----------------------
+
+drop function if exists public.members_list(text, boolean);
+
+create function public.members_list(p_chapter text, p_all boolean default false)
+returns table (
+  user_id uuid,
+  first_name text,
+  last_name text,
+  email text,
+  phone text,
+  chapter text,
+  first_seen date,
+  last_seen date,
+  last_seen_event text,
+  total_checkins integer,
+  checkins_6mo integer,
+  checkins_6mo_before_last integer,
+  last_touch_on date,
+  last_touch_type text,
+  last_touch_by text,
+  last_touch_note text,
+  touches_since_seen date[]
+)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+begin
+  if p_all then
+    if not public.is_admin() then
+      raise exception 'Not allowed' using errcode = '42501';
+    end if;
+  elsif not (public.is_admin() or p_chapter = any(public.my_member_chapters())) then
+    raise exception 'Not allowed' using errcode = '42501';
+  end if;
+
+  return query
+    with scope as (
+      select p.*
+        from public.profiles p
+       where p.access_removed_at is null
+         and (p_all or p.chapter = p_chapter)
+    ),
+    att as (
+      select r.user_id, e.id as event_id, e.name, (e.starts_at at time zone e.timezone)::date as on_date
+        from public.rsvps r
+        join public.events e on e.id = r.event_id
+       where r.user_id in (select s.id from scope s)
+         and r.status = 'confirmed' and r.checked_in_at is not null
+         and e.starts_at <= now() and coalesce(e.status, 'scheduled') <> 'cancelled'
+      union
+      select s.user_id, e.id, e.name, (e.starts_at at time zone e.timezone)::date
+        from public.volunteer_signups s
+        join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+        join public.events e on e.id = vo.event_id
+       where s.user_id in (select sc.id from scope sc)
+         and s.status = 'confirmed' and s.checked_in_at is not null
+         and e.starts_at <= now() and coalesce(e.status, 'scheduled') <> 'cancelled'
+    ),
+    per_event as (
+      select a.user_id, a.event_id, min(a.name) as name, min(a.on_date) as on_date
+        from att a group by a.user_id, a.event_id
+    ),
+    stats as (
+      select pe.user_id,
+             min(pe.on_date) as first_seen,
+             max(pe.on_date) as last_seen,
+             count(*)::int as total,
+             count(*) filter (where pe.on_date > (now() at time zone 'America/Denver')::date - 182)::int as six_months
+        from per_event pe group by pe.user_id
+    )
+    select sc.id,
+           sc.first_name,
+           sc.last_name,
+           sc.email,
+           sc.phone,
+           sc.chapter,
+           st.first_seen,
+           st.last_seen,
+           (select pe.name from per_event pe where pe.user_id = sc.id order by pe.on_date desc, pe.event_id desc limit 1),
+           coalesce(st.total, 0),
+           coalesce(st.six_months, 0),
+           coalesce((select count(*)::int from per_event pe
+                      where pe.user_id = sc.id and pe.on_date > st.last_seen - 182), 0),
+           t.touched_on,
+           t.touch_type,
+           t.logged_by_name,
+           t.note,
+           coalesce((select array_agg(mt.touched_on order by mt.touched_on desc)
+                       from public.member_touches mt
+                      where mt.member_id = sc.id and mt.touched_on >= st.last_seen), '{}'::date[])
+      from scope sc
+      left join stats st on st.user_id = sc.id
+      left join lateral (
+        select mt.touched_on, mt.touch_type, mt.logged_by_name, mt.note
+          from public.member_touches mt
+         where mt.member_id = sc.id
+         order by mt.touched_on desc, mt.created_at desc
+         limit 1
+      ) t on true;
+end $function$;
+
+revoke all on function public.members_list(text, boolean) from public, anon;
+grant execute on function public.members_list(text, boolean) to authenticated;
+
+-- ---- 3. The old "Colorado Springs" spelling -------------------------------------
+update public.profiles set chapter = 'CO Springs' where btrim(chapter) = 'Colorado Springs';
+
+update public.profiles
+   set led_chapters = array(select distinct case when c = 'Colorado Springs' then 'CO Springs' else c end
+                              from unnest(led_chapters) c)
+ where 'Colorado Springs' = any(led_chapters);
+
+commit;

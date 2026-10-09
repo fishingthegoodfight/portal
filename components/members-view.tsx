@@ -4,37 +4,30 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 
-import { logMemberTouchAction, setMemberChapterAction } from "@/lib/actions/members";
+import { setMemberChapterAction } from "@/lib/actions/members";
 import {
   agoLabel,
+  attendanceSummary,
   BAND_LABELS,
   MEMBER_BANDS,
+  MEMBER_VIEWS,
+  OUTREACH_SECTIONS,
+  outreachDueSince,
   TOUCH_TYPE_LABELS,
-  TOUCH_TYPES,
   type Member,
   type MemberBand,
+  type MemberView,
   type TouchType,
 } from "@/lib/members";
 import { formatCertDate } from "@/lib/certifications";
+import { ChapterTag } from "@/components/chapter-tag";
+import { FilterPill, filterHref } from "@/components/filter-pills";
+import { LogOutreachForm } from "@/components/log-outreach-form";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-
-const NO_CHAPTER = "No chapter";
-
-const SORTS = {
-  name: "Name",
-  lastTouch: "Last touch (oldest first)",
-  due: "Touch due (soonest first)",
-  lastSeen: "Last seen (most recent first)",
-  firstSeen: "First seen (most recent first)",
-  recent: "Check-ins, last 6 months",
-  band: "Band",
-} as const;
-type SortKey = keyof typeof SORTS;
 
 const BAND_VARIANT: Record<MemberBand, "default" | "secondary" | "destructive" | "outline"> = {
   new: "default",
@@ -45,34 +38,22 @@ const BAND_VARIANT: Record<MemberBand, "default" | "secondary" | "destructive" |
   none: "outline",
 };
 
-const lastContactDate = (m: Member) => m.lastContact?.on ?? "";
-
-function compare(sort: SortKey) {
-  const order = Object.fromEntries(MEMBER_BANDS.map((b, i) => [b, i]));
-  return (a: Member, b: Member): number => {
-    switch (sort) {
-      case "lastTouch":
-        return lastContactDate(a).localeCompare(lastContactDate(b)) || a.name.localeCompare(b.name);
-      case "due":
-        return (a.dueOn ?? "9999").localeCompare(b.dueOn ?? "9999") || a.name.localeCompare(b.name);
-      case "lastSeen":
-        return (b.last_seen ?? "").localeCompare(a.last_seen ?? "") || a.name.localeCompare(b.name);
-      case "firstSeen":
-        return (b.first_seen ?? "").localeCompare(a.first_seen ?? "") || a.name.localeCompare(b.name);
-      case "recent":
-        return b.checkins_6mo - a.checkins_6mo || a.name.localeCompare(b.name);
-      case "band":
-        return order[a.band] - order[b.band] || a.name.localeCompare(b.name);
-      default:
-        return a.name.localeCompare(b.name);
-    }
-  };
+export function MemberBandBadge({ band }: { band: MemberBand }) {
+  return <Badge variant={BAND_VARIANT[band]}>{BAND_LABELS[band]}</Badge>;
 }
 
-/** Members (app/protected/members): filters, sorting, logging touches. */
+const byName = (a: Member, b: Member) => a.name.localeCompare(b.name);
+
+/**
+ * Members (app/protected/members), two views:
+ *  - Needs outreach: who's due, in sections by band, most overdue first;
+ *  - Everyone: the chapter's full list, searchable, filterable by band.
+ * Admins' names open the contact profile (/protected/admin/people/[id]).
+ */
 export function MembersView({
   members,
   today,
+  view,
   chapterOptions,
   selected,
   allValue,
@@ -81,6 +62,7 @@ export function MembersView({
 }: {
   members: Member[];
   today: string;
+  view: MemberView;
   chapterOptions: string[];
   selected: string;
   allValue: string;
@@ -88,155 +70,142 @@ export function MembersView({
   chapterNames: string[];
 }) {
   const [band, setBand] = useState<MemberBand | null>(null);
-  const [needsTouch, setNeedsTouch] = useState(false);
-  const [sort, setSort] = useState<SortKey>("name");
   const [query, setQuery] = useState("");
 
   const showAll = selected === allValue;
-  const alerts = useMemo(
-    () => members.filter((m) => m.dropAlertSince).sort((a, b) => a.dropAlertSince!.localeCompare(b.dropAlertSince!)),
-    [members],
-  );
+  const href = (chapter: string, v: MemberView) =>
+    filterHref("/protected/members", { chapter, view: v === "outreach" ? undefined : v });
+
+  const due = useMemo(() => members.filter((m) => m.needsOutreach), [members]);
   const counts = useMemo(() => {
     const c = Object.fromEntries(MEMBER_BANDS.map((b) => [b, 0])) as Record<MemberBand, number>;
     for (const m of members) c[m.band] += 1;
     return c;
   }, [members]);
-  const needsCount = members.filter((m) => m.needsTouch).length;
 
-  const shown = useMemo(() => {
+  const outreachSections = useMemo(
+    () =>
+      OUTREACH_SECTIONS.map((section) => ({
+        ...section,
+        rows: due
+          .filter((m) => m.band === section.band)
+          .sort((a, b) => (outreachDueSince(a) ?? "").localeCompare(outreachDueSince(b) ?? "") || byName(a, b)),
+      })).filter((section) => section.rows.length > 0),
+    [due],
+  );
+
+  const everyone = useMemo(() => {
     const q = query.trim().toLowerCase();
     return members
-      .filter((m) => (!band || m.band === band) && (!needsTouch || m.needsTouch))
-      .filter((m) => !q || [m.name, m.email, m.phone].join(" ").toLowerCase().includes(q))
-      .sort(compare(sort));
-  }, [members, band, needsTouch, sort, query]);
+      .filter((m) => !band || m.band === band)
+      .filter((m) => !q || [m.name, m.email, m.phone, m.chapter].join(" ").toLowerCase().includes(q))
+      .sort(byName);
+  }, [members, band, query]);
 
-  const groups = useMemo(() => {
-    if (!showAll) return [{ label: selected, rows: shown }];
-    const byChapter = new Map<string, Member[]>();
-    for (const m of shown) {
-      const label = m.chapter?.trim() || NO_CHAPTER;
-      byChapter.set(label, [...(byChapter.get(label) ?? []), m]);
-    }
-    return [...byChapter.entries()]
-      .sort(([a], [b]) => (a === NO_CHAPTER ? -1 : b === NO_CHAPTER ? 1 : a.localeCompare(b)))
-      .map(([label, rows]) => ({ label, rows }));
-  }, [shown, showAll, selected]);
+  const row = (m: Member) => (
+    <MemberRow
+      key={m.user_id}
+      member={m}
+      today={today}
+      showChapter={showAll}
+      isAdmin={isAdmin}
+      chapterNames={chapterNames}
+    />
+  );
 
   return (
     <div className="flex flex-col gap-6">
-      {chapterOptions.length > 1 && (
-        <nav aria-label="Chapters" className="flex flex-wrap gap-2">
-          {chapterOptions.map((c) => (
-            <Link
-              key={c}
-              href={`/protected/members?chapter=${encodeURIComponent(c)}`}
-              aria-current={c === selected ? "page" : undefined}
-              className={cn(
-                "rounded-full border px-3 py-1 text-sm",
-                c === selected ? "border-foreground bg-foreground text-background" : "hover:bg-accent",
-              )}
-            >
-              {c === allValue ? "All chapters" : c}
-            </Link>
-          ))}
-        </nav>
-      )}
-
-      {alerts.length > 0 && (
-        <Card className="border-amber-500/60">
-          <CardHeader>
-            <CardTitle className="text-lg">Drop alerts ({alerts.length})</CardTitle>
-            <p className="text-sm text-muted-foreground">
-              Regulars who haven&apos;t been back. Each clears when they check in or someone logs a touch.
-            </p>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-2 text-sm">
-            {alerts.map((m) => (
-              <a key={m.user_id} href={`#member-${m.user_id}`} className="flex flex-wrap gap-x-2 hover:underline">
-                <span className="font-medium">{m.name}</span>
-                {showAll && <span className="text-muted-foreground">{m.chapter || NO_CHAPTER}</span>}
-                <span className="text-muted-foreground">
-                  last came {m.last_seen ? agoLabel(m.last_seen, today) : "—"} · {m.checkins_6mo_before_last} check-ins in
-                  the 6 months before
-                </span>
-              </a>
-            ))}
-          </CardContent>
-        </Card>
-      )}
-
       <div className="flex flex-col gap-3">
-        <div className="flex flex-wrap gap-2">
-          <FilterPill active={band == null} onClick={() => setBand(null)}>
-            All ({members.length})
-          </FilterPill>
-          {MEMBER_BANDS.map((b) => (
-            <FilterPill key={b} active={band === b} onClick={() => setBand(band === b ? null : b)}>
-              {BAND_LABELS[b]} ({counts[b]})
-            </FilterPill>
-          ))}
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={needsTouch} onChange={(e) => setNeedsTouch(e.target.checked)} />
-            Needs a touch ({needsCount})
-          </label>
-          <Select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} aria-label="Sort by" className="w-auto">
-            {(Object.keys(SORTS) as SortKey[]).map((key) => (
-              <option key={key} value={key}>
-                Sort: {SORTS[key]}
-              </option>
+        {chapterOptions.length > 1 && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs font-medium text-muted-foreground">Chapter</span>
+            <div role="group" aria-label="Chapter" className="flex flex-wrap gap-2">
+              {chapterOptions.map((c) => (
+                <FilterPill key={c} href={href(c, view)} active={c === selected}>
+                  {c === allValue ? "All chapters" : c}
+                </FilterPill>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="flex flex-col gap-1.5">
+          <span className="text-xs font-medium text-muted-foreground">Show</span>
+          <div role="group" aria-label="Show" className="flex flex-wrap gap-2">
+            {(Object.keys(MEMBER_VIEWS) as MemberView[]).map((v) => (
+              <FilterPill key={v} href={href(selected, v)} active={v === view}>
+                {MEMBER_VIEWS[v]} ({v === "outreach" ? due.length : members.length})
+              </FilterPill>
             ))}
-          </Select>
-          <Input
-            type="search"
-            placeholder="Search name, email, phone"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            className="w-56"
-          />
+          </div>
         </div>
       </div>
 
-      {shown.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Nobody matches.</p>
+      {view === "outreach" ? (
+        outreachSections.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            Nobody needs outreach right now.{" "}
+            <Link href={href(selected, "everyone")} className="underline underline-offset-4">
+              See everyone
+            </Link>
+          </p>
+        ) : (
+          outreachSections.map((section) => (
+            <section key={section.band} className="flex flex-col gap-2">
+              <div>
+                <h2 className="text-lg font-semibold">
+                  {section.title}{" "}
+                  <span className="text-sm font-normal text-muted-foreground">({section.rows.length})</span>
+                </h2>
+                <p className="text-sm text-muted-foreground">{section.hint}</p>
+              </div>
+              <ul className="flex flex-col divide-y rounded-md border">{section.rows.map(row)}</ul>
+            </section>
+          ))
+        )
       ) : (
-        groups.map((group) => (
-          <section key={group.label} className="flex flex-col gap-2">
-            {showAll && (
-              <h2 className="text-lg font-semibold">
-                {group.label} <span className="text-sm font-normal text-muted-foreground">({group.rows.length})</span>
-              </h2>
-            )}
-            <ul className="flex flex-col divide-y rounded-md border">
-              {group.rows.map((m) => (
-                <MemberRow
-                  key={m.user_id}
-                  member={m}
-                  today={today}
-                  canSetChapter={isAdmin && !m.chapter?.trim()}
-                  chapterNames={chapterNames}
-                />
-              ))}
-            </ul>
-          </section>
-        ))
+        <div className="flex flex-col gap-3">
+          <Input
+            type="search"
+            placeholder={isAdmin ? "Search name, email, phone or chapter" : "Search name, email or phone"}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            aria-label="Search members"
+            className="sm:max-w-sm"
+          />
+          <div role="group" aria-label="Filter by band" className="flex flex-wrap gap-2">
+            <BandPill active={band == null} onClick={() => setBand(null)}>
+              All
+            </BandPill>
+            {MEMBER_BANDS.filter((b) => counts[b] > 0).map((b) => (
+              <BandPill key={b} active={band === b} onClick={() => setBand(band === b ? null : b)}>
+                {BAND_LABELS[b]} ({counts[b]})
+              </BandPill>
+            ))}
+          </div>
+          {everyone.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Nobody matches.</p>
+          ) : (
+            <ul className="flex flex-col divide-y rounded-md border">{everyone.map(row)}</ul>
+          )}
+        </div>
       )}
     </div>
   );
 }
 
-function FilterPill({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+/** A band filter: the look of FilterPill, but a button, since the band and
+ * search stay on the page rather than in the URL. */
+function BandPill({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <button
       type="button"
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "rounded-full border px-3 py-1 text-sm",
-        active ? "border-foreground bg-foreground text-background" : "hover:bg-accent",
+        "inline-flex items-center gap-1 rounded-full border px-3 py-1 text-sm transition-colors",
+        active
+          ? "border-foreground bg-foreground font-medium text-background"
+          : "text-muted-foreground hover:bg-accent hover:text-foreground",
       )}
     >
       {children}
@@ -244,21 +213,18 @@ function FilterPill({ active, onClick, children }: { active: boolean; onClick: (
   );
 }
 
-function LastContact({ member, today }: { member: Member; today: string }) {
-  const c = member.lastContact;
-  if (!c) return <span className="text-muted-foreground">Never reached</span>;
-  if (c.kind === "touch") {
-    return (
-      <span title={c.note ?? undefined}>
-        <span className="font-semibold">Touched {agoLabel(c.on, today)}</span> · {c.by} · {c.type}
-        {c.note && <span className="text-muted-foreground"> · “{c.note}”</span>}
-      </span>
-    );
-  }
+/** "Outreach 2w ago by Sam (call): “left a voicemail”", or "No outreach yet". */
+export function LastOutreach({ member: m, today }: { member: Member; today: string }) {
+  if (!m.last_touch_on) return <span className="text-muted-foreground">No outreach yet</span>;
+  const type = TOUCH_TYPE_LABELS[m.last_touch_type as TouchType] ?? m.last_touch_type;
   return (
     <span>
-      <span className="font-semibold">Came {agoLabel(c.on, today)}</span>
-      {c.event && <span className="text-muted-foreground"> · {c.event}</span>}
+      <span title={formatCertDate(m.last_touch_on)}>Outreach {agoLabel(m.last_touch_on, today)}</span>
+      <span className="text-muted-foreground">
+        {" "}
+        by {m.last_touch_by ?? "someone"} ({type})
+        {m.last_touch_note && <>: &ldquo;{m.last_touch_note}&rdquo;</>}
+      </span>
     </span>
   );
 }
@@ -266,34 +232,22 @@ function LastContact({ member, today }: { member: Member; today: string }) {
 function MemberRow({
   member: m,
   today,
-  canSetChapter,
+  showChapter,
+  isAdmin,
   chapterNames,
 }: {
   member: Member;
   today: string;
-  canSetChapter: boolean;
+  showChapter: boolean;
+  isAdmin: boolean;
   chapterNames: string[];
 }) {
   const router = useRouter();
   const [logging, setLogging] = useState(false);
-  const [type, setType] = useState<TouchType>("call");
-  const [on, setOn] = useState(today);
-  const [note, setNote] = useState("");
   const [chapter, setChapter] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const saveTouch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    const result = await logMemberTouchAction({ memberId: m.user_id, type, touchedOn: on, note });
-    setBusy(false);
-    if (!result.ok) return setError(result.error);
-    setLogging(false);
-    setNote("");
-    router.refresh();
-  };
+  const noChapter = !m.chapter?.trim();
 
   const saveChapter = async () => {
     if (!chapter) return;
@@ -310,29 +264,46 @@ function MemberRow({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex min-w-0 flex-col gap-0.5 [overflow-wrap:anywhere]">
           <span className="flex flex-wrap items-center gap-2">
-            <span className="font-medium">{m.name}</span>
-            <Badge variant={BAND_VARIANT[m.band]}>{BAND_LABELS[m.band]}</Badge>
-            {m.needsTouch && <Badge variant="outline">Needs a touch</Badge>}
-            {m.dropAlertSince && <Badge variant="destructive">Drop alert</Badge>}
+            {isAdmin ? (
+              <Link href={`/protected/admin/people/${m.user_id}`} className="font-medium hover:underline">
+                {m.name}
+              </Link>
+            ) : (
+              <span className="font-medium">{m.name}</span>
+            )}
+            <MemberBandBadge band={m.band} />
+            {showChapter && !noChapter && <ChapterTag chapter={m.chapter as string} />}
           </span>
-          <span className="text-muted-foreground">{[m.phone, m.email].filter(Boolean).join(" · ") || "—"}</span>
-          <span className="text-muted-foreground">
-            First seen {formatCertDate(m.first_seen)} · last seen {formatCertDate(m.last_seen)} · {m.checkins_6mo}{" "}
-            {m.checkins_6mo === 1 ? "check-in" : "check-ins"} in 6 months
-            {m.dueOn && !m.needsTouch && ` · next touch by ${formatCertDate(m.dueOn)}`}
-          </span>
+          {(m.phone || m.email) && (
+            <span className="flex flex-wrap gap-x-2 text-muted-foreground">
+              {m.phone && (
+                <a href={`tel:${m.phone.replace(/\D/g, "")}`} className="hover:underline">
+                  {m.phone}
+                </a>
+              )}
+              {m.phone && m.email && <span aria-hidden>·</span>}
+              {m.email && (
+                <a href={`mailto:${m.email}`} className="hover:underline">
+                  {m.email}
+                </a>
+              )}
+            </span>
+          )}
           <span>
-            <LastContact member={m} today={today} />
+            {attendanceSummary(m, today)}
+            {m.dropAlertSince && <span className="text-muted-foreground"> · used to come regularly</span>}
+            {m.outreachStopped && <span className="text-muted-foreground"> · no longer prompted after repeated outreach</span>}
           </span>
+          <LastOutreach member={m} today={today} />
         </div>
         {!logging && (
           <Button size="sm" variant="outline" className="w-fit shrink-0" onClick={() => setLogging(true)}>
-            Log a touch
+            Log outreach
           </Button>
         )}
       </div>
 
-      {canSetChapter && (
+      {isAdmin && noChapter && (
         <div className="flex flex-wrap items-center gap-2">
           <Select value={chapter} onChange={(e) => setChapter(e.target.value)} aria-label="Home chapter" className="w-auto">
             <option value="">Set home chapter…</option>
@@ -348,35 +319,7 @@ function MemberRow({
         </div>
       )}
 
-      {logging && (
-        <form onSubmit={saveTouch} className="flex flex-col gap-2 rounded-md border bg-muted/40 p-3">
-          <div className="flex flex-wrap gap-2">
-            {TOUCH_TYPES.map((t) => (
-              <FilterPill key={t} active={type === t} onClick={() => setType(t)}>
-                {TOUCH_TYPE_LABELS[t]}
-              </FilterPill>
-            ))}
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <Input type="date" value={on} max={today} onChange={(e) => setOn(e.target.value)} className="w-auto" aria-label="Date" />
-            <Input
-              placeholder="Short note (optional)"
-              maxLength={280}
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              className="min-w-48 flex-1"
-            />
-          </div>
-          <div className="flex gap-2">
-            <Button type="submit" size="sm" disabled={busy}>
-              {busy ? "Saving..." : "Save touch"}
-            </Button>
-            <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setLogging(false)}>
-              Cancel
-            </Button>
-          </div>
-        </form>
-      )}
+      {logging && <LogOutreachForm memberId={m.user_id} today={today} onDone={() => setLogging(false)} />}
       {error && <p className="text-red-500">{error}</p>}
     </li>
   );

@@ -42,7 +42,7 @@ const SETUP_LINKS = [
   {
     href: "/protected/admin/setup/members",
     title: "Members",
-    description: "The thresholds behind Members: engagement bands, when someone needs a touch, and drop alerts.",
+    description: "The thresholds behind Members: engagement bands and when someone needs outreach.",
   },
   {
     href: "/protected/admin/setup/attendance-import",

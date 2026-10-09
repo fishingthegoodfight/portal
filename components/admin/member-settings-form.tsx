@@ -19,20 +19,20 @@ const GROUPS: { title: string; fields: { key: keyof MemberSettings; label: strin
     ],
   },
   {
-    title: "When someone needs a touch",
+    title: "When someone needs outreach",
     fields: [
-      { key: "touchNewDays", label: "New: within", unit: "days of their last check-in or touch" },
       { key: "touchActiveDays", label: "Active: every", unit: "days" },
       { key: "touchQuietFirstDays", label: "Quiet: within", unit: "days of becoming Quiet" },
       { key: "touchQuietRepeatDays", label: "Quiet: then every", unit: "days" },
       { key: "touchDroppedDays", label: "Dropped: every", unit: "days" },
+      { key: "droppedMaxAttempts", label: "Dropped: stop after", unit: "tries with no check-in" },
     ],
   },
   {
-    title: "Drop alerts",
+    title: "Regulars who stop coming",
     fields: [
       { key: "regularCheckins", label: "A regular has at least", unit: "check-ins in the 6 months before their last one" },
-      { key: "dropAlertDays", label: "Alert when a regular has had no check-in for", unit: "days" },
+      { key: "dropAlertDays", label: "They need outreach once a regular has had no check-in for", unit: "days" },
     ],
   },
 ];

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { HeartPulse, ShieldCheck } from "lucide-react";
 
@@ -206,16 +207,24 @@ export function RolesManager({
   );
 }
 
-function PersonRow({
+/**
+ * One person's role, sensitive-data flags, Remove person and Restore access.
+ * A row on People & roles, and the "Roles & access" card on the contact
+ * profile (`onProfile`: their name and email are already in the page's
+ * header, so only the role line is shown).
+ */
+export function PersonRow({
   person,
   isSelf,
   onDeleted,
   chapterOptions,
+  onProfile = false,
 }: {
   person: RolePerson;
   isSelf: boolean;
   onDeleted: (message: string) => void;
   chapterOptions: string[];
+  onProfile?: boolean;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
@@ -280,11 +289,17 @@ function PersonRow({
     setChapters((prev) => (checked ? [...prev, name] : prev.filter((c) => c !== name)));
 
   return (
-    <div className="rounded-md border p-3">
+    <div className={cn(!onProfile && "rounded-md border p-3")}>
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 flex-col gap-0.5">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium">{person.name || person.email}</span>
+            {onProfile ? (
+              <span className="text-sm">{roleSummary(person)}</span>
+            ) : (
+              <Link href={`/protected/admin/people/${person.id}`} className="font-medium hover:underline">
+                {person.name || person.email}
+              </Link>
+            )}
             {isSelf && <Badge variant="outline">You</Badge>}
             {removed && (
               <Badge variant="outline" className="border-red-500/50 text-red-700 dark:text-red-400">
@@ -292,12 +307,16 @@ function PersonRow({
               </Badge>
             )}
           </div>
-          <span className="text-sm text-muted-foreground">
-            {[person.email, person.chapter && `Home chapter: ${person.chapter}`]
-              .filter(Boolean)
-              .join(" · ")}
-          </span>
-          <span className="text-sm">{roleSummary(person)}</span>
+          {!onProfile && (
+            <>
+              <span className="text-sm text-muted-foreground">
+                {[person.email, person.chapter && `Home chapter: ${person.chapter}`]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+              <span className="text-sm">{roleSummary(person)}</span>
+            </>
+          )}
         </div>
         {!editing && !removing && (
           <div className="flex shrink-0 flex-col items-end gap-2 sm:flex-row">

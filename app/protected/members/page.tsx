@@ -5,13 +5,22 @@ import { createClient } from "@/lib/supabase/server";
 import { MembersView } from "@/components/members-view";
 import { loadChapters } from "@/lib/chapters";
 import { todayInZone } from "@/lib/format-date";
-import { describeMember, memberSettingsFrom, type MemberStats } from "@/lib/members";
+import {
+  describeMember,
+  MEMBER_VIEWS,
+  memberSettingsFrom,
+  type MemberStats,
+  type MemberView,
+} from "@/lib/members";
 
 /** "All chapters" in the switcher (admins). */
 const ALL = "all";
 
-async function MembersLoader({ searchParams }: { searchParams: Promise<{ chapter?: string }> }) {
-  const { chapter: requested } = await searchParams;
+type MembersSearchParams = { chapter?: string; view?: string };
+
+async function MembersLoader({ searchParams }: { searchParams: Promise<MembersSearchParams> }) {
+  const { chapter: requested, view: viewParam } = await searchParams;
+  const view: MemberView = viewParam && viewParam in MEMBER_VIEWS ? (viewParam as MemberView) : "outreach";
   const supabase = await createClient();
   const { data: claims } = await supabase.auth.getClaims();
   const userId = claims?.claims?.sub as string | undefined;
@@ -50,6 +59,7 @@ async function MembersLoader({ searchParams }: { searchParams: Promise<{ chapter
     <MembersView
       members={members}
       today={today}
+      view={view}
       chapterOptions={isAdmin ? [ALL, ...allChapterNames] : visible}
       selected={selected}
       allValue={ALL}
@@ -60,20 +70,20 @@ async function MembersLoader({ searchParams }: { searchParams: Promise<{ chapter
 }
 
 /**
- * Members: everyone whose home chapter is a chapter, with how engaged they
- * are and who last reached them (lib/members.ts). For admins, chapter leads
+ * Members: who needs outreach, and everyone whose home chapter is a chapter,
+ * with how engaged they are and who last reached out (lib/members.ts). For admins, chapter leads
  * (the chapters they lead) and the chapter leadership team (their home
  * chapter); the database enforces it (members_list). Not the participant
  * directory, which is a separate, opt-in idea.
  */
-export default function MembersPage({ searchParams }: { searchParams: Promise<{ chapter?: string }> }) {
+export default function MembersPage({ searchParams }: { searchParams: Promise<MembersSearchParams> }) {
   return (
     <div className="flex-1 w-full flex flex-col gap-6">
       <div>
         <h1 className="text-2xl font-bold">Members</h1>
         <p className="text-sm text-muted-foreground">
-          Everyone whose home chapter this is, how engaged they are, and who last reached out. Log a touch when you
-          call, text, email or talk with someone, so the rest of the team can see they&apos;ve been reached.
+          Who to reach out to, and everyone in the chapter. Log outreach when you call, text, email or talk with
+          someone, so the rest of the team knows they&apos;ve been reached.
         </p>
       </div>
       <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>

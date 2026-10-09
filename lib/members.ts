@@ -1,6 +1,6 @@
 /**
- * Members (backlog item 4): engagement bands, when someone next needs a
- * touch, and drop alerts — all worked out from activity each time, never
+ * Members (backlog item 4): engagement bands, when someone next needs
+ * outreach, and drop alerts — all worked out from activity each time, never
  * stored (2026-10-08 "Members" entry in schema-changes.sql). One
  * definition, used by the Members page and the weekly chapter email.
  * Plain functions, safe in client components. Dates are YYYY-MM-DD.
@@ -13,17 +13,20 @@
  *   quiet     last check-in activeDays–droppedDays ago
  *   dropped   last check-in droppedDays+ ago
  * Quiet and dropped always have 2+ check-ins (one is one_visit).
+ *
+ * "Outreach" on the page is a "touch" in the code and database
+ * (member_touches): a logged call, text, email or conversation.
  */
 
 export type MemberSettings = {
   newDays: number;
   activeDays: number;
   droppedDays: number;
-  touchNewDays: number;
   touchActiveDays: number;
   touchQuietFirstDays: number;
   touchQuietRepeatDays: number;
   touchDroppedDays: number;
+  droppedMaxAttempts: number;
   dropAlertDays: number;
   regularCheckins: number;
 };
@@ -32,11 +35,11 @@ export const DEFAULT_MEMBER_SETTINGS: MemberSettings = {
   newDays: 14,
   activeDays: 60,
   droppedDays: 120,
-  touchNewDays: 14,
   touchActiveDays: 90,
   touchQuietFirstDays: 14,
   touchQuietRepeatDays: 30,
-  touchDroppedDays: 60,
+  touchDroppedDays: 90,
+  droppedMaxAttempts: 3,
   dropAlertDays: 45,
   regularCheckins: 3,
 };
@@ -46,11 +49,11 @@ export const MEMBER_SETTING_COLUMNS: Record<keyof MemberSettings, string> = {
   newDays: "members_new_days",
   activeDays: "members_active_days",
   droppedDays: "members_dropped_days",
-  touchNewDays: "members_touch_new_days",
   touchActiveDays: "members_touch_active_days",
   touchQuietFirstDays: "members_touch_quiet_first_days",
   touchQuietRepeatDays: "members_touch_quiet_repeat_days",
   touchDroppedDays: "members_touch_dropped_days",
+  droppedMaxAttempts: "members_dropped_max_attempts",
   dropAlertDays: "members_drop_alert_days",
   regularCheckins: "members_regular_checkins",
 };
@@ -63,6 +66,10 @@ export function memberSettingsFrom(row: Record<string, unknown> | null | undefin
   }
   return settings;
 }
+
+/** Someone who came once gets their "come back" nudge this long after the
+ * visit (8 weeks). */
+export const ONE_VISIT_NUDGE_DAYS = 56;
 
 export const MEMBER_BANDS = ["new", "active", "quiet", "dropped", "one_visit", "none"] as const;
 export type MemberBand = (typeof MEMBER_BANDS)[number];
@@ -103,6 +110,8 @@ export type MemberStats = {
   last_touch_type: string | null;
   last_touch_by: string | null;
   last_touch_note: string | null;
+  /** Every touch on or after their last check-in, newest first. */
+  touches_since_seen: string[] | null;
 };
 
 export type Member = MemberStats & {
@@ -110,14 +119,14 @@ export type Member = MemberStats & {
   band: MemberBand;
   /** When they next need a touch; null when their band has no schedule. */
   dueOn: string | null;
-  needsTouch: boolean;
+  /** Due for outreach: their touch is due, or a drop alert is open. On the
+   * page this is all "Needs outreach"; a drop alert just gets there sooner. */
+  needsOutreach: boolean;
   /** An open drop alert: since when (their last check-in + dropAlertDays). */
   dropAlertSince: string | null;
-  /** The most recent contact, a logged touch or a check-in. */
-  lastContact:
-    | { kind: "touch"; on: string; by: string; type: string; note: string | null }
-    | { kind: "checkin"; on: string; event: string | null }
-    | null;
+  /** Dropped, and droppedMaxAttempts outreach since then with no check-in:
+   * they're no longer prompted. */
+  outreachStopped: boolean;
 };
 
 export function addDays(date: string, days: number): string {
@@ -145,7 +154,7 @@ export function memberBand(stats: MemberStats, settings: MemberSettings, today: 
   return "dropped";
 }
 
-/** Works out band, due date, needs-a-touch and drop alert for one person. */
+/** Works out band, due date, needs-outreach and drop alert for one person. */
 export function describeMember(stats: MemberStats, settings: MemberSettings, today: string): Member {
   const band = memberBand(stats, settings, today);
   const touch = stats.last_touch_on;
@@ -153,10 +162,28 @@ export function describeMember(stats: MemberStats, settings: MemberSettings, tod
   const base = later(touch, stats.last_seen);
 
   let dueOn: string | null = null;
+  let attempts = 0;
   if (base && stats.last_seen) {
-    if (band === "new") dueOn = addDays(base, settings.touchNewDays);
+    // New: one welcome, due as soon as they first check in. Nothing more
+    // until they leave New. (app_settings.members_touch_new_days is unused.)
+    if (band === "new") dueOn = touch && touch >= stats.first_seen! ? null : stats.first_seen;
+    // One visit: one "come back" nudge once they've been away
+    // ONE_VISIT_NUDGE_DAYS, unless that visit is droppedDays+ ago (long gone,
+    // e.g. imported history). Any outreach after they left New counts as the
+    // nudge; the welcome while they were New doesn't.
+    else if (band === "one_visit") {
+      const pastNew = addDays(stats.first_seen!, settings.newDays + 1);
+      const longGone = daysBetween(stats.last_seen, today) >= settings.droppedDays;
+      dueOn = longGone || (touch && touch >= pastNew) ? null : addDays(stats.last_seen, ONE_VISIT_NUDGE_DAYS);
+    }
     else if (band === "active") dueOn = addDays(base, settings.touchActiveDays);
-    else if (band === "dropped") dueOn = addDays(base, settings.touchDroppedDays);
+    else if (band === "dropped") {
+      // Every touchDroppedDays, until droppedMaxAttempts outreach since they
+      // became Dropped goes unanswered (a check-in resets it: new band).
+      const enteredDropped = addDays(stats.last_seen, settings.droppedDays);
+      attempts = (stats.touches_since_seen ?? []).filter((d) => d >= enteredDropped).length;
+      dueOn = attempts >= settings.droppedMaxAttempts ? null : addDays(base, settings.touchDroppedDays);
+    }
     else if (band === "quiet") {
       const enteredQuiet = addDays(stats.last_seen, settings.activeDays);
       dueOn =
@@ -175,36 +202,61 @@ export function describeMember(stats: MemberStats, settings: MemberSettings, tod
     if (since <= today && !(touch && touch >= since)) dropAlertSince = since;
   }
 
-  const lastContact: Member["lastContact"] =
-    touch && (!stats.last_seen || touch >= stats.last_seen)
-      ? {
-          kind: "touch",
-          on: touch,
-          by: stats.last_touch_by ?? "Someone",
-          type: TOUCH_TYPE_LABELS[stats.last_touch_type as TouchType] ?? stats.last_touch_type ?? "",
-          note: stats.last_touch_note,
-        }
-      : stats.last_seen
-        ? { kind: "checkin", on: stats.last_seen, event: stats.last_seen_event }
-        : null;
-
   return {
     ...stats,
     name: [stats.first_name, stats.last_name].filter(Boolean).join(" ") || stats.email || "Unnamed",
     band,
     dueOn,
-    needsTouch: dueOn != null && dueOn <= today,
+    needsOutreach: (dueOn != null && dueOn <= today) || dropAlertSince != null,
     dropAlertSince,
-    lastContact,
+    outreachStopped: band === "dropped" && attempts >= settings.droppedMaxAttempts,
   };
 }
 
-/** "today", "yesterday", "3d ago", "5w ago", "4mo ago". */
+/** "today", "yesterday", "3 days ago", "5 weeks ago", "4 months ago",
+ * "over a year ago", "2 years ago": spelled out, for people new to Members. */
 export function agoLabel(date: string, today: string): string {
   const days = daysBetween(date, today);
+  const ago = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"} ago`;
   if (days <= 0) return "today";
   if (days === 1) return "yesterday";
-  if (days < 14) return `${days}d ago`;
-  if (days < 60) return `${Math.round(days / 7)}w ago`;
-  return `${Math.round(days / 30)}mo ago`;
+  if (days < 14) return ago(days, "day");
+  if (days < 60) return ago(Math.round(days / 7), "week");
+  if (days < 365) return ago(Math.round(days / 30), "month");
+  if (days < 730) return "over a year ago";
+  return ago(Math.floor(days / 365), "year");
+}
+
+/** The two views of Members (?view=). */
+export const MEMBER_VIEWS = { outreach: "Needs outreach", everyone: "Everyone" } as const;
+export type MemberView = keyof typeof MEMBER_VIEWS;
+
+/**
+ * The sections of "Needs outreach", in order, with what each is for. Only
+ * these bands ever need outreach (none has no schedule).
+ */
+export const OUTREACH_SECTIONS: { band: MemberBand; title: string; hint: string }[] = [
+  { band: "new", title: "New", hint: "Just started coming. A welcome makes them more likely to come back." },
+  { band: "one_visit", title: "One visit", hint: "Came once and hasn't been back in 8 weeks. A nudge to come again." },
+  { band: "quiet", title: "Quiet", hint: "Haven't been in a while. A check-in now, before they drift off." },
+  { band: "dropped", title: "Dropped", hint: "Stopped coming. Let them know they're missed." },
+  { band: "active", title: "Active", hint: "Coming regularly. A routine hello." },
+];
+
+/** Since when they've needed outreach (the earlier of the due date and an
+ * open drop alert), for most-overdue-first; null when they don't. */
+export function outreachDueSince(m: Member): string | null {
+  if (!m.needsOutreach) return null;
+  // Whichever is set and earlier: a future due date is always later than an
+  // open (so past) drop alert.
+  return [m.dueOn, m.dropAlertSince].filter((d): d is string => d != null).sort()[0] ?? null;
+}
+
+/** Their attendance in plain words: "Came 5 times, most recently 7 months
+ * ago", "Came once, 5 weeks ago", "Hasn't come to an event yet". The total,
+ * not a count over a window, so it reads the same for every band. */
+export function attendanceSummary(m: MemberStats, today: string): string {
+  if (!m.last_seen || m.total_checkins === 0) return "Hasn't come to an event yet";
+  if (m.total_checkins === 1) return `Came once, ${agoLabel(m.last_seen, today)}`;
+  return `Came ${m.total_checkins} times, most recently ${agoLabel(m.last_seen, today)}`;
 }
