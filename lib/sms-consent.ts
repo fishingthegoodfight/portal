@@ -15,3 +15,9 @@ export const SMS_CONSENT_TEXT =
 /** True while SMS_CONSENT_TEXT was a stand-in: the checkbox was then shown
  * to admins only. */
 export const SMS_CONSENT_IS_PLACEHOLDER = false;
+
+/** Linked from the public opt-in page (app/sms) and meant to match the
+ * campaign registration. Null = not published yet, so not linked. */
+export const PRIVACY_POLICY_URL: string | null =
+  "https://docs.google.com/document/d/1QsC7tmAPIBN2_OFDSRP5bOJ-EYNNB3pZMdOnKKm2WKM/";
+export const TERMS_URL: string | null = null;

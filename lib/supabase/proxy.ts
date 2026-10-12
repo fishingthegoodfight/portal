@@ -101,6 +101,8 @@ export async function updateSession(request: NextRequest) {
     // lib/bulletin.ts).
     request.nextUrl.pathname !== "/bulletin" &&
     request.nextUrl.pathname !== "/volunteer" &&
+    // The SMS program's public opt-in page (app/sms): static, no data.
+    request.nextUrl.pathname !== "/sms" &&
     // Reference forms: the link's one-use token is the only key, checked
     // server-side with the service role (lib/reference-form.ts).
     !request.nextUrl.pathname.startsWith("/reference/") &&
