@@ -2100,3 +2100,48 @@ export function adminBulletinEmail(content: BulletinEmailContent): RenderedEmail
   ].join("\n");
   return { subject, html, text };
 }
+
+/** One copy of a Members or roster email, merge fields already filled. */
+export type ChapterMessageContent = {
+  subject: string;
+  body: string;
+  /** signatureLines(): the sender, then the chapter line. */
+  signature: [string, string];
+  /** The "stop chapter emails" page for this recipient. */
+  stopUrl: string;
+  /** "Send me a test": marked as a test, to the sender. */
+  test?: boolean;
+};
+
+/**
+ * A message a lead or admin wrote on Members or an event roster
+ * (lib/bulk-email.ts). Plain text, sent to each person on their own, from
+ * the portal with reply-to the sender. Every copy has the link to stop
+ * these emails; event logistics emails aren't affected by it.
+ */
+export function chapterMessageEmail({ subject, body, signature, stopUrl, test }: ChapterMessageContent): RenderedEmail {
+  const footer =
+    "You're getting this as a member of Fishing the Good Fight. Emails about events you've signed up for (changes and cancellations) still come either way.";
+  const html = wrapHtml(
+    [
+      test
+        ? `<p style="margin:0 0 16px;padding:8px 12px;background:#fef3c7;border-radius:6px;font-size:13px;">Test copy: only you got this. Merge fields are filled from the first person on the list.</p>`
+        : "",
+      `<div style="margin:0 0 20px;">${htmlWithLineBreaks(body.trim())}</div>`,
+      `<p style="margin:0;">${escapeHtml(signature[0])}<br><span style="color:#57534e;">${escapeHtml(signature[1])}</span></p>`,
+      `<p style="margin:24px 0 0;font-size:12px;color:#78716c;">${escapeHtml(footer)} <a href="${escapeHtml(stopUrl)}" style="color:#78716c;">Stop chapter emails</a></p>`,
+    ].join("\n"),
+  );
+  const text = [
+    ...(test ? ["[Test copy: only you got this. Merge fields are filled from the first person on the list.]", ""] : []),
+    body.trim(),
+    "",
+    signature[0],
+    signature[1],
+    "",
+    "--",
+    footer,
+    `Stop chapter emails: ${stopUrl}`,
+  ].join("\n");
+  return { subject: test ? `[Test] ${subject}` : subject, html, text };
+}

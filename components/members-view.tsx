@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 
-import { setMemberChapterAction } from "@/lib/actions/members";
+import { logMemberTouchAction, setMemberChapterAction } from "@/lib/actions/members";
 import {
   agoLabel,
   attendanceSummary,
@@ -22,6 +22,9 @@ import { formatCertDate } from "@/lib/certifications";
 import { ChapterTag } from "@/components/chapter-tag";
 import { FilterPill, filterHref } from "@/components/filter-pills";
 import { LogOutreachForm } from "@/components/log-outreach-form";
+import { EmailComposer } from "@/components/email-composer";
+import { PhoneTools } from "@/components/phone-tools";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,6 +51,10 @@ const byName = (a: Member, b: Member) => a.name.localeCompare(b.name);
  *  - Needs outreach: who's due, in sections by band, most overdue first;
  *  - Everyone: the chapter's full list, searchable, filterable by band.
  * Admins' names open the contact profile (/protected/admin/people/[id]).
+ * Tick people (or "select all shown") and Email them, or email one person
+ * from their row (components/email-composer.tsx). The selection stays
+ * through view and filter changes; a different chapter is a new page
+ * (the page keys this on the chapter), so it clears.
  */
 export function MembersView({
   members,
@@ -70,6 +77,8 @@ export function MembersView({
 }) {
   const [band, setBand] = useState<MemberBand | null>(null);
   const [query, setQuery] = useState("");
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [composing, setComposing] = useState<null | { userIds: string[]; audience: string }>(null);
 
   const showAll = selected === allValue;
   const href = (chapter: string, v: MemberView) =>
@@ -92,6 +101,26 @@ export function MembersView({
       .sort(byName);
   }, [members, band, query]);
 
+  const shown = view === "outreach" ? due : everyone;
+  const allShownPicked = shown.length > 0 && shown.every((m) => picked.has(m.user_id));
+  const togglePicked = (userId: string) =>
+    setPicked((prev) => {
+      const next = new Set(prev);
+      if (next.has(userId)) next.delete(userId);
+      else next.add(userId);
+      return next;
+    });
+  const toggleAllShown = () =>
+    setPicked((prev) => {
+      const next = new Set(prev);
+      for (const m of shown) {
+        if (allShownPicked) next.delete(m.user_id);
+        else next.add(m.user_id);
+      }
+      return next;
+    });
+  const chapterLabel = showAll ? "all chapters" : selected;
+
   const row = (m: Member) => (
     <MemberRow
       key={m.user_id}
@@ -100,6 +129,9 @@ export function MembersView({
       showChapter={showAll}
       isAdmin={isAdmin}
       chapterNames={chapterNames}
+      picked={picked.has(m.user_id)}
+      onTogglePicked={() => togglePicked(m.user_id)}
+      onEmail={() => setComposing({ userIds: [m.user_id], audience: `${m.name} (${chapterLabel})` })}
     />
   );
 
@@ -129,6 +161,13 @@ export function MembersView({
           </div>
         </div>
       </div>
+
+      {shown.length > 0 && (
+        <label className="flex w-fit items-center gap-2 text-sm">
+          <Checkbox checked={allShownPicked} onCheckedChange={toggleAllShown} />
+          Select all shown ({shown.length})
+        </label>
+      )}
 
       {view === "outreach" ? (
         sections.length === 0 ? (
@@ -179,6 +218,42 @@ export function MembersView({
           )}
         </div>
       )}
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+        <Link
+          href={filterHref("/protected/emails", { chapter: showAll ? undefined : selected })}
+          className="underline underline-offset-4"
+        >
+          Emails sent{showAll ? "" : ` to ${selected}`}
+        </Link>
+      </div>
+
+      {picked.size > 0 && (
+        <div className="sticky bottom-4 z-40 flex flex-wrap items-center gap-3 rounded-lg border bg-background p-3 shadow-lg">
+          <span className="text-sm font-medium">{picked.size} selected</span>
+          <Button
+            size="sm"
+            onClick={() =>
+              setComposing({ userIds: [...picked], audience: `${picked.size} selected (${chapterLabel})` })
+            }
+          >
+            Email
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setPicked(new Set())}>
+            Clear
+          </Button>
+        </div>
+      )}
+
+      {composing && (
+        <EmailComposer
+          source="members"
+          chapter={showAll ? null : selected}
+          audience={composing.audience}
+          userIds={composing.userIds}
+          onClose={() => setComposing(null)}
+        />
+      )}
     </div>
   );
 }
@@ -225,12 +300,18 @@ function MemberRow({
   showChapter,
   isAdmin,
   chapterNames,
+  picked,
+  onTogglePicked,
+  onEmail,
 }: {
   member: Member;
   today: string;
   showChapter: boolean;
   isAdmin: boolean;
   chapterNames: string[];
+  picked: boolean;
+  onTogglePicked: () => void;
+  onEmail: () => void;
 }) {
   const router = useRouter();
   const [logging, setLogging] = useState(false);
@@ -250,7 +331,9 @@ function MemberRow({
   };
 
   return (
-    <li id={`member-${m.user_id}`} className="flex scroll-mt-24 flex-col gap-2 p-3 text-sm">
+    <li id={`member-${m.user_id}`} className="flex scroll-mt-24 gap-3 p-3 text-sm">
+      <Checkbox checked={picked} onCheckedChange={onTogglePicked} aria-label={`Select ${m.name}`} className="mt-0.5" />
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="flex min-w-0 flex-col gap-0.5 [overflow-wrap:anywhere]">
           <span className="flex flex-wrap items-center gap-2">
@@ -267,9 +350,20 @@ function MemberRow({
           {(m.phone || m.email) && (
             <span className="flex flex-wrap gap-x-2 text-muted-foreground">
               {m.phone && (
-                <a href={`tel:${m.phone.replace(/\D/g, "")}`} className="hover:underline">
-                  {m.phone}
-                </a>
+                <PhoneTools
+                  phone={m.phone}
+                  name={m.name}
+                  onLogText={async () => {
+                    const result = await logMemberTouchAction({ memberId: m.user_id, type: "text", touchedOn: today, note: "" });
+                    if (result.ok) router.refresh();
+                    return result;
+                  }}
+                />
+              )}
+              {m.email && (
+                <button type="button" onClick={onEmail} className="font-medium text-foreground underline underline-offset-4">
+                  Email
+                </button>
               )}
               {m.phone && m.email && <span aria-hidden>·</span>}
               {m.email && (
@@ -311,6 +405,7 @@ function MemberRow({
 
       {logging && <LogOutreachForm memberId={m.user_id} today={today} onDone={() => setLogging(false)} />}
       {error && <p className="text-red-500">{error}</p>}
+      </div>
     </li>
   );
 }

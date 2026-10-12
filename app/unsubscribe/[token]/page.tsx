@@ -1,12 +1,12 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 
-import { lookupUnsubscribeToken } from "@/lib/email-preferences";
+import { lookupUnsubscribeToken, parseEmailList } from "@/lib/email-preferences";
 import { UnsubscribeForm } from "@/components/unsubscribe-form";
 
 /**
  * /unsubscribe/<token>: the footer link in the volunteer opportunities
- * email, no login (the proxy lets it through). Opening the link changes
+ * email, and (?list=chapter) in chapter emails from Members and rosters; no login (the proxy lets it through). Opening the link changes
  * nothing — email security scanners open links too — so it asks for one
  * tap. Mail clients' own one-click button posts to /api/unsubscribe/<token>.
  */
@@ -17,10 +17,12 @@ export const metadata: Metadata = {
 };
 
 type Params = Promise<{ token: string }>;
+type SearchParams = Promise<{ list?: string }>;
 
-async function UnsubscribeLoader({ params }: { params: Params }) {
-  const { token } = await params;
-  const lookup = await lookupUnsubscribeToken(token);
+async function UnsubscribeLoader({ params, searchParams }: { params: Params; searchParams: SearchParams }) {
+  const [{ token }, { list: listParam }] = await Promise.all([params, searchParams]);
+  const list = parseEmailList(listParam);
+  const lookup = await lookupUnsubscribeToken(token, list);
   if (!lookup.found) {
     return (
       <div className="flex flex-col gap-2">
@@ -32,14 +34,16 @@ async function UnsubscribeLoader({ params }: { params: Params }) {
       </div>
     );
   }
-  return <UnsubscribeForm token={token} maskedEmail={lookup.maskedEmail} initiallySubscribed={lookup.subscribed} />;
+  return (
+    <UnsubscribeForm token={token} list={list} maskedEmail={lookup.maskedEmail} initiallySubscribed={lookup.subscribed} />
+  );
 }
 
-export default function UnsubscribePage({ params }: { params: Params }) {
+export default function UnsubscribePage({ params, searchParams }: { params: Params; searchParams: SearchParams }) {
   return (
     <main className="mx-auto flex w-full max-w-md flex-1 flex-col gap-6 px-4 py-8">
       <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>
-        <UnsubscribeLoader params={params} />
+        <UnsubscribeLoader params={params} searchParams={searchParams} />
       </Suspense>
     </main>
   );

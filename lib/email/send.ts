@@ -3,6 +3,7 @@ import { Resend } from "resend";
 
 import { formatEventDateRange, formatEventInstant } from "@/lib/format-date";
 import { getSiteUrl } from "@/lib/site-url";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { buildEventIcs, buildGoogleCalendarLink, icsUidForVolunteerShift } from "@/lib/email/ics";
 import {
   adminChangeNotificationEmail,
@@ -47,6 +48,8 @@ import {
   type RsvpEmailEventInfo,
   type VolunteerShiftEmailInfo,
   type BulletinEmailContent,
+  chapterMessageEmail,
+  type ChapterMessageContent,
 } from "@/lib/email/templates";
 
 type EmailProvider = "resend" | "smtp";
@@ -66,6 +69,11 @@ type OutgoingEmail = {
   attachments?: { filename: string; content: string; contentType: string }[];
   /** Extra headers, e.g. List-Unsubscribe. */
   headers?: Record<string, string>;
+  /** Who replies go to, when not the default (REPLY_TO): a Members or
+   * roster email's sender. */
+  replyTo?: string;
+  /** For email_send_log: "bulk" for Members/roster emails. */
+  logKind?: "bulk" | "other";
 };
 
 function getEmailProvider(): EmailProvider {
@@ -125,13 +133,34 @@ export function bulkSendGapMs(): number {
 }
 
 /** Single send path for every email — picks the transport from
- * EMAIL_PROVIDER. Throws on failure on either transport. */
+ * EMAIL_PROVIDER. Throws on failure on either transport. Each email sent
+ * is counted in email_send_log, which the shared daily limit reads
+ * (email_headroom). */
 async function deliverEmail(email: OutgoingEmail): Promise<void> {
+  await transmitEmail(email);
+  await logSentEmail(email.logKind ?? "other", Array.isArray(email.to) ? email.to.length : 1);
+}
+
+/** One row in email_send_log per email sent (a send to several addresses
+ * counts once each). Never fails the send: a missed row only makes the
+ * daily limit a little generous. */
+async function logSentEmail(kind: "bulk" | "other", count = 1): Promise<void> {
+  try {
+    const { error } = await createAdminClient()
+      .from("email_send_log")
+      .insert(Array.from({ length: count }, () => ({ kind })));
+    if (error) console.error("[email-log] couldn't record a send:", error.message);
+  } catch (err) {
+    console.error("[email-log] couldn't record a send:", err instanceof Error ? err.message : err);
+  }
+}
+
+async function transmitEmail(email: OutgoingEmail): Promise<void> {
   if (getEmailProvider() === "smtp") {
     await getSmtpTransport().sendMail({
       from: process.env.EMAIL_FROM,
       to: email.to,
-      replyTo: REPLY_TO,
+      replyTo: email.replyTo ?? REPLY_TO,
       subject: email.subject,
       html: email.html,
       text: email.text,
@@ -149,7 +178,7 @@ async function deliverEmail(email: OutgoingEmail): Promise<void> {
   const { error } = await getResendClient().emails.send({
     from: RESEND_FROM_ADDRESS,
     to: email.to,
-    replyTo: REPLY_TO,
+    replyTo: email.replyTo ?? REPLY_TO,
     subject: email.subject,
     html: email.html,
     text: email.text,
@@ -1100,4 +1129,26 @@ export async function sendAdminBulletinEmail(content: BulletinEmailContent): Pro
   const { subject, html, text } = adminBulletinEmail(content);
   await deliverEmail({ to: recipients, subject, html, text });
   return true;
+}
+
+/** One copy of a Members or roster email (chapterMessageEmail) to one
+ * person, reply-to the sender, with the one-click "stop chapter emails"
+ * header (lib/bulk-email.ts sends them). */
+export async function sendChapterMessageEmail(params: {
+  toEmail: string;
+  replyTo: string;
+  content: ChapterMessageContent;
+  /** POST target for mail clients' own unsubscribe button. */
+  oneClickUrl: string;
+}): Promise<void> {
+  const { subject, html, text } = chapterMessageEmail(params.content);
+  await deliverEmail({
+    to: params.toEmail,
+    subject,
+    html,
+    text,
+    replyTo: params.replyTo,
+    headers: unsubscribeHeaders(params.oneClickUrl),
+    logKind: "bulk",
+  });
 }

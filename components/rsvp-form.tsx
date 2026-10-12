@@ -43,6 +43,8 @@ import {
 } from "@/lib/registration-sections";
 import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
 import { missingDetailsFields, type DetailsCardKey } from "@/lib/core-profile";
+import { SMS_CONSENT_IS_PLACEHOLDER, SMS_CONSENT_TEXT } from "@/lib/sms-consent";
+import { Checkbox } from "@/components/ui/checkbox";
 import { activeChapters, isChapterName, type Chapter } from "@/lib/chapters";
 import { formatPhoneNumber } from "@/lib/phone";
 import { HomeChapterField } from "@/components/chapter-select";
@@ -182,6 +184,7 @@ export function RsvpForm({
   // (lib/core-profile.ts), asked once and saved to the profile before the
   // RSVP. Fixed at page load, so the card doesn't vanish as they type.
   const [missingDetails] = useState(() => missingDetailsFields(profile));
+  const [smsConsent, setSmsConsent] = useState(false);
   const [details, setDetails] = useState<Record<DetailsCardKey, string>>(() => ({
     first_name: profile.first_name,
     last_name: profile.last_name,
@@ -202,7 +205,9 @@ export function RsvpForm({
   // Saves "Your details" to the profile. Only the fields that were missing.
   const saveDetails = async () => {
     if (missingDetails.length === 0) return;
-    const update = Object.fromEntries(missingDetails.map((key) => [key, details[key].trim()]));
+    const update: Record<string, unknown> = Object.fromEntries(missingDetails.map((key) => [key, details[key].trim()]));
+    // Off by default; only saved when ticked, with the wording shown.
+    if (smsConsent) Object.assign(update, { sms_consent: true, sms_consent_text: SMS_CONSENT_TEXT });
     const { error: detailsError } = await createClient().from("profiles").update(update).eq("id", userId);
     if (detailsError) throw detailsError;
   };
@@ -474,6 +479,8 @@ export function RsvpForm({
                 values={details}
                 onChange={(key, value) => setDetails((prev) => ({ ...prev, [key]: value }))}
                 chapters={chapters}
+                smsConsent={smsConsent}
+                onSmsConsentChange={setSmsConsent}
               />
             )}
             {needsWaiverSignature && waiver.status === "unsigned" && (
@@ -678,11 +685,15 @@ function YourDetails({
   values,
   onChange,
   chapters,
+  smsConsent,
+  onSmsConsentChange,
 }: {
   missing: DetailsCardKey[];
   values: Record<DetailsCardKey, string>;
   onChange: (key: DetailsCardKey, value: string) => void;
   chapters: Chapter[];
+  smsConsent: boolean;
+  onSmsConsentChange: (value: boolean) => void;
 }) {
   const asks = (key: DetailsCardKey) => missing.includes(key);
   return (
@@ -744,6 +755,21 @@ function YourDetails({
             chapters={chapters}
           />
         </div>
+      )}
+      {/* Optional, off by default. Hidden until the registered 10DLC wording
+        * replaces the placeholder in lib/sms-consent.ts. */}
+      {!SMS_CONSENT_IS_PLACEHOLDER && (
+        <label htmlFor="details_sms_consent" className="flex items-start gap-2 text-sm">
+          <Checkbox
+            id="details_sms_consent"
+            className="mt-0.5"
+            checked={smsConsent}
+            onCheckedChange={(checked) => onSmsConsentChange(checked === true)}
+          />
+          <span>
+            {SMS_CONSENT_TEXT} <span className="text-muted-foreground">(optional)</span>
+          </span>
+        </label>
       )}
     </fieldset>
   );

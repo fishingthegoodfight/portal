@@ -111,7 +111,10 @@ export async function updateSession(request: NextRequest) {
     !request.nextUrl.pathname.startsWith("/unsubscribe/") &&
     !request.nextUrl.pathname.startsWith("/api/unsubscribe/") &&
     // Machine-called endpoints authenticate themselves (CRON_SECRET).
-    !request.nextUrl.pathname.startsWith("/api/cron")
+    !request.nextUrl.pathname.startsWith("/api/cron") &&
+    // Twilio's webhooks: every request must carry Twilio's signature
+    // (lib/twilio.ts readTwilioWebhook).
+    !request.nextUrl.pathname.startsWith("/api/twilio/")
   ) {
     // no user, potentially respond by redirecting the user to the login page
     // — remembering where they were headed, so signing in (or up) brings

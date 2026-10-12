@@ -22,3 +22,14 @@ export function formatPostalCode(value: string): string {
   if (digits.length <= 5) return digits;
   return `${digits.slice(0, 5)}-${digits.slice(5)}`;
 }
+
+/**
+ * A US number as E.164 (+13035550100) — what sms: links and Twilio take —
+ * or null when it isn't a whole US number (10 digits, or 11 starting 1).
+ */
+export function toE164(value: string | null | undefined): string | null {
+  const digits = (value ?? "").replace(/\D/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return null;
+}

@@ -21,6 +21,9 @@ import { adminAddVolunteerSignupAction } from "@/lib/actions/admin-volunteer-sig
 import { CancelEventDialog } from "@/components/admin/cancel-event-dialog";
 import { RestoreEventDialog } from "@/components/admin/restore-event-dialog";
 import { SaveAsTemplateButton } from "@/components/admin/save-as-template-button";
+import { RosterEmailButton } from "@/components/admin/roster-email-button";
+import { PhoneTools } from "@/components/phone-tools";
+import { logRosterTextAction } from "@/lib/actions/texting";
 import { ShareEventCard } from "@/components/admin/share-event-card";
 import { EventCard, type EventCardEvent } from "@/components/event-card";
 import { EmergencyContactFields } from "@/components/emergency-contact-fields";
@@ -905,6 +908,13 @@ export function EventRoster({
               <Link href={`/protected/admin/events/series/${seriesId}`}>View series</Link>
             </Button>
           )}
+          <RosterEmailButton
+            eventId={eventId}
+            chapter={eventCard.chapter}
+            timing={timing}
+            roster={roster}
+            volunteerRoster={volunteerRoster}
+          />
           {canSaveAsTemplate && (
             <SaveAsTemplateButton
               eventId={eventId}
@@ -1008,6 +1018,7 @@ export function EventRoster({
               {filteredRoster.map((person) => (
                 <Fragment key={person.rsvpId}>
                   <RosterRow
+                    eventId={eventId}
                     person={person}
                     timing={timing}
                     collectsDietary={dietary.collected}
@@ -1054,6 +1065,7 @@ export function EventRoster({
               {waitlist.map((person) => (
                 <Fragment key={person.rsvpId}>
                   <WaitlistRow
+                    eventId={eventId}
                     person={person}
                     canOffer={!isCancelled && freeSpots > 0}
                     busy={busyRsvpId === person.rsvpId}
@@ -1109,6 +1121,7 @@ export function EventRoster({
               <ul>
                 {volunteerRoster.map((person) => (
                   <VolunteerRosterRow
+                    eventId={eventId}
                     key={person.signupId}
                     person={person}
                     timing={timing}
@@ -1631,6 +1644,7 @@ function StatTile({ label, value }: { label: string; value: number | string }) {
 }
 
 function WaitlistRow({
+  eventId,
   person,
   canOffer,
   busy,
@@ -1638,6 +1652,8 @@ function WaitlistRow({
   onRemove,
   confirming,
 }: {
+  /** For Log text (log_roster_text). */
+  eventId: number;
   person: WaitlistPerson;
   canOffer: boolean;
   busy: boolean;
@@ -1646,7 +1662,6 @@ function WaitlistRow({
   /** Their "Remove?" confirmation is open, right below this row. */
   confirming: boolean;
 }) {
-  const contact = [person.phone, person.email].filter(Boolean).join(" · ");
   const canOfferThis = person.status !== "offered";
 
   return (
@@ -1656,7 +1671,7 @@ function WaitlistRow({
           {person.position != null ? `#${person.position} ` : ""}
           {personDisplayName(person)}
         </span>
-        <span className="text-sm text-muted-foreground">{contact || "—"}</span>
+        <ContactLine eventId={eventId} person={person} />
         {person.status === "waitlisted" && (
           <span className="text-xs text-muted-foreground">
             <span className="font-medium text-amber-600">Waitlisted</span> · joined{" "}
@@ -1703,6 +1718,7 @@ function WaitlistRow({
 }
 
 function RosterRow({
+  eventId,
   person,
   timing,
   collectsDietary,
@@ -1715,6 +1731,8 @@ function RosterRow({
   editDetails,
   health,
 }: {
+  /** For Log text (log_roster_text). */
+  eventId: number;
   person: RosterPerson;
   timing: EventTiming;
   collectsDietary: boolean;
@@ -1731,7 +1749,6 @@ function RosterRow({
   editDetails?: React.ReactNode;
   health: React.ReactNode;
 }) {
-  const contact = [person.phone, person.email].filter(Boolean).join(" · ");
   const emergency = [person.emergencyContact, person.emergencyPhone].filter(Boolean).join(" · ");
   // Two-step, in the row (no window.confirm — see removePerson above).
   const [confirmingPaperRemoval, setConfirmingPaperRemoval] = useState(false);
@@ -1747,7 +1764,7 @@ function RosterRow({
             </span>
           )}
         </span>
-        <span className="text-sm text-muted-foreground">{contact || "—"}</span>
+        <ContactLine eventId={eventId} person={person} />
         {editDetails}
         <span className="text-sm text-muted-foreground">Emergency: {emergency || "—"}</span>
         {person.emergencySecondary && (
@@ -1875,6 +1892,7 @@ function RosterRow({
 }
 
 function VolunteerRosterRow({
+  eventId,
   person,
   timing,
   editDetails,
@@ -1884,6 +1902,8 @@ function VolunteerRosterRow({
   health,
   practicalCheck,
 }: {
+  /** For Log text (log_roster_text). */
+  eventId: number;
   person: VolunteerRosterPerson;
   timing: EventTiming;
   /** The "Edit details" control. */
@@ -1898,7 +1918,6 @@ function VolunteerRosterRow({
   /** Set only for an instructor shift where the viewer can see checks. */
   practicalCheck: { latest: LatestPracticalCheck | null } | null;
 }) {
-  const contact = [person.phone, person.email].filter(Boolean).join(" · ");
   const emergency = [person.emergencyContact, person.emergencyPhone].filter(Boolean).join(" · ");
 
   return (
@@ -1919,7 +1938,7 @@ function VolunteerRosterRow({
           </span>
         )}
         <span className="text-sm text-muted-foreground">{person.shiftLabel}</span>
-        <span className="text-sm text-muted-foreground">{contact || "—"}</span>
+        <ContactLine eventId={eventId} person={person} />
         {editDetails}
         <span className="text-sm text-muted-foreground">Emergency: {emergency || "—"}</span>
         {person.emergencySecondary && (
@@ -2164,6 +2183,31 @@ function DietaryLine({ note, collected }: { note: string | null; collected: bool
   return (
     <span className="w-fit rounded bg-amber-500 px-2 py-0.5 text-xs font-bold tracking-wide text-black">
       DIETARY NOT ANSWERED
+    </span>
+  );
+}
+
+/** A roster person's phone (call, Text, Copy, Log text) and email. */
+function ContactLine({
+  eventId,
+  person,
+}: {
+  eventId: number;
+  person: { userId: string; phone: string; email: string; firstName: string; lastName: string };
+}) {
+  const phone = person.phone ? formatPhoneNumber(person.phone) : "";
+  if (!phone && !person.email) return <span className="text-sm text-muted-foreground">—</span>;
+  return (
+    <span className="flex flex-wrap gap-x-2 text-sm text-muted-foreground">
+      {phone && (
+        <PhoneTools
+          phone={phone}
+          name={personDisplayName(person)}
+          onLogText={() => logRosterTextAction(eventId, person.userId)}
+        />
+      )}
+      {phone && person.email && <span aria-hidden>·</span>}
+      {person.email}
     </span>
   );
 }

@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { homeChapterOption, loadChapters } from "@/lib/chapters";
 import { ProfileForm } from "@/components/profile-form";
 import { formatPhoneNumber } from "@/lib/phone";
+import { SMS_CONSENT_IS_PLACEHOLDER } from "@/lib/sms-consent";
 import {
   profileValueFromColumn,
   REGISTRATION_SECTIONS,
@@ -78,6 +79,11 @@ async function ProfileFormLoader({
       chapters={chapters}
       // Only approved volunteers are sent the opportunities email (or the
       // finish-registration nudge), so only they see the setting.
+      initialChapterEmails={profile?.chapter_emails !== false}
+      initialSmsConsent={profile?.sms_consent === true}
+      // While the consent wording is a placeholder, only admins see it (to
+      // try the test text in Setup); see lib/sms-consent.ts.
+      showSmsConsent={!SMS_CONSENT_IS_PLACEHOLDER || profile?.role === "admin"}
       initialOpportunitiesEmail={
         volunteer?.status === "approved" ? profile?.volunteer_opportunities_email !== false : null
       }

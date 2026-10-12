@@ -14,6 +14,10 @@ import { getSiteUrl } from "@/lib/site-url";
 import { loadHealthMarkers, loadHealthStatus } from "@/lib/health-access";
 import { loadLatestPracticalChecks } from "@/lib/admin/practical-checks";
 import { loadChapters } from "@/lib/chapters";
+
+// Room for an email sent from the roster to go out in the background of
+// the request that queued it (lib/actions/bulk-email.ts).
+export const maxDuration = 300;
 import { loadLeadAccount } from "@/lib/admin/lead-account";
 
 async function AdminEventLoader({ params }: { params: Promise<{ id: string }> }) {

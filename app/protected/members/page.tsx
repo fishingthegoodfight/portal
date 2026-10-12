@@ -13,6 +13,10 @@ import {
   type MemberView,
 } from "@/lib/members";
 
+// Room for an email sent from here to go out in the background of the
+// request that queued it (lib/actions/bulk-email.ts).
+export const maxDuration = 300;
+
 /** "All chapters" in the switcher (admins). */
 const ALL = "all";
 
@@ -57,6 +61,8 @@ async function MembersLoader({ searchParams }: { searchParams: Promise<MembersSe
 
   return (
     <MembersView
+      // A different chapter starts a fresh selection.
+      key={selected}
       members={members}
       today={today}
       view={view}

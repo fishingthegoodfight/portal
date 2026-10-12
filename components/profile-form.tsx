@@ -19,6 +19,7 @@ import { Select } from "@/components/ui/select";
 import { EmergencyContactSectionFields } from "@/components/emergency-contact-fields";
 import { RegistrationFieldInput } from "@/components/registration-fields";
 import { HomeChapterField } from "@/components/chapter-select";
+import { SMS_CONSENT_TEXT } from "@/lib/sms-consent";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { Chapter } from "@/lib/chapters";
 import { formatPhoneNumber, formatPostalCode } from "@/lib/phone";
@@ -57,6 +58,9 @@ export function ProfileForm({
   returnTo,
   chapters,
   initialOpportunitiesEmail,
+  initialChapterEmails,
+  initialSmsConsent,
+  showSmsConsent,
 }: {
   userId: string;
   /** Shown read-only: it's the email they log in with, and the profile page
@@ -68,6 +72,13 @@ export function ProfileForm({
   /** profiles.volunteer_opportunities_email for an approved volunteer; null
    * for anyone else, who isn't sent that email and doesn't see the setting. */
   initialOpportunitiesEmail: boolean | null;
+  /** profiles.chapter_emails: messages leads send from Members and rosters. */
+  initialChapterEmails: boolean;
+  /** profiles.sms_consent. */
+  initialSmsConsent: boolean;
+  /** Whether to offer it: always once the registered wording is in
+   * lib/sms-consent.ts; to admins only while it's a placeholder. */
+  showSmsConsent: boolean;
   /** Every registration section field's current value, keyed by its profile
    * column (see lib/registration-sections.ts). Rendered generically below so
    * a future section needs no changes here. */
@@ -80,6 +91,8 @@ export function ProfileForm({
     Record<string, string>
   >(initialRegistrationFields);
   const [opportunitiesEmail, setOpportunitiesEmail] = useState<boolean | null>(initialOpportunitiesEmail);
+  const [chapterEmails, setChapterEmails] = useState(initialChapterEmails);
+  const [smsConsent, setSmsConsent] = useState(initialSmsConsent);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -235,6 +248,12 @@ export function ProfileForm({
           ...profile,
           ...columnValuesFromProfile(withHiddenFieldsCleared(registrationFields)),
           ...(opportunitiesEmail === null ? {} : { volunteer_opportunities_email: opportunitiesEmail }),
+          chapter_emails: chapterEmails,
+          // The wording shown is stored with the consent (the database
+          // stamps when, and keeps both unless consent changes).
+          ...(showSmsConsent && smsConsent !== initialSmsConsent
+            ? { sms_consent: smsConsent, sms_consent_text: smsConsent ? SMS_CONSENT_TEXT : null }
+            : {}),
         })
         .eq("id", userId)
         .select()
@@ -428,6 +447,53 @@ export function ProfileForm({
           >
             Manage medical information
           </Link>
+        </CardContent>
+      </Card>
+
+      <Card id="messages">
+        <CardHeader>
+          <CardTitle>{showSmsConsent ? "Emails and texts" : "Emails"}</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <label htmlFor="chapter_emails" className="flex items-start gap-2 text-sm">
+            <Checkbox
+              id="chapter_emails"
+              className="mt-0.5"
+              checked={chapterEmails}
+              onCheckedChange={(checked) => {
+                setChapterEmails(checked === true);
+                setSuccess(false);
+              }}
+            />
+            <span className="flex flex-col gap-1">
+              <span>Send me chapter emails</span>
+              <span className="text-muted-foreground">
+                News and invitations your chapter leads send, and messages about events you came to. Emails
+                about events you&apos;ve signed up for (confirmations, reminders, changes and cancellations) come
+                either way.
+              </span>
+            </span>
+          </label>
+          {showSmsConsent && (
+            <label htmlFor="sms_consent" className="flex items-start gap-2 text-sm">
+              <Checkbox
+                id="sms_consent"
+                className="mt-0.5"
+                checked={smsConsent}
+                disabled={!smsConsent && profile.phone.replace(/\D/g, "").length !== 10}
+                onCheckedChange={(checked) => {
+                  setSmsConsent(checked === true);
+                  setSuccess(false);
+                }}
+              />
+              <span className="flex flex-col gap-1">
+                <span>{SMS_CONSENT_TEXT}</span>
+                {!smsConsent && profile.phone.replace(/\D/g, "").length !== 10 && (
+                  <span className="text-muted-foreground">Add your phone number above first.</span>
+                )}
+              </span>
+            </label>
+          )}
         </CardContent>
       </Card>
 

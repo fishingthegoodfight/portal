@@ -55,6 +55,11 @@ const SETUP_LINKS = [
     description: "The welcome email for accounts made at a walk-up. See who hasn't had it and send it to them.",
   },
   {
+    href: "/protected/admin/setup/texting",
+    title: "Texting",
+    description: "Twilio texting: send yourself a test text, and see the latest texts and whether they were delivered.",
+  },
+  {
     href: "/protected/admin/setup/interest-areas",
     title: "Interest areas",
     description: "The plain-language “What are you interested in helping with?” choices on the volunteer application. Separate from role types.",

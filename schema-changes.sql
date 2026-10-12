@@ -14338,3 +14338,642 @@ grant update (outreach_email_to) on public.chapters to authenticated;
 alter table public.app_settings drop column if exists members_email_role_type_id;
 
 commit;
+
+
+-- =============================================================================
+-- 2026-10-12 — Email from Members and event rosters
+-- =============================================================================
+-- Steps 1 and 2 (this entry and "Texting" below) run 2026-10-12, before the
+-- matching code was pushed to main. Step 3 (the every-5-minutes job) not yet.
+--
+-- Backlog item 7, sections 1–3: a lead (or admin) writes one message and the
+-- portal sends each recipient their own copy in the background, from the
+-- portal address with reply-to the sender's own email.
+--
+-- 1. profiles.chapter_emails: "stop chapter emails" (default on). Off =
+--    left out of every Members and roster email. Event logistics emails
+--    (cancellations, time changes, reminders) don't read it.
+-- 2. app_settings.email_daily_limit / email_daily_reserve: the shared daily
+--    cap (Gmail allows 2,000 per rolling 24 hours) and how much of it a
+--    Members or roster email may never use, so RSVP confirmations,
+--    cancellations and the other automatic emails always have room.
+-- 3. email_send_log: one row per email the portal sends, of any kind
+--    (lib/email/send.ts deliverEmail), counted over the last 24 hours.
+--    Service role only.
+-- 4. email_headroom(): how many more Members/roster emails can go out now:
+--    limit − reserve − sent in the last 24 hours − already queued.
+-- 5. email_templates: saved messages. chapter = that chapter's (anyone who
+--    can open it on Members can use, edit or delete them); chapter null =
+--    every chapter's (admins only to create, edit or delete).
+-- 6. bulk_emails + bulk_email_recipients: each send (the history on a
+--    chapter or event: who, when, audience, count, message) and one row per
+--    recipient with its outcome. Readable by the sender, admins, anyone who
+--    can open that chapter on Members (Members sends) and anyone who can
+--    manage that event (roster sends). Nobody writes them directly: a send
+--    is created by create_bulk_email, and only the service role (the
+--    background sender) updates them. No foreign key from a recipient to
+--    the person, like member_touches: it would count as a reference in
+--    "Remove person".
+-- 7. bulk_email_check(source, event, people): the access rule, in the
+--    database. Members: people the caller can see on Members
+--    (can_view_member). Roster: the caller can manage the event
+--    (can_manage_event: admins, the chapter's leads, the event's lead) and
+--    each person is on it (an RSVP or a volunteer shift). Each row says why
+--    someone is left out: not allowed, removed, no email, or turned chapter
+--    emails off.
+-- 8. create_bulk_email(...): checks the above and the daily headroom, then
+--    queues the send. Refuses the whole send, before anything goes out, if
+--    it would go over. A roster email counts as outreach (a touch) only for
+--    recipients whose home chapter is the event's chapter; a Members email
+--    always does.
+-- 9. claim_bulk_email_recipient(): the background sender takes the next
+--    queued recipient (skip locked, so two runs never send the same one).
+--    One stuck mid-send for 15 minutes is marked failed, not retried, in
+--    case it went out.
+-- 10. member_touches_stamp: still stamps who logged a touch from the
+--    signed-in user, but when there's none (the background sender, as the
+--    service role) it keeps the sender it was given rather than "Unknown".
+--
+-- Four new tables (email_send_log, email_templates, bulk_emails,
+-- bulk_email_recipients), each with RLS on, policies, and grants that match
+-- them (none to anon). Safe to re-run. One transaction.
+--
+-- Then STEP 2 below (texting), and STEP 3 (separately, after deploying):
+-- the every-5-minutes job that finishes any send too big for one go.
+
+begin;
+
+-- ---- 1. Opt-out ------------------------------------------------------------------
+alter table public.profiles
+  add column if not exists chapter_emails boolean not null default true;
+
+-- ---- 2. Daily limit --------------------------------------------------------------
+alter table public.app_settings
+  add column if not exists email_daily_limit integer not null default 2000 check (email_daily_limit > 0),
+  add column if not exists email_daily_reserve integer not null default 200 check (email_daily_reserve >= 0);
+
+-- ---- 3. Send log -----------------------------------------------------------------
+create table if not exists public.email_send_log (
+  id bigserial primary key,
+  sent_at timestamptz not null default now(),
+  -- What kind of email: 'bulk' for Members/roster sends, else 'other'.
+  kind text not null default 'other'
+);
+
+create index if not exists email_send_log_sent_at_idx on public.email_send_log (sent_at);
+
+alter table public.email_send_log enable row level security;
+
+revoke all on public.email_send_log from anon;
+revoke all on public.email_send_log from authenticated;
+grant all on public.email_send_log to service_role;
+grant usage, select on sequence public.email_send_log_id_seq to service_role;
+
+-- ---- 5. Templates ----------------------------------------------------------------
+create table if not exists public.email_templates (
+  id bigserial primary key,
+  -- Null = available to every chapter (admins only).
+  chapter text,
+  name text not null check (char_length(btrim(name)) between 1 and 80),
+  subject text not null check (char_length(subject) <= 200),
+  body text not null check (char_length(body) <= 10000),
+  created_by uuid references auth.users(id) on delete set null,
+  updated_by uuid references auth.users(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create or replace function public.email_templates_stamp()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if tg_op = 'INSERT' then
+    new.created_by := auth.uid();
+    new.created_at := now();
+  else
+    new.created_by := old.created_by;
+    new.created_at := old.created_at;
+  end if;
+  new.updated_by := auth.uid();
+  new.updated_at := now();
+  new.name := btrim(new.name);
+  new.chapter := nullif(btrim(new.chapter), '');
+  return new;
+end $function$;
+
+revoke all on function public.email_templates_stamp() from public, anon, authenticated;
+
+drop trigger if exists email_templates_stamp on public.email_templates;
+create trigger email_templates_stamp
+  before insert or update on public.email_templates
+  for each row execute function public.email_templates_stamp();
+
+alter table public.email_templates enable row level security;
+
+drop policy if exists email_templates_select on public.email_templates;
+create policy email_templates_select on public.email_templates
+  for select to authenticated
+  using (chapter is null or public.is_admin() or chapter = any(public.my_member_chapters()));
+
+drop policy if exists email_templates_insert on public.email_templates;
+create policy email_templates_insert on public.email_templates
+  for insert to authenticated
+  with check (public.is_admin() or (chapter is not null and chapter = any(public.my_member_chapters())));
+
+drop policy if exists email_templates_update on public.email_templates;
+create policy email_templates_update on public.email_templates
+  for update to authenticated
+  using (public.is_admin() or (chapter is not null and chapter = any(public.my_member_chapters())))
+  with check (public.is_admin() or (chapter is not null and chapter = any(public.my_member_chapters())));
+
+drop policy if exists email_templates_delete on public.email_templates;
+create policy email_templates_delete on public.email_templates
+  for delete to authenticated
+  using (public.is_admin() or (chapter is not null and chapter = any(public.my_member_chapters())));
+
+revoke all on public.email_templates from anon;
+revoke all on public.email_templates from authenticated;
+grant select, insert, update, delete on public.email_templates to authenticated;
+grant usage, select on sequence public.email_templates_id_seq to authenticated;
+grant all on public.email_templates to service_role;
+grant usage, select on sequence public.email_templates_id_seq to service_role;
+
+-- ---- 6. Sends and their recipients ----------------------------------------------
+create table if not exists public.bulk_emails (
+  id bigserial primary key,
+  source text not null check (source in ('members', 'roster')),
+  -- Members: the chapter being viewed (null = all chapters / no chapter).
+  -- Roster: the event's chapter. Also the signature's chapter.
+  chapter text,
+  event_id bigint references public.events(id) on delete set null,
+  -- Who it was for, in words: "12 selected", "Checked in", …
+  audience text not null check (char_length(audience) <= 200),
+  subject text not null,
+  body text not null,
+  sender_id uuid references auth.users(id) on delete set null,
+  -- Kept as text, so the history still reads after that person is removed.
+  sender_name text not null,
+  -- Reply-to on every copy.
+  sender_email text not null,
+  recipient_count integer not null default 0,
+  created_at timestamptz not null default now(),
+  -- Set once nothing is left queued or sending.
+  finished_at timestamptz
+);
+
+create index if not exists bulk_emails_chapter_idx on public.bulk_emails (chapter, created_at desc);
+create index if not exists bulk_emails_event_idx on public.bulk_emails (event_id, created_at desc);
+
+create table if not exists public.bulk_email_recipients (
+  id bigserial primary key,
+  bulk_email_id bigint not null references public.bulk_emails(id) on delete cascade,
+  user_id uuid not null,
+  email text not null,
+  first_name text,
+  -- Their home chapter when it was queued, for {chapter}.
+  chapter text,
+  -- Record an "email" touch once sent.
+  count_touch boolean not null default false,
+  status text not null default 'queued' check (status in ('queued', 'sending', 'sent', 'failed')),
+  error text,
+  claimed_at timestamptz,
+  sent_at timestamptz,
+  unique (bulk_email_id, user_id)
+);
+
+create index if not exists bulk_email_recipients_pending_idx
+  on public.bulk_email_recipients (id) where status in ('queued', 'sending');
+
+create or replace function public.can_view_bulk_email(p_bulk_email_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select exists (
+    select 1 from public.bulk_emails b
+     where b.id = p_bulk_email_id
+       and (
+         public.is_admin()
+         or b.sender_id = auth.uid()
+         or (b.source = 'members' and b.chapter is not null and b.chapter = any(public.my_member_chapters()))
+         or (b.event_id is not null and public.can_manage_event(b.event_id))
+       )
+  );
+$function$;
+
+revoke all on function public.can_view_bulk_email(bigint) from public, anon;
+grant execute on function public.can_view_bulk_email(bigint) to authenticated;
+
+alter table public.bulk_emails enable row level security;
+alter table public.bulk_email_recipients enable row level security;
+
+drop policy if exists bulk_emails_select on public.bulk_emails;
+create policy bulk_emails_select on public.bulk_emails
+  for select to authenticated
+  using (public.can_view_bulk_email(id));
+
+drop policy if exists bulk_email_recipients_select on public.bulk_email_recipients;
+create policy bulk_email_recipients_select on public.bulk_email_recipients
+  for select to authenticated
+  using (public.can_view_bulk_email(bulk_email_id));
+
+revoke all on public.bulk_emails from anon;
+revoke all on public.bulk_emails from authenticated;
+grant select on public.bulk_emails to authenticated;
+grant all on public.bulk_emails to service_role;
+grant usage, select on sequence public.bulk_emails_id_seq to service_role;
+
+revoke all on public.bulk_email_recipients from anon;
+revoke all on public.bulk_email_recipients from authenticated;
+grant select on public.bulk_email_recipients to authenticated;
+grant all on public.bulk_email_recipients to service_role;
+grant usage, select on sequence public.bulk_email_recipients_id_seq to service_role;
+
+-- ---- 4. Headroom ----------------------------------------------------------------
+create or replace function public.email_headroom()
+returns integer
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select greatest(
+    s.email_daily_limit - s.email_daily_reserve
+      - (select count(*) from public.email_send_log l where l.sent_at > now() - interval '24 hours')::integer
+      - (select count(*) from public.bulk_email_recipients r where r.status in ('queued', 'sending'))::integer,
+    0
+  )
+  from public.app_settings s;
+$function$;
+
+revoke all on function public.email_headroom() from public, anon;
+grant execute on function public.email_headroom() to authenticated;
+grant execute on function public.email_headroom() to service_role;
+
+-- ---- 7. The access rule -----------------------------------------------------------
+create or replace function public.bulk_email_check(p_source text, p_event_id bigint, p_user_ids uuid[])
+returns table (
+  user_id uuid,
+  first_name text,
+  last_name text,
+  email text,
+  chapter text,
+  -- Why they're left out; null = they'll get it.
+  excluded text
+)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+begin
+  if auth.uid() is null
+     or exists (select 1 from public.profiles me where me.id = auth.uid() and me.access_removed_at is not null) then
+    raise exception 'Not allowed' using errcode = '42501';
+  end if;
+  if p_source = 'roster' then
+    if p_event_id is null or not public.can_manage_event(p_event_id) then
+      raise exception 'You can''t email this event''s roster' using errcode = '42501';
+    end if;
+  elsif p_source <> 'members' then
+    raise exception 'Unknown source' using errcode = '22023';
+  end if;
+
+  return query
+    select p.id,
+           p.first_name,
+           p.last_name,
+           nullif(btrim(p.email), ''),
+           p.chapter,
+           case
+             when p_source = 'members' and not public.can_view_member(p.id) then 'Not in your chapters'
+             when p_source = 'roster'
+                  and not exists (select 1 from public.rsvps r where r.event_id = p_event_id and r.user_id = p.id)
+                  and not exists (
+                    select 1 from public.volunteer_signups s
+                      join public.volunteer_opportunities o on o.id = s.opportunity_id
+                     where o.event_id = p_event_id and s.user_id = p.id
+                  ) then 'Not on this event'
+             when p.access_removed_at is not null then 'Removed from the portal'
+             when nullif(btrim(p.email), '') is null then 'No email address'
+             when not p.chapter_emails then 'Turned off chapter emails'
+             else null
+           end
+      from public.profiles p
+     where p.id = any(p_user_ids);
+end $function$;
+
+revoke all on function public.bulk_email_check(text, bigint, uuid[]) from public, anon;
+grant execute on function public.bulk_email_check(text, bigint, uuid[]) to authenticated;
+
+-- ---- 8. Queue a send -----------------------------------------------------------------
+create or replace function public.create_bulk_email(
+  p_source text,
+  p_chapter text,
+  p_event_id bigint,
+  p_audience text,
+  p_subject text,
+  p_body text,
+  p_user_ids uuid[]
+)
+returns bigint
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_id bigint;
+  v_count integer;
+  v_headroom integer;
+  v_chapter text;
+  v_event_chapter text;
+  v_name text;
+  v_email text;
+begin
+  if nullif(btrim(p_subject), '') is null or char_length(p_subject) > 200 then
+    raise exception 'Add a subject (up to 200 characters)' using errcode = '22023';
+  end if;
+  if nullif(btrim(p_body), '') is null or char_length(p_body) > 10000 then
+    raise exception 'Write a message (up to 10,000 characters)' using errcode = '22023';
+  end if;
+
+  if p_source = 'members' then
+    v_chapter := nullif(btrim(p_chapter), '');
+    if v_chapter is not null and not (public.is_admin() or v_chapter = any(public.my_member_chapters())) then
+      raise exception 'You can''t email this chapter' using errcode = '42501';
+    end if;
+  else
+    select e.chapter into v_event_chapter from public.events e where e.id = p_event_id;
+    v_chapter := v_event_chapter;
+  end if;
+
+  select coalesce(nullif(btrim(concat_ws(' ', p.first_name, p.last_name)), ''), p.email), nullif(btrim(p.email), '')
+    into v_name, v_email
+    from public.profiles p where p.id = auth.uid();
+  if v_email is null then
+    raise exception 'Your profile has no email address to reply to' using errcode = '22023';
+  end if;
+
+  -- One send at a time checks and claims the headroom.
+  perform pg_advisory_xact_lock(hashtext('create_bulk_email'));
+
+  -- bulk_email_check also raises if the caller can't send this at all.
+  select count(*) into v_count
+    from public.bulk_email_check(p_source, p_event_id, p_user_ids) c
+   where c.excluded is null;
+  if v_count = 0 then
+    raise exception 'Nobody on the list can be emailed' using errcode = '22023';
+  end if;
+
+  v_headroom := public.email_headroom();
+  if v_count > v_headroom then
+    raise exception 'This would send % emails, but only % more can go out in the next 24 hours (the shared daily limit). Send to fewer people, or try again later.',
+      v_count, v_headroom using errcode = 'P0001';
+  end if;
+
+  insert into public.bulk_emails
+    (source, chapter, event_id, audience, subject, body, sender_id, sender_name, sender_email, recipient_count)
+  values
+    (p_source, v_chapter, case when p_source = 'roster' then p_event_id end, left(coalesce(p_audience, ''), 200),
+     btrim(p_subject), p_body, auth.uid(), coalesce(v_name, 'Unknown'), v_email, v_count)
+  returning id into v_id;
+
+  insert into public.bulk_email_recipients (bulk_email_id, user_id, email, first_name, chapter, count_touch)
+  select v_id, c.user_id, c.email, c.first_name, c.chapter,
+         p_source = 'members' or (c.chapter is not null and c.chapter = v_event_chapter)
+    from public.bulk_email_check(p_source, p_event_id, p_user_ids) c
+   where c.excluded is null;
+
+  return v_id;
+end $function$;
+
+revoke all on function public.create_bulk_email(text, text, bigint, text, text, text, uuid[]) from public, anon;
+grant execute on function public.create_bulk_email(text, text, bigint, text, text, text, uuid[]) to authenticated;
+
+-- ---- 9. The background sender takes one at a time ----------------------------------
+create or replace function public.claim_bulk_email_recipient()
+returns setof public.bulk_email_recipients
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  update public.bulk_email_recipients
+     set status = 'failed',
+         error = 'Interrupted while sending, so not retried in case it went out'
+   where status = 'sending' and claimed_at < now() - interval '15 minutes';
+
+  return query
+    update public.bulk_email_recipients r
+       set status = 'sending', claimed_at = now()
+     where r.id = (
+       select q.id from public.bulk_email_recipients q
+        where q.status = 'queued'
+        order by q.id
+        limit 1
+        for update skip locked
+     )
+    returning r.*;
+end $function$;
+
+revoke all on function public.claim_bulk_email_recipient() from public, anon, authenticated;
+grant execute on function public.claim_bulk_email_recipient() to service_role;
+
+-- ---- 10. Touches logged by the background sender ------------------------------------
+create or replace function public.member_touches_stamp()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  -- A signed-in person is always stamped as themselves. With nobody signed
+  -- in (the service role: the background email sender), keep the sender it
+  -- was given.
+  if auth.uid() is not null or new.logged_by is null then
+    new.logged_by := auth.uid();
+  end if;
+  new.logged_by_name := coalesce(
+    (select coalesce(nullif(btrim(concat_ws(' ', p.first_name, p.last_name)), ''), p.email)
+       from public.profiles p where p.id = new.logged_by),
+    'Unknown'
+  );
+  new.chapter := (select p.chapter from public.profiles p where p.id = new.member_id);
+  new.note := nullif(btrim(new.note), '');
+  if new.touched_on > (now() at time zone 'America/Denver')::date then
+    raise exception 'A touch can''t be dated in the future' using errcode = 'P0001';
+  end if;
+  return new;
+end $function$;
+
+commit;
+
+-- =============================================================================
+-- 2026-10-12 — Texting: log texts from rosters, SMS consent, Twilio groundwork
+-- =============================================================================
+-- Run 2026-10-12, before the matching code was pushed to main.
+--
+-- Backlog item 7, sections 4–5. No bulk texting yet (backlog).
+--
+-- 1. log_roster_text(event, person): "Log text" on an event roster. The
+--    caller must manage the event and the person must be on it. It's a
+--    "text" touch, like a roster email only for someone whose home chapter
+--    is the event's, or whom the caller can see on Members anyway; returns
+--    'logged' or 'other_chapter'.
+-- 2. profiles.sms_consent (off by default), sms_consent_at, sms_consent_text
+--    (the exact wording shown, lib/sms-consent.ts), sms_opted_out_at. A
+--    trigger keeps these honest: consent_at and the wording are only set
+--    when consent turns on (and a wording is required then), opted_out_at
+--    when it turns off; otherwise they can't be edited. Twilio's STOP and
+--    START (the inbound webhook) turn it off and on.
+-- 3. sms_messages: every send attempt — recipient, number, body, sender,
+--    status (refused / sending / Twilio's queued, sent, delivered,
+--    undelivered, failed), Twilio's message SID, error. Admins can read it;
+--    only the service role writes it. No foreign key to the person, as with
+--    member_touches.
+--
+-- One new table (sms_messages): RLS on, an admin select policy, grants to
+-- match. Safe to re-run. One transaction.
+
+begin;
+
+-- ---- 1. Log a text from a roster ---------------------------------------------------
+create or replace function public.log_roster_text(p_event_id bigint, p_member_id uuid)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_event_chapter text;
+  v_member_chapter text;
+begin
+  if p_event_id is null or not public.can_manage_event(p_event_id) then
+    raise exception 'Not allowed' using errcode = '42501';
+  end if;
+  if not exists (select 1 from public.rsvps r where r.event_id = p_event_id and r.user_id = p_member_id)
+     and not exists (
+       select 1 from public.volunteer_signups s
+         join public.volunteer_opportunities o on o.id = s.opportunity_id
+        where o.event_id = p_event_id and s.user_id = p_member_id
+     ) then
+    raise exception 'Not on this event' using errcode = '42501';
+  end if;
+  select e.chapter into v_event_chapter from public.events e where e.id = p_event_id;
+  select p.chapter into v_member_chapter from public.profiles p where p.id = p_member_id;
+  if not public.can_view_member(p_member_id)
+     and (v_member_chapter is null or v_member_chapter is distinct from v_event_chapter) then
+    return 'other_chapter';
+  end if;
+  -- member_touches_stamp records the caller as who logged it.
+  insert into public.member_touches (member_id, touch_type, logged_by_name)
+  values (p_member_id, 'text', '');
+  return 'logged';
+end $function$;
+
+revoke all on function public.log_roster_text(bigint, uuid) from public, anon;
+grant execute on function public.log_roster_text(bigint, uuid) to authenticated;
+
+-- ---- 2. SMS consent -----------------------------------------------------------------
+alter table public.profiles
+  add column if not exists sms_consent boolean not null default false,
+  add column if not exists sms_consent_at timestamptz,
+  add column if not exists sms_consent_text text,
+  add column if not exists sms_opted_out_at timestamptz;
+
+create or replace function public.profiles_sms_consent_stamp()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if tg_op = 'UPDATE' and new.sms_consent = old.sms_consent then
+    new.sms_consent_at := old.sms_consent_at;
+    new.sms_consent_text := old.sms_consent_text;
+    new.sms_opted_out_at := old.sms_opted_out_at;
+  elsif new.sms_consent then
+    if nullif(btrim(new.sms_consent_text), '') is null then
+      raise exception 'SMS consent needs the wording that was shown' using errcode = '22023';
+    end if;
+    new.sms_consent_at := now();
+    new.sms_opted_out_at := null;
+  elsif tg_op = 'UPDATE' then
+    new.sms_opted_out_at := now();
+    new.sms_consent_text := old.sms_consent_text;
+    new.sms_consent_at := old.sms_consent_at;
+  end if;
+  return new;
+end $function$;
+
+revoke all on function public.profiles_sms_consent_stamp() from public, anon, authenticated;
+
+drop trigger if exists profiles_sms_consent_stamp on public.profiles;
+create trigger profiles_sms_consent_stamp
+  before insert or update on public.profiles
+  for each row execute function public.profiles_sms_consent_stamp();
+
+-- ---- 3. Every text sent ------------------------------------------------------------------
+create table if not exists public.sms_messages (
+  id bigserial primary key,
+  user_id uuid,
+  to_phone text,
+  body text not null,
+  sender_id uuid references auth.users(id) on delete set null,
+  status text not null,
+  twilio_sid text unique,
+  error text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists sms_messages_user_idx on public.sms_messages (user_id, created_at desc);
+
+alter table public.sms_messages enable row level security;
+
+drop policy if exists sms_messages_select_admin on public.sms_messages;
+create policy sms_messages_select_admin on public.sms_messages
+  for select to authenticated
+  using (public.is_admin());
+
+revoke all on public.sms_messages from anon;
+revoke all on public.sms_messages from authenticated;
+grant select on public.sms_messages to authenticated;
+grant all on public.sms_messages to service_role;
+grant usage, select on sequence public.sms_messages_id_seq to service_role;
+
+commit;
+
+-- =============================================================================
+-- STEP 3 — run separately, after the code is deployed: every 5 minutes,
+-- finish any send too big to go out in one go. Same pattern as the hourly
+-- waitlist job (the cron_secret is already in Vault). Re-running replaces
+-- the job of the same name.
+-- =============================================================================
+select cron.schedule(
+  'bulk-email-every-5-min',
+  '*/5 * * * *',
+  $$
+  select net.http_get(
+    url := 'https://portal-ftgf.vercel.app/api/cron/bulk-email',
+    headers := jsonb_build_object(
+      'Authorization',
+      'Bearer ' || (
+        select decrypted_secret
+          from vault.decrypted_secrets
+         where name = 'cron_secret'
+      )
+    ),
+    timeout_milliseconds := 30000
+  );
+  $$
+);
+
+-- Check it (after the next 5-minute mark):
+--   select * from cron.job where jobname = 'bulk-email-every-5-min';
+--   select status_code, content, created from net._http_response order by created desc limit 3;  -- expect 200

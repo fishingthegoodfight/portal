@@ -101,10 +101,22 @@ Separately, an **event lead** (`events.lead_user_id`) can manage just that one e
 
 **Known:** match people by email through `lib/profile-lookup.ts`, so nobody gets a duplicate record.
 
-### 7. Email an event's attendees
-**What:** let a lead or admin send a message to everyone registered for, or who attended, an event.
+### 7. Emailing and texting from Members and rosters: built 2026-10-12
+Two `schema-changes.sql` entries from 2026-10-12: "Email from Members and event rosters" and "Texting".
 
-**Why:** today the only emails to attendees are the automatic ones (confirmations, reminders, cancellations).
+**Email (`lib/bulk-email.ts`, `components/email-composer.tsx`):**
+- **Where:** Members (row checkboxes, "Select all shown", a per-row Email button) and the event roster's **Email…** button (everyone RSVP'd, checked in, no-shows, volunteers).
+- **Compose:** subject and plain text, merge fields (`{first_name}`, `{chapter}`, plus `{event_name}` and `{event_date}` on rosters), an automatic signature, the recipient list with opt-outs greyed out and why, "Send me a test", and templates (`email_templates`: a chapter's, or every chapter's for admins).
+- **Who may send:** enforced in the database (`bulk_email_check`, `create_bulk_email`). Members: anyone who can see the person there. Rosters: anyone who can manage the event (`can_manage_event`).
+- **Sending:** queued (`bulk_emails`, `bulk_email_recipients`), then sent one by one in the background: in the request that queued it (`after()`), and every 5 minutes by a pg_cron job (`/api/cron/bulk-email`). From the portal, reply-to the sender.
+- **Daily limit:** every email the portal sends is counted (`email_send_log`). These sends may use the limit minus a reserve for automatic emails (`app_settings.email_daily_limit` 2,000 and `email_daily_reserve` 200; no Setup screen yet, so change them in SQL), and are refused up front if they'd go over.
+- **Outreach:** each sent copy is an "email" touch; from a roster, only for people whose home chapter is the event's.
+- **Opt-out:** `profiles.chapter_emails`, from the "Stop chapter emails" link (`/unsubscribe/<token>?list=chapter`) or the profile. Event logistics emails ignore it.
+- **History:** `/protected/emails` (per chapter or event) and `/protected/emails/[id]` (sent, failed and why).
+
+**Texting without a provider:** every phone on Members and rosters has Text (an `sms:` link to one person), Copy, and Log text (a "text" touch; on rosters through `log_roster_text`, same chapter rule).
+
+**Twilio groundwork (`lib/twilio.ts`):** `sendSms` (Messaging Service, consent required, every attempt in `sms_messages`); webhooks `/api/twilio/status` and `/api/twilio/inbound` (signature-checked; STOP and START mirrored onto `profiles.sms_consent`); SMS consent on the profile and the RSVP form's "Your details", with the wording stored (`lib/sms-consent.ts`, **still a placeholder**); Setup → Texting has a test text.
 
 ### 8. Brand restyle
 **What:** apply FTGF's brand colors and typefaces across the portal.
@@ -152,3 +164,13 @@ Separately, an **event lead** (`events.lead_user_id`) can manage just that one e
   - When someone is already one, does adding them as the other switch them over, or refuse?
   - What happens to existing events where someone is already both? A read-only query should count those first.
 
+### 13. Bulk texting from Members and rosters
+**What:** text a group from Members or an event roster, the way email works today (item 7): pick people or an audience, write one message, and each person gets their own text.
+
+**Why:** many members read texts long before email, and the sms: links only reach one person at a time from the sender's own phone.
+
+**Known:**
+- **Build on item 7's groundwork:** send through `sendSms` in `lib/twilio.ts`, which refuses anyone without SMS consent and records every attempt in `sms_messages`; delivery statuses already arrive at `/api/twilio/status`.
+- **Reuse the email pieces:** the access rule (`bulk_email_check`), the queue and background sender pattern (`bulk_emails`, `/api/cron/bulk-email`), the recipient list with opt-outs greyed out, and logging a "text" touch per text sent.
+- **Before it can go live:** the registered 10DLC consent wording must replace the placeholder in `lib/sms-consent.ts` (and `SMS_CONSENT_IS_PLACEHOLDER` set to false), so members can consent.
+- **To decide:** quiet hours, a per-day cap (10DLC campaigns have throughput limits), and whether merge fields carry over.
