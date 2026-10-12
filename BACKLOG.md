@@ -116,7 +116,7 @@ Two `schema-changes.sql` entries from 2026-10-12: "Email from Members and event 
 
 **Texting without a provider:** every phone on Members and rosters has Text (an `sms:` link to one person), Copy, and Log text (a "text" touch; on rosters through `log_roster_text`, same chapter rule).
 
-**Twilio groundwork (`lib/twilio.ts`):** `sendSms` (Messaging Service, consent required, every attempt in `sms_messages`); webhooks `/api/twilio/status` and `/api/twilio/inbound` (signature-checked; STOP and START mirrored onto `profiles.sms_consent`); SMS consent on the profile and the RSVP form's "Your details", with the wording stored (`lib/sms-consent.ts`, **still a placeholder**); Setup → Texting has a test text.
+**Twilio groundwork (`lib/twilio.ts`):** `sendSms` (Messaging Service, consent required, every attempt in `sms_messages`); webhooks `/api/twilio/status` and `/api/twilio/inbound` (signature-checked; STOP and START mirrored onto `profiles.sms_consent`); SMS consent on the profile and the RSVP form's "Your details", with the wording stored (`lib/sms-consent.ts`; must match the 10DLC campaign's Message Flow and Section 4 of the privacy policy); Setup → Texting has a test text.
 
 ### 8. Brand restyle
 **What:** apply FTGF's brand colors and typefaces across the portal.
@@ -172,5 +172,5 @@ Two `schema-changes.sql` entries from 2026-10-12: "Email from Members and event 
 **Known:**
 - **Build on item 7's groundwork:** send through `sendSms` in `lib/twilio.ts`, which refuses anyone without SMS consent and records every attempt in `sms_messages`; delivery statuses already arrive at `/api/twilio/status`.
 - **Reuse the email pieces:** the access rule (`bulk_email_check`), the queue and background sender pattern (`bulk_emails`, `/api/cron/bulk-email`), the recipient list with opt-outs greyed out, and logging a "text" touch per text sent.
-- **Before it can go live:** the registered 10DLC consent wording must replace the placeholder in `lib/sms-consent.ts` (and `SMS_CONSENT_IS_PLACEHOLDER` set to false), so members can consent.
+- **Before it can go live:** the 10DLC campaign must be approved. It was rejected on 2026-10-12 (error 30896, opt-in information) and is being resubmitted with the wording now in `lib/sms-consent.ts`.
 - **To decide:** quiet hours, a per-day cap (10DLC campaigns have throughput limits), and whether merge fields carry over.
