@@ -98,7 +98,7 @@ function EventRow({ event, showChapter }: { event: BulletinEvent; showChapter: b
             <span
               className={cn(
                 "shrink-0 text-xs font-semibold",
-                event.spotsLeft === 0 ? "text-stone-500" : "text-green-800",
+                event.spotsLeft === 0 ? "font-bold uppercase tracking-wide text-red-700" : "text-green-800",
               )}
             >
               {spots}
