@@ -7,6 +7,7 @@ import { sendAdminDigestEmail } from "@/lib/email/send";
 import type { AdminDigestSection } from "@/lib/email/templates";
 import { getSiteUrl } from "@/lib/site-url";
 import { runReferenceReminders, type ReferenceReminderSummary } from "@/lib/reference-reminders";
+import { runBulletinEmail } from "@/lib/bulletin-email";
 
 /**
  * The daily admin digest (Vercel Cron, see vercel.json — daily is Vercel
@@ -25,6 +26,10 @@ import { runReferenceReminders, type ReferenceReminderSummary } from "@/lib/refe
  * has items, and only then marks those items as sent — so a failed send
  * lists them again tomorrow instead of losing them. The "For information"
  * notes (DIGEST_NOTES) go at the end of that email, and never cause one.
+ * Before the digest, on Mondays, the weekly bulletin email
+ * (lib/bulletin-email.ts): its own email, and its own try, so a failure is
+ * logged and in the response without stopping the digest (and the other
+ * way round). Dev only: ?bulletin=1 sends just the bulletin, any day.
  */
 /** The reference reminder job's failures as a digest section: the whole
  * run failing, or single reminders that did. Empty (so left out of the
@@ -60,6 +65,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Dev only: ?bulletin=1 sends just the bulletin email, whatever the day,
+  // and nothing else — no reminders to references, no digest.
+  if (process.env.NODE_ENV === "development" && new URL(request.url).searchParams.get("bulletin") === "1") {
+    return NextResponse.json({ bulletin: await runBulletinEmail(new Date(), { force: true }) });
+  }
+
   const admin = createAdminClient();
   let references: ReferenceReminderSummary | { error: string };
   try {
@@ -85,6 +96,14 @@ export async function GET(request: NextRequest) {
     console.error("[lead-assign] sweep failed:", err);
     leadSweep = { error: err instanceof Error ? err.message : String(err) };
   }
+  let bulletin: { sent: boolean; why: string } | { error: string };
+  try {
+    bulletin = await runBulletinEmail(new Date());
+    console.log("[bulletin-email] done", bulletin);
+  } catch (err) {
+    console.error("[bulletin-email] failed:", err);
+    bulletin = { error: err instanceof Error ? err.message : String(err) };
+  }
   try {
     const built = await Promise.all(DIGEST_SOURCES.map((source) => source(admin)));
     const notes = (await Promise.all(DIGEST_NOTES.map((note) => note(admin)))).filter((note) => note != null);
@@ -96,6 +115,7 @@ export async function GET(request: NextRequest) {
       for (const b of built) await b.markSent();
     }
     return NextResponse.json({
+      bulletin,
       references,
       leadSweep,
       sent,
@@ -104,6 +124,6 @@ export async function GET(request: NextRequest) {
     });
   } catch (err) {
     console.error("[admin-digest] failed:", err);
-    return NextResponse.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+    return NextResponse.json({ bulletin, error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
 }

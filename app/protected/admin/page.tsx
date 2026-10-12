@@ -362,6 +362,11 @@ async function AdminIndexActions() {
           <Link href="/protected/admin/applications">Applications</Link>
         </Button>
       )}
+      {(access?.isAdmin || access?.role === "chapter_lead") && (
+        <Button asChild variant="outline">
+          <Link href="/bulletin">Weekly bulletin</Link>
+        </Button>
+      )}
       {access?.isAdmin && (
         <>
           <Button asChild variant="outline">

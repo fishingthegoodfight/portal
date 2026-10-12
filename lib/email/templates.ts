@@ -2014,3 +2014,89 @@ export function adminMemberOutreachEmail({
   ].join("\n");
   return { subject, html, text };
 }
+
+/** The Monday bulletin email, pre-formatted (lib/bulletin.ts). */
+export type BulletinEmailContent = {
+  /** "Oct 12 – Oct 25". */
+  rangeLabel: string;
+  /** The printable page, every region. */
+  bulletinUrl: string;
+  /** The same page narrowed to each region, for a lead printing just theirs. */
+  regionLinks: { name: string; url: string }[];
+  eventCount: number;
+  openVolunteerSlots: number;
+  /** Events in the next two weeks still short of volunteers, soonest first. */
+  needs: { name: string; when: string; chapter: string | null; roles: string; url: string }[];
+  retreats: { name: string; dates: string; enrolled: number; capacity: number | null }[];
+};
+
+/**
+ * Every Monday, to the admins: the weekly bulletin to print or pass on to
+ * chapter leads — a link to the printable page (whole, or per region), and
+ * at a glance what's on it.
+ */
+export function adminBulletinEmail(content: BulletinEmailContent): RenderedEmail {
+  const { rangeLabel, bulletinUrl, regionLinks, eventCount, openVolunteerSlots, needs, retreats } = content;
+  const events = `${eventCount} ${eventCount === 1 ? "event" : "events"}`;
+  const subject = `Weekly bulletin, ${rangeLabel}: ${events}${
+    needs.length > 0 ? `, ${needs.length} short of volunteers` : ""
+  }`;
+  const glance = [
+    `${events} in the next two weeks`,
+    `${openVolunteerSlots} volunteer ${openVolunteerSlots === 1 ? "spot" : "spots"} to fill${
+      needs.length > 0 ? ` across ${needs.length} ${needs.length === 1 ? "event" : "events"}` : ""
+    }`,
+    `${retreats.length} ${retreats.length === 1 ? "retreat" : "retreats"} open for enrollment`,
+  ];
+  const retreatLine = (r: BulletinEmailContent["retreats"][number]) =>
+    `${r.name} (${r.dates}): ${r.enrolled}${r.capacity != null ? ` of ${r.capacity}` : ""} enrolled`;
+  const needDetail = (n: BulletinEmailContent["needs"][number]) =>
+    `${n.when}${n.chapter ? ` · ${n.chapter}` : ""} · needs ${n.roles}`;
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 4px;font-size:18px;font-weight:600;">This week's bulletin</p>`,
+      `<p style="margin:0 0 16px;color:#57534e;">${escapeHtml(rangeLabel)}</p>`,
+      `<ul style="margin:0 0 16px;padding-left:20px;">${glance.map((line) => `<li style="margin:0 0 4px;">${escapeHtml(line)}</li>`).join("")}</ul>`,
+      `<p style="margin:0 0 8px;"><a href="${escapeHtml(bulletinUrl)}" style="${BUTTON_STYLE}">Open &amp; print the bulletin</a></p>`,
+      regionLinks.length > 1
+        ? `<p style="margin:0 0 16px;font-size:13px;color:#57534e;">Just one region: ${regionLinks
+            .map((r) => `<a href="${escapeHtml(r.url)}">${escapeHtml(r.name)}</a>`)
+            .join(" · ")}</p>`
+        : "",
+      needs.length > 0
+        ? [
+            `<p style="margin:20px 0 4px;font-weight:600;">Events still in need of volunteers</p>`,
+            `<ul style="margin:0;padding-left:20px;">`,
+            ...needs.map(
+              (n) =>
+                `<li style="margin:0 0 6px;"><a href="${escapeHtml(n.url)}">${escapeHtml(n.name)}</a> <span style="color:#57534e;">— ${escapeHtml(needDetail(n))}</span></li>`,
+            ),
+            `</ul>`,
+          ].join("\n")
+        : "",
+      retreats.length > 0
+        ? [
+            `<p style="margin:20px 0 4px;font-weight:600;">Retreats</p>`,
+            `<ul style="margin:0;padding-left:20px;">`,
+            ...retreats.map((r) => `<li style="margin:0 0 6px;">${escapeHtml(retreatLine(r))}</li>`),
+            `</ul>`,
+          ].join("\n")
+        : "",
+      `<p style="margin:20px 0 0;font-size:12px;color:#78716c;">The page is public (no sign-in needed) and always shows the latest numbers, so leads can print it the day of their event.</p>`,
+    ].join("\n"),
+  );
+  const text = [
+    `This week's bulletin — ${rangeLabel}`,
+    "",
+    ...glance.map((line) => `- ${line}`),
+    "",
+    `Open & print the bulletin: ${bulletinUrl}`,
+    ...(regionLinks.length > 1 ? ["Just one region:", ...regionLinks.map((r) => `- ${r.name}: ${r.url}`)] : []),
+    ...(needs.length > 0 ? ["", "Events still in need of volunteers", ...needs.map((n) => `- ${n.name} — ${needDetail(n)}: ${n.url}`)] : []),
+    ...(retreats.length > 0 ? ["", "Retreats", ...retreats.map((r) => `- ${retreatLine(r)}`)] : []),
+    "",
+    "The page is public (no sign-in needed) and always shows the latest numbers, so leads can print it the day of their event.",
+  ].join("\n");
+  return { subject, html, text };
+}

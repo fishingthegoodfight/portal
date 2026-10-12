@@ -24,6 +24,7 @@ import {
   personInviteEmail,
   accessCodeEmail,
   walkupWelcomeEmail,
+  adminBulletinEmail,
   adminDigestEmail,
   adminMemberOutreachEmail,
   memberOutreachEmail,
@@ -45,6 +46,7 @@ import {
   type EventChangeAction,
   type RsvpEmailEventInfo,
   type VolunteerShiftEmailInfo,
+  type BulletinEmailContent,
 } from "@/lib/email/templates";
 
 type EmailProvider = "resend" | "smtp";
@@ -1083,6 +1085,19 @@ export async function sendAdminMemberOutreachEmail(
     .filter(Boolean);
   if (recipients.length === 0) return false;
   const { subject, html, text } = adminMemberOutreachEmail(content);
+  await deliverEmail({ to: recipients, subject, html, text });
+  return true;
+}
+
+/** The Monday bulletin email (adminBulletinEmail) to ADMIN_NOTIFICATION_EMAILS.
+ * False when that's not set (nothing sent); throws on a failed send. */
+export async function sendAdminBulletinEmail(content: BulletinEmailContent): Promise<boolean> {
+  const recipients = (process.env.ADMIN_NOTIFICATION_EMAILS ?? "")
+    .split(",")
+    .map((address) => address.trim())
+    .filter(Boolean);
+  if (recipients.length === 0) return false;
+  const { subject, html, text } = adminBulletinEmail(content);
   await deliverEmail({ to: recipients, subject, html, text });
   return true;
 }

@@ -96,6 +96,11 @@ export async function updateSession(request: NextRequest) {
     !request.nextUrl.pathname.startsWith("/events/") &&
     // …and the public list of upcoming ones (app/events/page.tsx).
     request.nextUrl.pathname !== "/events" &&
+    // The printable weekly bulletin and the public volunteer page its QR
+    // code opens: published events and open volunteer roles only (see
+    // lib/bulletin.ts).
+    request.nextUrl.pathname !== "/bulletin" &&
+    request.nextUrl.pathname !== "/volunteer" &&
     // Reference forms: the link's one-use token is the only key, checked
     // server-side with the service role (lib/reference-form.ts).
     !request.nextUrl.pathname.startsWith("/reference/") &&
