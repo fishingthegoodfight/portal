@@ -14344,7 +14344,8 @@ commit;
 -- 2026-10-12 — Email from Members and event rosters
 -- =============================================================================
 -- Steps 1 and 2 (this entry and "Texting" below) run 2026-10-12, before the
--- matching code was pushed to main. Step 3 (the every-5-minutes job) not yet.
+-- matching code was pushed to main. Step 3 (the every-5-minutes job) run
+-- 2026-10-12 after the deploy (cron job id 2).
 --
 -- Backlog item 7, sections 1–3: a lead (or admin) writes one message and the
 -- portal sends each recipient their own copy in the background, from the
