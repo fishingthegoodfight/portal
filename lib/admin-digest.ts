@@ -4,6 +4,8 @@ import { getSiteUrl } from "@/lib/site-url";
 import { formatDateInZone } from "@/lib/format-date";
 import { formatCheckDate } from "@/lib/practical-checks";
 import { daysBetween, REFERENCE_MAX_REMINDERS } from "@/lib/volunteer-references";
+import { loadChapters } from "@/lib/chapters";
+import { eventYear, waiverStateForEvent } from "@/lib/waivers";
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
@@ -364,7 +366,9 @@ const NO_WAIVER_WINDOW_DAYS = 30;
 /** Attendance a lead recorded after an event with no waiver at all
  * (event_no_waiver_records, "No waiver on file" on the walk-up form): the
  * liability already happened, so each is named for follow-up, every day for
- * NO_WAIVER_WINDOW_DAYS after it was recorded. A failure (e.g. the table
+ * NO_WAIVER_WINDOW_DAYS after it was recorded — until the person signs that
+ * event's waiver (its state and year, any version) at a later RSVP, which
+ * covers them for the year and settles it. A failure (e.g. the table
  * isn't there yet) is logged and leaves the section empty rather than
  * stopping the digest. */
 const attendedWithoutWaiver: DigestSource = async (admin) => {
@@ -372,16 +376,38 @@ const attendedWithoutWaiver: DigestSource = async (admin) => {
   try {
     const { data, error } = await admin
       .from("event_no_waiver_records")
-      .select("event_id, recorded_by_name, recorded_at, rsvp:rsvps(user_id), event:events(name, starts_at, timezone)")
+      .select(
+        "event_id, recorded_by_name, recorded_at, rsvp:rsvps(user_id), event:events(name, chapter, waiver_state, starts_at, timezone)",
+      )
       .gte("recorded_at", new Date(Date.now() - NO_WAIVER_WINDOW_DAYS * 86_400_000).toISOString())
       .order("recorded_at");
     if (error) throw new Error(error.message);
-    const rows = (data ?? []) as unknown as {
+    const recorded = (data ?? []) as unknown as {
       event_id: number;
       recorded_by_name: string;
       rsvp: { user_id: string } | null;
-      event: { name: string; starts_at: string; timezone: string } | null;
+      event: { name: string; chapter: string | null; waiver_state: string | null; starts_at: string; timezone: string } | null;
     }[];
+    // Participant waivers each person has signed since, as "user|state|year".
+    const recordedUserIds = [...new Set(recorded.map((row) => row.rsvp?.user_id).filter((id): id is string => Boolean(id)))];
+    const signed = new Set<string>();
+    if (recordedUserIds.length) {
+      const { data: signatures, error: sigError } = await admin
+        .from("waiver_signatures")
+        .select("user_id, waiver:waivers!inner(state, year, audience)")
+        .in("user_id", recordedUserIds)
+        .eq("waiver.audience", "participant");
+      if (sigError) throw new Error(sigError.message);
+      for (const sig of (signatures ?? []) as unknown as { user_id: string; waiver: { state: string; year: number } }[]) {
+        signed.add(`${sig.user_id}|${sig.waiver.state}|${sig.waiver.year}`);
+      }
+    }
+    const chapters = signed.size ? await loadChapters(admin) : [];
+    const rows = recorded.filter((row) => {
+      if (!row.rsvp || !row.event) return true;
+      const state = waiverStateForEvent(row.event, chapters);
+      return !state || !signed.has(`${row.rsvp.user_id}|${state}|${eventYear(row.event.starts_at, row.event.timezone)}`);
+    });
     const userIds = [...new Set(rows.map((row) => row.rsvp?.user_id).filter((id): id is string => Boolean(id)))];
     const { data: profiles } = userIds.length
       ? await admin.from("profiles").select("id, first_name, last_name, email").in("id", userIds)
@@ -394,7 +420,7 @@ const attendedWithoutWaiver: DigestSource = async (admin) => {
     return {
       section: {
         title: title(rows.length),
-        intro: `Recorded after the event in the last ${NO_WAIVER_WINDOW_DAYS} days with no waiver signed or on paper. Follow up with the lead who recorded it.`,
+        intro: `Recorded after the event in the last ${NO_WAIVER_WINDOW_DAYS} days with no waiver signed or on paper, and not signed since. Follow up with the lead who recorded it.`,
         items: rows.map((row) => ({
           label: nameById.get(row.rsvp?.user_id ?? "") ?? "Someone",
           detail: `${row.event ? `${row.event.name} (${formatDateInZone(row.event.starts_at, row.event.timezone)})` : "An event"} · recorded by ${row.recorded_by_name}`,
