@@ -14978,3 +14978,46 @@ select cron.schedule(
 -- Check it (after the next 5-minute mark):
 --   select * from cron.job where jobname = 'bulk-email-every-5-min';
 --   select status_code, content, created from net._http_response order by created desc limit 3;  -- expect 200
+
+-- =============================================================================
+-- 2026-10-14 — Make the admin account (tcramer@fishingthegoodfight.org) a volunteer
+-- =============================================================================
+-- Data only, no schema change. Gives the account the same volunteers row an
+-- approved application creates (approve_volunteer_application), plus an
+-- active approval for every active role type, so the Volunteer tab shows
+-- and every open shift is offered. The last step is the volunteer
+-- registration form (/protected/volunteer → "Complete your registration"),
+-- which signs this year's volunteer waiver; complete_volunteer_registration
+-- accepts an already-approved row. Safe to re-run.
+begin;
+
+insert into public.volunteers (user_id, status, approved_at, approved_by, joined_on)
+select u.id, 'approved', now(), u.id, (now() at time zone 'America/Denver')::date
+  from auth.users u
+ where lower(u.email) = 'tcramer@fishingthegoodfight.org'
+on conflict (user_id) do update
+   set status = 'approved',
+       approved_at = coalesce(public.volunteers.approved_at, now()),
+       joined_on = coalesce(public.volunteers.joined_on, excluded.joined_on),
+       updated_at = now();
+
+insert into public.volunteer_role_approvals (volunteer_id, role_type_id, approved_by)
+select u.id, rt.id, u.id
+  from auth.users u
+  cross join public.volunteer_role_types rt
+ where lower(u.email) = 'tcramer@fishingthegoodfight.org'
+   and rt.active
+   and not exists (
+     select 1 from public.volunteer_role_approvals a
+      where a.volunteer_id = u.id and a.role_type_id = rt.id and a.revoked_at is null
+   );
+
+commit;
+
+-- Check it: expect status 'approved' and one row per active role type.
+--   select v.status, v.registered_at, rt.name
+--     from public.volunteers v
+--     join auth.users u on u.id = v.user_id
+--     left join public.volunteer_role_approvals a on a.volunteer_id = v.user_id and a.revoked_at is null
+--     left join public.volunteer_role_types rt on rt.id = a.role_type_id
+--    where lower(u.email) = 'tcramer@fishingthegoodfight.org';

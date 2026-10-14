@@ -20,13 +20,23 @@ import {
   type ApplicationStatus,
 } from "@/lib/volunteer-applications";
 import { WithdrawApplicationButton } from "@/components/withdraw-application-button";
+import { ChapterTag } from "@/components/chapter-tag";
+import { ChapterFilterPills } from "@/components/filter-pills";
+import {
+  chapterFilterOptions,
+  chapterSelectionLabel,
+  loadChapters,
+  matchesChapterSelection,
+  memberDefaultChapterSelection,
+  parseChapterSelection,
+} from "@/lib/chapters";
 
 async function VolunteerHomeLoader({
   searchParams,
 }: {
-  searchParams: Promise<{ saved?: string; applied?: string }>;
+  searchParams: Promise<{ saved?: string; applied?: string; chapter?: string }>;
 }) {
-  const { saved, applied } = await searchParams;
+  const { saved, applied, chapter: chapterParam } = await searchParams;
   const supabase = await createClient();
   const { data, error } = await supabase.auth.getClaims();
   if (error || !data?.claims) {
@@ -177,7 +187,21 @@ async function VolunteerHomeLoader({
 
   // Every open shift across upcoming events in a role they're approved for —
   // empty for anyone not approved (loadOpenShiftsForVolunteer checks).
-  const openShifts = status === "approved" ? await loadOpenShiftsForVolunteer(supabase, userId) : [];
+  const [allOpenShifts, chapters] = await Promise.all([
+    status === "approved" ? loadOpenShiftsForVolunteer(supabase, userId) : [],
+    loadChapters(supabase),
+  ]);
+  // The same chapter pills as the events list: an explicit `?chapter=` wins,
+  // otherwise their own chapter plus Virtual (or All with no local chapter).
+  const filterOptions = chapterFilterOptions(chapters);
+  const selection = parseChapterSelection(
+    chapterParam,
+    memberDefaultChapterSelection(profile?.chapter, filterOptions),
+    filterOptions,
+  );
+  const openShifts = allOpenShifts.filter((shift) =>
+    matchesChapterSelection(selection, shift.event.chapter, filterOptions),
+  );
 
   const upcomingShifts = shiftsWithStart
     .filter((s) => new Date(s.shiftStart).getTime() >= now)
@@ -239,40 +263,50 @@ async function VolunteerHomeLoader({
               <p className="text-sm text-muted-foreground">
                 Open shifts in your roles show here once you&apos;ve completed your registration.
               </p>
-            ) : openShifts.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                No open shifts in your roles right now — check back soon.
-              </p>
             ) : (
-              <ul>
-                {openShifts.map((shift) => (
-                  <li
-                    key={shift.opportunityId}
-                    className="flex flex-col gap-1 border-b py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <div className="flex flex-col gap-0.5">
-                      <Link
-                        href={`/protected/events/${shift.event.id}/rsvp`}
-                        className="font-medium underline-offset-4 hover:underline"
+              <div className="flex flex-col gap-3">
+                <ChapterFilterPills selection={selection} options={filterOptions} basePath="/protected/volunteer" />
+                {openShifts.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    {allOpenShifts.length === 0
+                      ? "No open shifts in your roles right now — check back soon."
+                      : `No open shifts in your roles for ${chapterSelectionLabel(selection, filterOptions)} right now.`}
+                  </p>
+                ) : (
+                  <ul>
+                    {openShifts.map((shift) => (
+                      <li
+                        key={shift.opportunityId}
+                        className="flex flex-col gap-1 border-b py-3 last:border-b-0 sm:flex-row sm:items-center sm:justify-between"
                       >
-                        {shift.event.name}
-                      </Link>
-                      <span className="text-sm text-muted-foreground">
-                        {shift.role} ·{" "}
-                        {formatEventDateRange(shift.shiftStart, shift.shiftEnd, shift.event.timezone)}
-                      </span>
-                    </div>
-                    <div className="flex shrink-0 items-center gap-3">
-                      <span className="text-sm text-muted-foreground">
-                        {shift.spotsRemaining} spot{shift.spotsRemaining === 1 ? "" : "s"} left
-                      </span>
-                      <Button asChild size="sm" variant="outline">
-                        <Link href={`/protected/events/${shift.event.id}/rsvp`}>Sign up</Link>
-                      </Button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
+                        <div className="flex flex-col gap-0.5">
+                          <Link
+                            href={`/protected/events/${shift.event.id}/rsvp`}
+                            className="font-medium underline-offset-4 hover:underline"
+                          >
+                            {shift.event.name}
+                          </Link>
+                          <span className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                            {shift.event.chapter && <ChapterTag chapter={shift.event.chapter} />}
+                            <span>
+                              {shift.role} ·{" "}
+                              {formatEventDateRange(shift.shiftStart, shift.shiftEnd, shift.event.timezone)}
+                            </span>
+                          </span>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-3">
+                          <span className="text-sm text-muted-foreground">
+                            {shift.spotsRemaining} spot{shift.spotsRemaining === 1 ? "" : "s"} left
+                          </span>
+                          <Button asChild size="sm" variant="outline">
+                            <Link href={`/protected/events/${shift.event.id}/rsvp`}>Sign up</Link>
+                          </Button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             )}
           </CardContent>
         </Card>
@@ -393,7 +427,7 @@ async function VolunteerHomeLoader({
 export default function VolunteerHomePage({
   searchParams,
 }: {
-  searchParams: Promise<{ saved?: string; applied?: string }>;
+  searchParams: Promise<{ saved?: string; applied?: string; chapter?: string }>;
 }) {
   return (
     <div className="flex-1 w-full flex flex-col gap-8 max-w-2xl">
