@@ -24,9 +24,6 @@ type AdminClient = ReturnType<typeof createAdminClient>;
 /** The public upcoming-events list the welcome's button opens. */
 const PUBLIC_EVENTS_PATH = "/events";
 
-/** A failed automatic send is retried on later runs up to this many tries. */
-export const WALKUP_WELCOME_MAX_ATTEMPTS = 3;
-
 /** One person to welcome: walkup_welcome_candidates / walkup_welcome_due. */
 export type WalkupWelcomeRecipient = {
   userId: string;
@@ -77,7 +74,7 @@ function toRecipient(row: RecipientRow): WalkupWelcomeRecipient {
 
 /** "on Monday" when the event started within the last 6 days, otherwise
  * "on October 5" — in the event's own time zone. */
-export function eventDayPhrase(startsAt: string, timeZone: string, now: Date): string {
+function eventDayPhrase(startsAt: string, timeZone: string, now: Date): string {
   const start = new Date(startsAt);
   const recent = now.getTime() - start.getTime() < 6 * 86_400_000;
   const label = new Intl.DateTimeFormat("en-US", {
@@ -121,7 +118,8 @@ export type WalkupWelcomeRunSummary = {
  * whose event's last day ended before today (event time zone), within a
  * week, never signed in (walkup_welcome_due). A sent row is stamped; a
  * failure counts an attempt and is retried on the next run, up to
- * WALKUP_WELCOME_MAX_ATTEMPTS. `dry` sends and records nothing.
+ * 3 tries (attempts < 3 in walkup_welcome_due). `dry` sends and records
+ * nothing.
  */
 export async function runWalkupWelcomeEmails(
   admin: AdminClient,

@@ -8,7 +8,7 @@
 /** Among retreat roles, the only one a first-time volunteer can be approved
  * for. Anything more is added later on their volunteer record. Keep in step
  * with volunteer_application_approve. */
-export const FIRST_TIME_RETREAT_ROLE_KEY = "fishing_instructor";
+const FIRST_TIME_RETREAT_ROLE_KEY = "fishing_instructor";
 
 export type ApprovalRoleType = {
   id: number;

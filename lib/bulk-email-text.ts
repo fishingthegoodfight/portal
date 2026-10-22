@@ -41,7 +41,7 @@ export function applyMerge(text: string, values: MergeValues): string {
 
 /** A chapter that reads as one in a signature: not "Virtual" or "No local
  * chapter", and not none. */
-export function signatureChapter(chapter: string | null | undefined): string | null {
+function signatureChapter(chapter: string | null | undefined): string | null {
   const c = chapter?.trim();
   return c && c !== VIRTUAL_CHAPTER && c !== NOT_LOCAL_CHAPTER ? c : null;
 }

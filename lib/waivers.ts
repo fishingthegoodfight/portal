@@ -45,8 +45,7 @@ export function waiverStatesForChapters(chapters: Chapter[]): WaiverState[] {
  * separate from volunteer waivers (volunteer registration): different text,
  * independent version sequences per state (see the 2026-09-22
  * schema-changes.sql entry). */
-export const WAIVER_AUDIENCES = { participant: "Participant", volunteer: "Volunteer" } as const;
-export type WaiverAudience = keyof typeof WAIVER_AUDIENCES;
+export type WaiverAudience = "participant" | "volunteer";
 
 /** The waiver state a chapter maps to (its own state), or null for an
  * unknown chapter.
@@ -129,7 +128,7 @@ async function resolveEventWaiverState(
 /** Highest-version active waiver for a state + year + audience (defaults to
  * 'participant', the only audience that existed before the 2026-09-22
  * volunteer waiver), or null if none exists. */
-export async function loadActiveWaiver(
+async function loadActiveWaiver(
   supabase: SupabaseClient,
   state: WaiverState,
   year: number,
@@ -202,7 +201,7 @@ export async function resolveVolunteerWaiverForEvent(
 
 /** One user's signature on one waiver, if any. Always filtered by user_id —
  * admins can read everyone's signatures, so RLS alone isn't enough. */
-export async function loadSignature(
+async function loadSignature(
   supabase: SupabaseClient,
   userId: string,
   waiverId: number,
@@ -217,7 +216,7 @@ export async function loadSignature(
 }
 
 /** "Signed for 2026 (Colorado) on Sep 21, 2026" */
-export function signedLabel(
+function signedLabel(
   waiver: Pick<ActiveWaiver, "state" | "year">,
   signedAt: string,
   timeZone: string,

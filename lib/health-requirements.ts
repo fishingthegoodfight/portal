@@ -27,7 +27,7 @@ export function healthFormYearFor(profileChapter: string | null | undefined, cha
 }
 
 /** The years the signed-in person has a form on file for. */
-export async function myHealthFormYears(supabase: SupabaseServerClient): Promise<Set<number>> {
+async function myHealthFormYears(supabase: SupabaseServerClient): Promise<Set<number>> {
   return new Set((await loadMyHealthHistoryList(supabase)).map((h) => h.year));
 }
 

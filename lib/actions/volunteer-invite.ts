@@ -6,15 +6,10 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { assignLeadEventsToNewAccount } from "@/lib/admin/lead-account";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { getSiteUrl } from "@/lib/site-url";
-import { codePagePath } from "@/lib/code-page";
+import { setupLinkUrl } from "@/lib/code-page";
 import { sendVolunteerInviteEmail } from "@/lib/email/send";
 
 const REGISTER_PATH = "/protected/volunteer/register";
-/** Where someone setting up their account goes: the code page, email
- * filled in, then registration. No credential in it (lib/one-time-links.ts). */
-function setupUrl(email: string): string {
-  return `${getSiteUrl()}${codePagePath({ mode: "setup", email, next: REGISTER_PATH })}`;
-}
 
 export type InviteVolunteerResult =
   | { ok: true; wasResend: boolean }
@@ -108,7 +103,7 @@ async function inviteOne(
     }
     userId = link.user.id;
     needsPasswordSetup = true;
-    actionUrl = setupUrl(email);
+    actionUrl = setupLinkUrl(email, REGISTER_PATH);
     await assignLeadEventsToNewAccount(adminClientForCreate, userId);
 
     // handle_new_user() (the signup trigger) only copies id/email/
@@ -147,7 +142,7 @@ async function inviteOne(
       // a backfill or an import): the same code page, where they ask for a
       // code and set a password.
       needsPasswordSetup = true;
-      actionUrl = setupUrl(email);
+      actionUrl = setupLinkUrl(email, REGISTER_PATH);
     }
   }
 

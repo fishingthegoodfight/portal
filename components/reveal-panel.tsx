@@ -17,7 +17,7 @@ import { cn } from "@/lib/utils";
  * autoFocus field), which is left alone. `revealKey`: reveal again when this changes
  * while the element stays mounted (e.g. a different warning in the same slot).
  */
-export function useRevealOnMount<T extends HTMLElement>(revealKey?: unknown) {
+function useRevealOnMount<T extends HTMLElement>(revealKey?: unknown) {
   const ref = useRef<T>(null);
   useEffect(() => {
     const el = ref.current;

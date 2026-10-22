@@ -8,7 +8,7 @@
  * These rules mirror the events_slug_format constraint — keep them in sync.
  */
 
-export const SLUG_MAX_LENGTH = 80;
+const SLUG_MAX_LENGTH = 80;
 
 /** What an admin typed, made URL-safe: lowercase, runs of anything else
  * become a single "-", no leading/trailing "-". */

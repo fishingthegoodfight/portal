@@ -60,7 +60,7 @@ import {
 
 type AdminClient = ReturnType<typeof createAdminClient>;
 
-export const OPPORTUNITY_WEEKS = 6;
+const OPPORTUNITY_WEEKS = 6;
 const PAGE_SIZE = 1000;
 const IN_CHUNK = 200;
 /**
@@ -71,7 +71,7 @@ const IN_CHUNK = 200;
  * over locks the account out of sending for up to 24 hours, confirmations
  * and reminders included, so this keeps well clear.
  */
-export const MAX_SENDS_PER_RUN = 250;
+const MAX_SENDS_PER_RUN = 250;
 
 export async function loadSchedule(client: AdminClient): Promise<OpportunitiesSchedule> {
   const { data, error } = await client
@@ -417,7 +417,7 @@ async function unsubscribeTokens(admin: AdminClient, userIds: string[]): Promise
 }
 
 /** The email a planned recipient gets, or null for none. */
-export function renderPlannedEmail(recipient: PlannedRecipient, token: string): RenderedEmail | null {
+function renderPlannedEmail(recipient: PlannedRecipient, token: string): RenderedEmail | null {
   const firstName = recipient.name.split(" ")[0] || null;
   if (recipient.plan.kind === "opportunities") {
     return renderVolunteerOpportunitiesEmail({

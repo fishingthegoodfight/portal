@@ -10,7 +10,7 @@ import { addDays, todayInZone } from "@/lib/format-date";
  */
 
 /** Dates are judged in Denver, like the rest of the volunteer side. */
-export const CERT_ZONE = "America/Denver";
+const CERT_ZONE = "America/Denver";
 
 /** How far ahead an expiry counts as "expiring soon". */
 export const CERT_EXPIRING_DAYS = 60;

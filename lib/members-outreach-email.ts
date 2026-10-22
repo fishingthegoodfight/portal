@@ -65,7 +65,7 @@ export async function loadMembersEmailSettings(client: SupabaseClient): Promise<
 }
 
 /** The most recent `weekday` on or before `today` (YYYY-MM-DD). */
-export function weekOf(today: string, weekday: number): string {
+function weekOf(today: string, weekday: number): string {
   const day = new Date(`${today}T00:00:00Z`);
   const back = (day.getUTCDay() - weekday + 7) % 7;
   day.setUTCDate(day.getUTCDate() - back);

@@ -29,7 +29,7 @@ export function spotsLeft(capacity: number | null, taken: number | null): number
 }
 
 /** At or below this many spots left, participant-facing pages show the count. */
-export const SCARCITY_THRESHOLD = 5;
+const SCARCITY_THRESHOLD = 5;
 
 /**
  * Spots left as participants and the public see it: "3 spots left" only once

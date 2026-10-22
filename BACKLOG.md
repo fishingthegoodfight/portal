@@ -133,14 +133,7 @@ Two `schema-changes.sql` entries from 2026-10-12: "Email from Members and event 
 
 **Blocked until the domain transfer on 2026-11-18.** The code already supports both providers: `EMAIL_PROVIDER` (`resend` or `smtp`) and `RESEND_FROM` in `lib/email/send.ts`. Without `RESEND_FROM` it falls back to a `resend.dev` test sender. What's left is DNS verification and the environment variables.
 
-### 10. Rename the "Chapter Program Lead" volunteer role type
-**What:** give the volunteer role type a name that doesn't collide.
-
-**Why:** "Chapter Program Lead" reads like the **chapter lead** access role, but it's just a volunteer role and grants no access.
-
-**Known:** the role type was seeded as key `other_chapter_program_lead`, label "Other Chapter Program Lead" (2026-09-22 "Volunteer registry" entry in `schema-changes.sql`, table `volunteer_role_types`); check the live label before renaming. Change the label only. Approvals and shifts point at the role type's id, and no code refers to this key, but keys are how code identifies other role types (such as `fishing_instructor` for the practical check), so leave keys alone as a rule.
-
-### 11. Surface email bounces
+### 10. Surface email bounces
 **What:** read bounce notifications from the Google Workspace mailbox and show which addresses bounced, against the person's profile.
 
 **Why:** a walk-up who gave a typo'd email at the desk ends up with a silent dead profile. Their welcome email (item 1) bounces, and we never find out or get to fix the address. The same goes for every other portal email.
@@ -150,7 +143,7 @@ Two `schema-changes.sql` entries from 2026-10-12: "Email from Members and event 
 - **Where they should show:** on the walk-up welcome catch-up screen at least, and probably in the admin digest.
 - **After the Resend migration (item 9):** Resend reports bounces itself (webhooks), which may be the simpler source.
 
-### 12. Attend or volunteer at an event, never both
+### 11. Attend or volunteer at an event, never both
 **What:** someone can be recorded at an event as a participant **or** a volunteer, not both.
 
 **Why:** a person counted twice at one event muddies rosters, headcounts and engagement. (Members already counts an event once either way.)
@@ -167,7 +160,7 @@ Two `schema-changes.sql` entries from 2026-10-12: "Email from Members and event 
   - When someone is already one, does adding them as the other switch them over, or refuse?
   - What happens to existing events where someone is already both? A read-only query should count those first.
 
-### 13. Bulk texting from Members and rosters
+### 12. Bulk texting from Members and rosters
 **What:** text a group from Members or an event roster, the way email works today (item 7): pick people or an audience, write one message, and each person gets their own text.
 
 **Why:** many members read texts long before email, and the sms: links only reach one person at a time from the sender's own phone.

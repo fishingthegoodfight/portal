@@ -5,19 +5,9 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 import { createClient } from "@/lib/supabase/client";
-import { addWalkupRsvpAction, removePaperWaiverAction } from "@/lib/actions/admin-walkup";
+import { removePaperWaiverAction } from "@/lib/actions/admin-walkup";
 import { updateRosterPersonDetailsAction } from "@/lib/actions/roster-person";
-import { walkupLookupAction } from "@/lib/actions/waiver";
-import { RegistrationSectionField } from "@/components/registration-section-field";
-import {
-  EMPTY_WAIVER_SIGN,
-  WaiverSigning,
-  waiverNeedsInput,
-  type WaiverSignState,
-} from "@/components/waiver-signing";
-import type { WaiverInfo } from "@/lib/waivers";
 import { adminOfferSpotAction, adminRemoveRsvpAction } from "@/lib/actions/admin-waitlist";
-import { adminAddVolunteerSignupAction } from "@/lib/actions/admin-volunteer-signup";
 import { CancelEventDialog } from "@/components/admin/cancel-event-dialog";
 import { RestoreEventDialog } from "@/components/admin/restore-event-dialog";
 import { SaveAsTemplateButton } from "@/components/admin/save-as-template-button";
@@ -26,32 +16,13 @@ import { PhoneTools } from "@/components/phone-tools";
 import { logRosterTextAction } from "@/lib/actions/texting";
 import { ShareEventCard } from "@/components/admin/share-event-card";
 import { EventCard, type EventCardEvent } from "@/components/event-card";
-import { EmergencyContactFields } from "@/components/emergency-contact-fields";
-import { EventPersonResults, EventPersonSearch } from "@/components/admin/event-person-search";
-import type { EventPersonCandidate } from "@/lib/actions/event-people";
-import { isEmailAddress } from "@/lib/profile-email";
 import { Button } from "@/components/ui/button";
 import { RevealPanel } from "@/components/reveal-panel";
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { Select } from "@/components/ui/select";
-import { RegistrationFieldInput } from "@/components/registration-fields";
-import { HomeChapterField } from "@/components/chapter-select";
 import { formatPhoneNumber } from "@/lib/phone";
-import {
-  dietaryDisplay,
-  firstIncompleteSection,
-  incompleteSectionMessage,
-  isSectionComplete,
-  secondContactProblem,
-  REGISTRATION_SECTIONS,
-  rosterAnswerSections,
-  rosterSectionAnswer,
-  sectionsForEvent,
-  type RegistrationSection,
-} from "@/lib/registration-sections";
+import { dietaryDisplay, rosterAnswerSections, rosterSectionAnswer, type RegistrationSection } from "@/lib/registration-sections";
 import { cn } from "@/lib/utils";
 import type {
   RosterDietary,
@@ -62,48 +33,16 @@ import type {
   WaitlistPerson,
 } from "@/lib/admin/roster";
 import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
+import { RosterAddVolunteerDialog } from "@/components/admin/roster-add-volunteer-dialog";
+import { RosterWalkupDialog } from "@/components/admin/roster-walkup-dialog";
 import { RosterHealthLine, type RosterHealth } from "@/components/admin/roster-health";
 import { practicalCheckSummary, type PracticalCheck } from "@/lib/practical-checks";
 import type { Chapter } from "@/lib/chapters";
 import { personDisplayName } from "@/lib/person-name";
-import { CORE_PROFILE_FIELDS, type CoreProfileKey } from "@/lib/core-profile";
 import { isAfterEvent, type EventTiming } from "@/lib/event-timing";
 import { formatEventInstant } from "@/lib/format-date";
 
 type LatestPracticalCheck = Pick<PracticalCheck, "outcome" | "checked_on" | "assessor_name">;
-
-
-const DIRECTORY_FIELD = REGISTRATION_SECTIONS.find((s) => s.id === "directory")!.fields[0];
-
-type WalkupFormState = {
-  firstName: string;
-  lastName: string;
-  email: string;
-  phone: string;
-  emergencyContactName: string;
-  emergencyContactPhone: string;
-  emergencyContactRelationship: string;
-  emergencyContact2Name: string;
-  emergencyContact2Phone: string;
-  emergencyContact2Relationship: string;
-  directoryOptIn: boolean;
-  chapter: string;
-};
-
-const EMPTY_WALKUP_FORM: WalkupFormState = {
-  firstName: "",
-  lastName: "",
-  email: "",
-  phone: "",
-  emergencyContactName: "",
-  emergencyContactPhone: "",
-  emergencyContactRelationship: "",
-  emergencyContact2Name: "",
-  emergencyContact2Phone: "",
-  emergencyContact2Relationship: "",
-  directoryOptIn: false,
-  chapter: "",
-};
 
 export function EventRoster({
   eventId,
@@ -312,51 +251,8 @@ export function EventRoster({
   const [checkInError, setCheckInError] = useState<string | null>(null);
 
   const [showWalkupForm, setShowWalkupForm] = useState(false);
-  const [walkupForm, setWalkupForm] = useState<WalkupFormState>(EMPTY_WALKUP_FORM);
-  const [walkupError, setWalkupError] = useState<string | null>(null);
-  const [isSubmittingWalkup, setIsSubmittingWalkup] = useState(false);
-  const [capacityConfirmPending, setCapacityConfirmPending] = useState(false);
-  // The walk-up is signed up to volunteer here: their shifts while the
-  // warning is showing, and whether the admin already said "add anyway" (kept
-  // when a capacity confirmation follows, so it isn't asked twice).
-  const [volunteerConflictShifts, setVolunteerConflictShifts] = useState<string[] | null>(null);
-  const [volunteerConflictAcked, setVolunteerConflictAcked] = useState(false);
 
   const [showAddVolunteerForm, setShowAddVolunteerForm] = useState(false);
-  const [addVolunteerEmail, setAddVolunteerEmail] = useState("");
-  // Whether the event had started when Add volunteer was opened: it may be
-  // recording a shift after the fact (adminAddVolunteerSignupAction marks an
-  // ended shift as served and sends no emails), and the form says so.
-  const [addVolunteerEventStarted, setAddVolunteerEventStarted] = useState(false);
-  const [addVolunteerOpportunityId, setAddVolunteerOpportunityId] = useState("");
-  const [addVolunteerError, setAddVolunteerError] = useState<string | null>(null);
-  const [isAddingVolunteer, setIsAddingVolunteer] = useState(false);
-  // Set once the action reports something that needs an explicit override —
-  // "not approved for this role", "already RSVP'd to attend", or "shift is
-  // full" — then cleared on any further edit, same two-step confirm shape as
-  // the walk-up capacity flow. Overrides already confirmed are remembered
-  // (addVolunteerAcked) so a later check doesn't send the admin back to one.
-  const [addVolunteerConfirm, setAddVolunteerConfirm] = useState<
-    "not_approved" | "has_rsvp" | "capacity" | "practical_check" | "registration" | null
-  >(null);
-  // An admin's reason for adding someone past a missing practical check.
-  const [practicalOverrideReason, setPracticalOverrideReason] = useState("");
-  // An admin's reason for adding someone who hasn't completed registration.
-  const [registrationOverrideReason, setRegistrationOverrideReason] = useState("");
-  const [addVolunteerAcked, setAddVolunteerAcked] = useState<Set<string>>(() => new Set());
-  // Their RSVP to attend, when the has_rsvp warning is showing.
-  const [addVolunteerRsvpStatus, setAddVolunteerRsvpStatus] = useState<string | null>(null);
-  // The event's own sections the walk-up form collects — the same catalog-
-  // driven sections the RSVP form shows. The emergency contact and directory
-  // choice have their own fields above; the waiver has its own block below.
-  const walkupSections = useMemo(
-    () =>
-      sectionsForEvent(registrationSectionIds).filter(
-        (section) => !section.alwaysRequired && section.kind !== "waiver",
-      ),
-    [registrationSectionIds],
-  );
-
   // The event's sections whose answers the volunteer rows show — volunteers
   // answer the same ones participants do when they sign up.
   const answerSections = useMemo(
@@ -364,82 +260,6 @@ export function EventRoster({
     [registrationSectionIds],
   );
 
-  // What we know about the person, looked up by email: their waiver situation
-  // (nothing to do, already signed, or the waiver to sign at the check-in
-  // table) and what their profile already has for the sections above.
-  const [walkupLookup, setWalkupLookup] = useState<{
-    info: WaiverInfo;
-    profileFields: Record<string, string> | null;
-    existing: { name: string; missingCore: CoreProfileKey[] } | null;
-    eventEnded: boolean;
-  } | null>(null);
-  const [walkupSign, setWalkupSign] = useState<WaiverSignState>(EMPTY_WAIVER_SIGN);
-  // The fallback behind "They signed a paper waiver instead": `open` swaps
-  // the signing block for the paper confirmation, `held` is the lead's tick
-  // that they hold the signed copy.
-  const [walkupPaper, setWalkupPaper] = useState({ open: false, held: false });
-  // After the event there's no signing here: the lead's tick that there's
-  // no waiver at all, to record their attendance anyway ("No waiver on file").
-  const [walkupNoWaiver, setWalkupNoWaiver] = useState(false);
-  // The latest matches for what's typed in the walk-up's Name or email
-  // field, so Continue can tell "nobody found" from "found, not picked".
-  const [walkupMatches, setWalkupMatches] = useState<EventPersonCandidate[] | null>(null);
-  const [walkupSectionValues, setWalkupSectionValues] = useState<Record<string, string>>({});
-  // Bumped whenever the section inputs are re-seeded, so stateful inputs
-  // (e.g. the dietary Yes/No) remount and pick up the new values.
-  const [walkupSectionsKey, setWalkupSectionsKey] = useState(0);
-
-  // Every event has a waiver, so the lookup is always needed.
-
-  /** Seeds values from the profile for anything they haven't typed yet. */
-  const withProfileValues = (
-    typed: Record<string, string>,
-    profileFields: Record<string, string> | null,
-  ) => {
-    const merged = { ...typed };
-    for (const [key, value] of Object.entries(profileFields ?? {})) {
-      if (value && !merged[key]) merged[key] = value;
-    }
-    return merged;
-  };
-
-  const lookUpWalkup = async (
-    email: string,
-  ): Promise<{
-    info: WaiverInfo;
-    profileFields: Record<string, string> | null;
-    existing: { name: string; missingCore: CoreProfileKey[] } | null;
-    eventEnded: boolean;
-  } | null> => {
-    if (!email.trim()) return null;
-    const result = await walkupLookupAction(eventId, email);
-    if (!result.ok) {
-      setWalkupError(result.error);
-      return null;
-    }
-    const lookup = {
-      info: result.info,
-      profileFields: result.profileFields,
-      existing: result.existing,
-      eventEnded: result.eventEnded,
-    };
-    setWalkupLookup(lookup);
-    setWalkupSectionValues((prev) => withProfileValues(prev, result.profileFields));
-    setWalkupSectionsKey((k) => k + 1);
-    return lookup;
-  };
-
-  // What the walk-up form asks once the email is looked up: everything for
-  // someone new; for someone already in the system, only the core fields
-  // blank on their record and the event's sections not complete on file
-  // (plus the waiver, if unsigned). Typed values only ever fill blanks.
-  const walkupIsNew = walkupLookup != null && walkupLookup.existing == null;
-  const walkupAsks = (field: CoreProfileKey) =>
-    walkupLookup != null && (walkupLookup.existing?.missingCore ?? CORE_PROFILE_FIELDS.map((f) => f.key)).includes(field);
-  const walkupSectionsAsked = walkupLookup
-    ? walkupSections.filter((section) => walkupIsNew || !isSectionComplete(section, walkupLookup.profileFields ?? {}))
-    : [];
-  const walkupFirstName = walkupForm.firstName.trim() || walkupLookup?.existing?.name.split(" ")[0] || "";
 
   const confirmedCount = roster.filter((p) => p.status === "confirmed").length;
   const checkedInCount = roster.filter((p) => p.checkedInAt).length;
@@ -526,266 +346,6 @@ export function EventRoster({
     }
   };
 
-  const openWalkupForm = () => {
-    setWalkupForm(EMPTY_WALKUP_FORM);
-    setWalkupError(null);
-    setCapacityConfirmPending(false);
-    setWalkupLookup(null);
-    setWalkupSign(EMPTY_WAIVER_SIGN);
-    setWalkupPaper({ open: false, held: false });
-    setWalkupNoWaiver(false);
-    setWalkupMatches(null);
-    setWalkupSectionValues({});
-    setWalkupSectionsKey((k) => k + 1);
-    setVolunteerConflictShifts(null);
-    setVolunteerConflictAcked(false);
-    setShowWalkupForm(true);
-  };
-
-  // A different email is a different person: drop their lookup, and any
-  // answers that were pre-filled from the previous person's profile so they
-  // can't carry over.
-  const changeWalkupEmail = (email: string) => {
-    setWalkupForm((prev) => ({ ...prev, email }));
-    setWalkupError(null);
-    if (walkupLookup?.profileFields) {
-      setWalkupSectionValues({});
-      setWalkupSectionsKey((k) => k + 1);
-    }
-    setWalkupLookup(null);
-    setWalkupPaper({ open: false, held: false });
-    setWalkupNoWaiver(false);
-    setWalkupMatches(null);
-    setVolunteerConflictShifts(null);
-    setVolunteerConflictAcked(false);
-  };
-
-  const closeWalkupForm = () => {
-    if (isSubmittingWalkup) return;
-    setShowWalkupForm(false);
-  };
-
-  const updateWalkupField =
-    (field: keyof WalkupFormState) => (e: React.ChangeEvent<HTMLInputElement>) =>
-      setWalkupForm((prev) => ({ ...prev, [field]: e.target.value }));
-
-  const updateWalkupPhoneField =
-    (field: "phone" | "emergencyContactPhone" | "emergencyContact2Phone") => (e: React.ChangeEvent<HTMLInputElement>) =>
-      setWalkupForm((prev) => ({
-        ...prev,
-        [field]: formatPhoneNumber(e.target.value),
-      }));
-
-  const submitWalkup = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSubmittingWalkup(true);
-    setWalkupError(null);
-
-    // Email first: until it's been looked up, submitting (Continue, or
-    // Enter in the email field) only looks it up, so the lead sees whether
-    // they're already on file before anything else is asked or added.
-    // Continue with nothing picked: an email is looked up exactly (which
-    // also finds people outside the search's chapter scope); anything else
-    // asks for one.
-    const lookup = walkupLookup;
-    if (!lookup) {
-      if (isEmailAddress(walkupForm.email)) {
-        await lookUpWalkup(walkupForm.email);
-      } else {
-        setWalkupError(
-          walkupMatches && walkupMatches.length > 0
-            ? "Pick them from the list, or type their email address."
-            : "No one found by that name. Type their email address instead.",
-        );
-      }
-      setIsSubmittingWalkup(false);
-      return;
-    }
-    const sectionValues = withProfileValues(walkupSectionValues, lookup.profileFields);
-
-    const info = lookup.info;
-    const onPaper = info.status === "unsigned" && walkupPaper.open;
-    if (onPaper && !walkupPaper.held) {
-      setIsSubmittingWalkup(false);
-      setWalkupError("Tick the box to confirm you hold their signed paper waiver.");
-      return;
-    }
-    const noWaiverOnFile = info.status === "unsigned" && lookup.eventEnded && !onPaper;
-    if (noWaiverOnFile && !walkupNoWaiver) {
-      setIsSubmittingWalkup(false);
-      setWalkupError("Record the paper waiver you hold, or tick No waiver on file.");
-      return;
-    }
-    if (!onPaper && !noWaiverOnFile && waiverNeedsInput(info, walkupSign)) {
-      setIsSubmittingWalkup(false);
-      setWalkupError(
-        info.status === "unavailable"
-          ? info.message
-          : "Have them read and agree to the waiver below, and type their full name.",
-      );
-      return;
-    }
-    const secondContactError = secondContactProblem(walkupForm.emergencyContact2Name, walkupForm.emergencyContact2Phone);
-    if (secondContactError) {
-      setIsSubmittingWalkup(false);
-      setWalkupError(secondContactError);
-      return;
-    }
-    const incomplete = firstIncompleteSection(walkupSections, sectionValues);
-    if (incomplete) {
-      setIsSubmittingWalkup(false);
-      setWalkupError(incompleteSectionMessage(incomplete, sectionValues, " below."));
-      return;
-    }
-
-    const result = await addWalkupRsvpAction({
-      eventId,
-      firstName: walkupForm.firstName,
-      lastName: walkupForm.lastName,
-      email: walkupForm.email,
-      phone: walkupForm.phone,
-      emergencyContactName: walkupForm.emergencyContactName,
-      emergencyContactPhone: walkupForm.emergencyContactPhone,
-      emergencyContactRelationship: walkupForm.emergencyContactRelationship,
-      emergencyContact2Name: walkupForm.emergencyContact2Name,
-      emergencyContact2Phone: walkupForm.emergencyContact2Phone,
-      emergencyContact2Relationship: walkupForm.emergencyContact2Relationship,
-      directoryOptIn: walkupForm.directoryOptIn,
-      chapter: walkupForm.chapter,
-      waiverName: walkupSign.name,
-      waiverAgreed: walkupSign.agreed,
-      paperWaiverHeld: onPaper,
-      noWaiverOnFile,
-      sections: sectionValues,
-      allowVolunteerConflict: volunteerConflictAcked || volunteerConflictShifts != null,
-      force: capacityConfirmPending,
-    });
-
-    setIsSubmittingWalkup(false);
-
-    if (!result.ok) {
-      setWalkupError(result.error);
-      return;
-    }
-    if (result.status === "volunteer_conflict") {
-      setVolunteerConflictShifts(result.shifts);
-      return;
-    }
-    if (volunteerConflictShifts) {
-      setVolunteerConflictAcked(true);
-      setVolunteerConflictShifts(null);
-    }
-    if (result.status === "capacity_exceeded") {
-      setCapacityConfirmPending(true);
-      return;
-    }
-
-    setShowWalkupForm(false);
-    router.refresh();
-  };
-
-  const openAddVolunteerForm = () => {
-    setAddVolunteerEmail("");
-    setAddVolunteerEventStarted(new Date(timing.startsAt).getTime() <= Date.now());
-    setAddVolunteerOpportunityId(volunteerRoles[0] ? String(volunteerRoles[0].opportunityId) : "");
-    setAddVolunteerError(null);
-    setAddVolunteerConfirm(null);
-    setAddVolunteerAcked(new Set());
-    setShowAddVolunteerForm(true);
-  };
-
-  // Any edit to who/which role invalidates earlier confirmations.
-  const resetAddVolunteerConfirm = () => {
-    setAddVolunteerConfirm(null);
-    setAddVolunteerAcked(new Set());
-    setAddVolunteerError(null);
-    setPracticalOverrideReason("");
-    setRegistrationOverrideReason("");
-  };
-
-  const closeAddVolunteerForm = () => {
-    if (isAddingVolunteer) return;
-    setShowAddVolunteerForm(false);
-  };
-
-  const submitAddVolunteer = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsAddingVolunteer(true);
-    setAddVolunteerError(null);
-
-    if (addVolunteerConfirm === "practical_check" && !practicalOverrideReason.trim()) {
-      setIsAddingVolunteer(false);
-      setAddVolunteerError("Give a reason for adding them without a passed practical check.");
-      return;
-    }
-    if (addVolunteerConfirm === "registration" && !registrationOverrideReason.trim()) {
-      setIsAddingVolunteer(false);
-      setAddVolunteerError("Give a reason for adding them before they've registered.");
-      return;
-    }
-    const acked = new Set(addVolunteerAcked);
-    if (addVolunteerConfirm) acked.add(addVolunteerConfirm);
-    setAddVolunteerAcked(acked);
-
-    const result = await adminAddVolunteerSignupAction({
-      opportunityId: Number(addVolunteerOpportunityId),
-      email: addVolunteerEmail,
-      overrideApproval: acked.has("not_approved"),
-      overrideRsvp: acked.has("has_rsvp"),
-      forceCapacity: acked.has("capacity"),
-      practicalCheckOverrideReason: acked.has("practical_check") ? practicalOverrideReason : undefined,
-      registrationOverrideReason: acked.has("registration") ? registrationOverrideReason : undefined,
-    });
-
-    setIsAddingVolunteer(false);
-
-    if (!result.ok) {
-      setAddVolunteerError(result.error);
-      return;
-    }
-    if (result.status === "has_rsvp") {
-      setAddVolunteerConfirm("has_rsvp");
-      setAddVolunteerRsvpStatus(result.rsvpStatus);
-      setAddVolunteerError(null);
-      return;
-    }
-    if (result.status === "not_approved") {
-      const why = result.approvedForRole
-        ? "This person is an approved volunteer but not for this specific role."
-        : "This person isn't an approved volunteer.";
-      // Only an admin can add someone anyway — approving volunteers is
-      // admin-only, so a chapter lead just gets the reason.
-      if (result.canOverride) {
-        setAddVolunteerConfirm("not_approved");
-        setAddVolunteerError(why);
-      } else {
-        setAddVolunteerAcked(new Set());
-        setAddVolunteerConfirm(null);
-        setAddVolunteerError(`${why} Only an admin can add them — ask an admin to approve them first.`);
-      }
-      return;
-    }
-    if (result.status === "capacity_exceeded") {
-      setAddVolunteerConfirm("capacity");
-      setAddVolunteerError("This shift is full.");
-      return;
-    }
-    if (result.status === "practical_check_required" || result.status === "registration_required") {
-      // Chapter leads can't override — they just get the reason.
-      if (result.canOverride) {
-        setAddVolunteerConfirm(result.status === "practical_check_required" ? "practical_check" : "registration");
-      } else {
-        setAddVolunteerAcked(new Set());
-        setAddVolunteerConfirm(null);
-      }
-      setAddVolunteerError(result.message);
-      return;
-    }
-
-    setShowAddVolunteerForm(false);
-    router.refresh();
-  };
-
   return (
     <div className="flex flex-col gap-6">
       <EventCard event={eventCard} rsvpStatus={null} exactSpots />
@@ -869,11 +429,11 @@ export function EventRoster({
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-2 sm:flex sm:flex-wrap">
-            <Button className="h-11 sm:px-6" onClick={openWalkupForm}>
+            <Button className="h-11 sm:px-6" onClick={() => setShowWalkupForm(true)}>
               Add walk-up
             </Button>
             {volunteerRoles.length > 0 && (
-              <Button className="h-11 sm:px-6" variant="outline" onClick={openAddVolunteerForm}>
+              <Button className="h-11 sm:px-6" variant="outline" onClick={() => setShowAddVolunteerForm(true)}>
                 Add volunteer
               </Button>
             )}
@@ -1154,436 +714,22 @@ export function EventRoster({
         </Card>
       )}
 
-      {showAddVolunteerForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <Card className="max-h-[90vh] w-full max-w-sm overflow-y-auto sm:max-w-md">
-            <form onSubmit={submitAddVolunteer}>
-              <CardHeader>
-                <CardTitle>Add volunteer</CardTitle>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-4">
-                <div className="grid gap-2">
-                  <Label htmlFor="add_volunteer_role">Role</Label>
-                  <Select
-                    id="add_volunteer_role"
-                    value={addVolunteerOpportunityId}
-                    onChange={(e) => {
-                      setAddVolunteerOpportunityId(e.target.value);
-                      resetAddVolunteerConfirm();
-                    }}
-                  >
-                    {volunteerRoles.map((role) => (
-                      <option key={role.opportunityId} value={role.opportunityId}>
-                        {role.role} ({role.slotsTaken}/{role.slots} filled)
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-                <EventPersonSearch
-                  eventId={eventId}
-                  idPrefix="add_volunteer"
-                  onPick={(person) => {
-                    setAddVolunteerEmail(person.email);
-                    resetAddVolunteerConfirm();
-                  }}
-                />
-                <div className="grid gap-2">
-                  <Label htmlFor="add_volunteer_email">Email</Label>
-                  <Input
-                    id="add_volunteer_email"
-                    type="email"
-                    inputMode="email"
-                    autoComplete="email"
-                    required
-                    autoFocus
-                    value={addVolunteerEmail}
-                    onChange={(e) => {
-                      setAddVolunteerEmail(e.target.value);
-                      resetAddVolunteerConfirm();
-                    }}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    They need an existing account — this doesn&apos;t create one, unlike the
-                    participant walk-up flow.
-                  </p>
-                  {addVolunteerEventStarted && (
-                    <p className="text-xs text-muted-foreground">
-                      Adding someone to a shift that has already ended records them as having
-                      served it, and sends no emails.
-                    </p>
-                  )}
-                </div>
-                {addVolunteerConfirm === "has_rsvp" && (
-                  <RevealPanel role="alert" className="text-sm text-amber-600">
-                    {addVolunteerRsvpStatus === "waitlisted"
-                      ? "This person is on the waitlist to attend this event"
-                      : addVolunteerRsvpStatus === "offered"
-                        ? "This person has an open offer to attend this event"
-                        : "This person is RSVP'd to attend this event"}
-                    . People normally attend or volunteer, not both. Add them as a volunteer
-                    anyway? Their RSVP stays as it is — remove it from the roster if they&apos;re
-                    only volunteering.
-                  </RevealPanel>
-                )}
-                {addVolunteerError && (
-                  <RevealPanel
-                    role="alert"
-                    revealKey={`${addVolunteerConfirm}:${addVolunteerError}`}
-                    className="text-sm text-red-500"
-                  >
-                    {addVolunteerError}
-                  </RevealPanel>
-                )}
-                {addVolunteerConfirm === "practical_check" && (
-                  <div className="grid gap-2">
-                    <Label htmlFor="add_volunteer_override_reason">Reason for adding them anyway</Label>
-                    <Textarea
-                      id="add_volunteer_override_reason"
-                      value={practicalOverrideReason}
-                      onChange={(e) => setPracticalOverrideReason(e.target.value)}
-                      placeholder="e.g. Assessed on the water last season before checks were recorded here"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Recorded on their shift with your name and the time.
-                    </p>
-                  </div>
-                )}
-                {addVolunteerConfirm === "registration" && (
-                  <div className="grid gap-2">
-                    <Label htmlFor="add_volunteer_registration_reason">Reason for adding them anyway</Label>
-                    <Textarea
-                      id="add_volunteer_registration_reason"
-                      value={registrationOverrideReason}
-                      onChange={(e) => setRegistrationOverrideReason(e.target.value)}
-                      placeholder="e.g. Signed a paper waiver on site; registering after the event"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Recorded on their shift with your name and the time. They still need to
-                      register before they can sign up for shifts themselves.
-                    </p>
-                  </div>
-                )}
-                {(addVolunteerConfirm === "not_approved" || addVolunteerConfirm === "capacity") && (
-                  <p className="text-sm text-amber-600">
-                    {addVolunteerConfirm === "not_approved"
-                      ? "Add them anyway?"
-                      : "Add them anyway, over capacity?"}
-                  </p>
-                )}
-              </CardContent>
-              <CardFooter className="flex justify-end gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={closeAddVolunteerForm}
-                  disabled={isAddingVolunteer}
-                >
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={isAddingVolunteer}>
-                  {isAddingVolunteer
-                    ? "Adding..."
-                    : addVolunteerConfirm
-                      ? "Add anyway"
-                      : "Add volunteer"}
-                </Button>
-              </CardFooter>
-            </form>
-          </Card>
-        </div>
-      )}
 
+      {showAddVolunteerForm && (
+        <RosterAddVolunteerDialog
+          eventId={eventId}
+          timing={timing}
+          volunteerRoles={volunteerRoles}
+          onClose={() => setShowAddVolunteerForm(false)}
+        />
+      )}
       {showWalkupForm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <Card className="max-h-[90vh] w-full max-w-sm overflow-y-auto sm:max-w-md">
-            <form onSubmit={submitWalkup}>
-              <CardHeader>
-                <CardTitle>Add walk-up</CardTitle>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-4">
-                {/* One field: a name or email to search with until someone
-                    is found (or an email is looked up), then their email.
-                    Editing it afterwards starts the search over. */}
-                <div className="grid gap-2">
-                  <Label htmlFor="walkup_email">{walkupLookup ? "Email" : "Name or email"}</Label>
-                  <Input
-                    id="walkup_email"
-                    type={walkupLookup ? "email" : "text"}
-                    autoComplete="off"
-                    autoFocus
-                    required
-                    value={walkupForm.email}
-                    onChange={(e) => changeWalkupEmail(e.target.value)}
-                  />
-                  {!walkupLookup && (
-                    <>
-                      <EventPersonResults
-                        eventId={eventId}
-                        query={walkupForm.email}
-                        onResults={setWalkupMatches}
-                        emptyText={
-                          isEmailAddress(walkupForm.email)
-                            ? "No match in your search. Press Continue to look this email up."
-                            : "No one found. Try another spelling, or type their email address."
-                        }
-                        onPick={(person) => {
-                          changeWalkupEmail(person.email);
-                          void lookUpWalkup(person.email);
-                        }}
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        We&apos;ll check whether they&apos;re already in the system first.
-                      </p>
-                    </>
-                  )}
-                </div>
-                {walkupLookup?.existing && (
-                  <div className="grid gap-1 rounded-md border bg-muted/50 p-3">
-                    <span className="font-medium">{walkupLookup.existing.name || walkupForm.email.trim()}</span>
-                    <span className="text-sm text-muted-foreground">
-                      Already in the system. We have their details on file
-                      {walkupLookup.existing.missingCore.length > 0 || walkupSectionsAsked.length > 0
-                        ? ", apart from what's asked below"
-                        : ""}
-                      .
-                    </span>
-                  </div>
-                )}
-                {(walkupAsks("first_name") || walkupAsks("last_name")) && (
-                  <div className="grid grid-cols-2 gap-4">
-                    {walkupAsks("first_name") && (
-                      <div className="grid gap-2">
-                        <Label htmlFor="walkup_first_name">First name</Label>
-                        <Input
-                          id="walkup_first_name"
-                          required
-                          autoComplete="given-name"
-                          value={walkupForm.firstName}
-                          onChange={updateWalkupField("firstName")}
-                        />
-                      </div>
-                    )}
-                    {walkupAsks("last_name") && (
-                      <div className="grid gap-2">
-                        <Label htmlFor="walkup_last_name">Last name</Label>
-                        <Input
-                          id="walkup_last_name"
-                          required
-                          autoComplete="family-name"
-                          value={walkupForm.lastName}
-                          onChange={updateWalkupField("lastName")}
-                        />
-                      </div>
-                    )}
-                  </div>
-                )}
-                {walkupAsks("phone") && (
-                  <div className="grid gap-2">
-                    <Label htmlFor="walkup_phone">Phone</Label>
-                    <Input
-                      id="walkup_phone"
-                      type="tel"
-                      inputMode="numeric"
-                      autoComplete="tel"
-                      placeholder="(303) 555-0100"
-                      maxLength={14}
-                      required
-                      value={walkupForm.phone}
-                      onChange={updateWalkupPhoneField("phone")}
-                    />
-                  </div>
-                )}
-                {/* Same shape as the RSVP form: one contact required
-                    (relationship optional), a second one optional. */}
-                {(walkupAsks("emergency_contact") || walkupAsks("emergency_phone")) && (
-                  <EmergencyContactFields
-                    title="Emergency contact"
-                    idPrefix="walkup_ec1"
-                    required
-                    relationshipOptional
-                    name={walkupForm.emergencyContactName}
-                    phone={walkupForm.emergencyContactPhone}
-                    relationship={walkupForm.emergencyContactRelationship}
-                    onName={updateWalkupField("emergencyContactName")}
-                    onPhone={updateWalkupPhoneField("emergencyContactPhone")}
-                    onRelationship={updateWalkupField("emergencyContactRelationship")}
-                  />
-                )}
-                {walkupIsNew && (
-                  <EmergencyContactFields
-                    title="Second emergency contact (optional)"
-                    idPrefix="walkup_ec2"
-                    name={walkupForm.emergencyContact2Name}
-                    phone={walkupForm.emergencyContact2Phone}
-                    relationship={walkupForm.emergencyContact2Relationship}
-                    onName={updateWalkupField("emergencyContact2Name")}
-                    onPhone={updateWalkupPhoneField("emergencyContact2Phone")}
-                    onRelationship={updateWalkupField("emergencyContact2Relationship")}
-                  />
-                )}
-                {walkupAsks("chapter") && (
-                  <HomeChapterField
-                    idPrefix="walkup"
-                    value={walkupForm.chapter}
-                    onChange={(value) => setWalkupForm((prev) => ({ ...prev, chapter: value }))}
-                    required
-                    chapters={chapters}
-                  />
-                )}
-                {walkupIsNew && (
-                  <RegistrationFieldInput
-                    field={DIRECTORY_FIELD}
-                    value={walkupForm.directoryOptIn ? "true" : "false"}
-                    onChange={(_key, value) =>
-                      setWalkupForm((prev) => ({
-                        ...prev,
-                        directoryOptIn: value === "true",
-                      }))
-                    }
-                  />
-                )}
-                {walkupSectionsAsked.map((section) => (
-                  <RegistrationSectionField
-                    key={`${section.id}-${walkupSectionsKey}`}
-                    section={section}
-                    profileFields={walkupLookup?.profileFields ?? {}}
-                    fieldValues={walkupSectionValues}
-                    onChange={(key, value) =>
-                      setWalkupSectionValues((prev) => ({ ...prev, [key]: value }))
-                    }
-                    requiredNote="Required — none on file yet."
-                  />
-                ))}
-                {walkupLookup && (
-                  <div className="grid gap-1 rounded-md border p-3">
-                    <span className="text-sm font-medium">Liability waiver</span>
-                    {walkupLookup.info.status === "unsigned" && walkupPaper.open ? (
-                      <div className="grid gap-3">
-                        <p className="text-sm font-medium">Paper waiver — this event only</p>
-                        <p className="text-sm text-muted-foreground">
-                          Only for when they couldn&apos;t sign here. It covers this event and nothing
-                          else: they&apos;ll be asked to sign in the portal at their next one.
-                        </p>
-                        <label className="flex items-start gap-2 text-sm font-medium">
-                          <input
-                            id="walkup_paper_waiver_held"
-                            type="checkbox"
-                            className="mt-1"
-                            checked={walkupPaper.held}
-                            onChange={(e) => setWalkupPaper({ open: true, held: e.target.checked })}
-                          />
-                          I hold their signed paper waiver for this event
-                        </label>
-                        <p className="text-xs text-muted-foreground">
-                          Recorded with your name and the time.
-                        </p>
-                        <button
-                          type="button"
-                          className="w-fit text-sm underline underline-offset-4"
-                          onClick={() => setWalkupPaper({ open: false, held: false })}
-                        >
-                          {walkupLookup.eventEnded ? "No paper waiver?" : "Sign here instead"}
-                        </button>
-                      </div>
-                    ) : walkupLookup.info.status === "unsigned" && walkupLookup.eventEnded ? (
-                      // After the event they usually aren't there, and a
-                      // signature typed now would count for the whole year:
-                      // no signing here (addWalkupRsvpAction refuses it too).
-                      <div className="grid gap-3">
-                        <p className="text-sm text-muted-foreground">
-                          This event has ended, so they can&apos;t sign in the portal for it now.
-                        </p>
-                        <button
-                          type="button"
-                          className="w-fit text-sm underline underline-offset-4"
-                          onClick={() => {
-                            setWalkupNoWaiver(false);
-                            setWalkupPaper({ open: true, held: false });
-                          }}
-                        >
-                          I hold their signed paper waiver
-                        </button>
-                        <label className="flex items-start gap-2 text-sm font-medium">
-                          <input
-                            id="walkup_no_waiver"
-                            type="checkbox"
-                            className="mt-1"
-                            checked={walkupNoWaiver}
-                            onChange={(e) => setWalkupNoWaiver(e.target.checked)}
-                          />
-                          No waiver on file: record their attendance anyway
-                        </label>
-                        <p className="text-xs text-muted-foreground">
-                          Flagged on the roster and in the admin digest, with your name and the time,
-                          so it can be followed up. It isn&apos;t a waiver: they still sign before
-                          their next event.
-                        </p>
-                      </div>
-                    ) : (
-                      <>
-                        <WaiverSigning
-                          info={walkupLookup.info}
-                          value={walkupSign}
-                          onChange={setWalkupSign}
-                          idPrefix="walkup"
-                        />
-                        {/* Deliberately a quiet link, not a button beside the
-                            signing fields: signing here stays the obvious path. */}
-                        {walkupLookup.info.status === "unsigned" && (
-                          <button
-                            type="button"
-                            className="mt-2 w-fit text-xs text-muted-foreground underline underline-offset-4"
-                            onClick={() => setWalkupPaper({ open: true, held: false })}
-                          >
-                            They signed a paper waiver instead
-                          </button>
-                        )}
-                      </>
-                    )}
-                  </div>
-                )}
-                {volunteerConflictShifts && (
-                  <RevealPanel role="alert" className="text-sm text-amber-600">
-                    {walkupFirstName || "This person"} is signed up to volunteer at this event (
-                    {volunteerConflictShifts.join("; ")}). People normally attend or volunteer, not
-                    both. Add them as a participant anyway? Their volunteer{" "}
-                    {volunteerConflictShifts.length === 1 ? "shift stays" : "shifts stay"} as{" "}
-                    {volunteerConflictShifts.length === 1 ? "it is" : "they are"}.
-                  </RevealPanel>
-                )}
-                {capacityConfirmPending && (
-                  <RevealPanel role="alert" className="text-sm text-amber-600">
-                    This event is at capacity. Add {walkupFirstName || "them"} anyway?
-                  </RevealPanel>
-                )}
-                {walkupError && (
-                  <RevealPanel role="alert" revealKey={walkupError} className="text-sm text-red-500">
-                    {walkupError}
-                  </RevealPanel>
-                )}
-              </CardContent>
-              <CardFooter className="flex justify-end gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={closeWalkupForm}
-                  disabled={isSubmittingWalkup}
-                >
-                  Cancel
-                </Button>
-                <Button type="submit" disabled={isSubmittingWalkup}>
-                  {isSubmittingWalkup
-                    ? "Adding..."
-                    : !walkupLookup
-                      ? "Continue"
-                      : capacityConfirmPending || volunteerConflictShifts
-                        ? "Add anyway"
-                        : "Add walk-up"}
-                </Button>
-              </CardFooter>
-            </form>
-          </Card>
-        </div>
+        <RosterWalkupDialog
+          eventId={eventId}
+          registrationSectionIds={registrationSectionIds}
+          chapters={chapters}
+          onClose={() => setShowWalkupForm(false)}
+        />
       )}
     </div>
   );

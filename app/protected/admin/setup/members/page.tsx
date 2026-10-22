@@ -69,7 +69,7 @@ export default function MemberSettingsPage() {
   return (
     <div className="flex-1 w-full flex flex-col gap-6 max-w-2xl">
       <div>
-        <h1 className="font-bold text-2xl mb-1">Members</h1>
+        <h1 className="font-bold text-2xl mb-1">Members settings</h1>
         <p className="text-sm text-muted-foreground">
           How Members works out engagement bands and who needs outreach. Someone new needs one welcome, and someone
           who came once gets one nudge to come back if they haven&apos;t returned in 8 weeks. A regular who stops coming needs outreach sooner than their band

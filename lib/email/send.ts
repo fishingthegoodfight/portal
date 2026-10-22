@@ -1051,7 +1051,7 @@ function unsubscribeHeaders(oneClickUrl: string): Record<string, string> {
 
 /** Links carried by both opportunities emails. `token` is the person's
  * email_preference_tokens row. */
-export function opportunitiesEmailLinks(token: string) {
+function opportunitiesEmailLinks(token: string) {
   const site = getSiteUrl();
   return {
     unsubscribeUrl: `${site}/unsubscribe/${token}`,

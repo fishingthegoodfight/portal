@@ -337,6 +337,21 @@ function FillFigure({ label, fill, low }: { label: string; fill: Fill; low: bool
   );
 }
 
+/** "New event", for anyone with a chapter they can create events in
+ * (manageable_chapters). The rest of the admin area is the menu bar
+ * (app/protected/admin/layout.tsx). */
+async function NewEventButton() {
+  const supabase = await createClient();
+  const chapters = await loadChapters(supabase);
+  const creatableChapters = await loadManageableChapters(supabase, eventChapterNames(chapters));
+  if (creatableChapters.length === 0) return null;
+  return (
+    <Button asChild>
+      <Link href="/protected/admin/events/new">New event</Link>
+    </Button>
+  );
+}
+
 /**
  * The header's "Admin" link lands here. Deliberately covers every event —
  * cancelled and past included, not just the published/scheduled/upcoming
@@ -346,52 +361,6 @@ function FillFigure({ label, fill, low }: { label: string; fill: Fill; low: bool
  * see only the events they manage. The chapter filter defaults to All for
  * an admin and to a chapter lead's own chapters.
  */
-/** The header buttons, limited to what this person can reach:
- * certifications, waivers, marketing and setup are admin-only; "New event" needs a chapter
- * they can create events in (manageable_chapters). */
-async function AdminIndexActions() {
-  const supabase = await createClient();
-  const [access, creatableChapters] = await Promise.all([
-    loadEventAdminAccess(supabase),
-    loadChapters(supabase).then((chapters) => loadManageableChapters(supabase, eventChapterNames(chapters))),
-  ]);
-  return (
-    <div className="flex flex-wrap gap-2">
-      {(access?.isAdmin || access?.role === "chapter_lead") && (
-        <Button asChild variant="outline">
-          <Link href="/protected/admin/applications">Applications</Link>
-        </Button>
-      )}
-      {(access?.isAdmin || access?.role === "chapter_lead") && (
-        <Button asChild variant="outline">
-          <Link href="/bulletin">Weekly bulletin</Link>
-        </Button>
-      )}
-      {access?.isAdmin && (
-        <>
-          <Button asChild variant="outline">
-            <Link href="/protected/admin/certifications">Certifications</Link>
-          </Button>
-          <Button asChild variant="outline">
-            <Link href="/protected/admin/waivers">Waivers</Link>
-          </Button>
-          <Button asChild variant="outline">
-            <Link href="/protected/admin/marketing">Marketing</Link>
-          </Button>
-          <Button asChild variant="outline">
-            <Link href="/protected/admin/setup">Setup</Link>
-          </Button>
-        </>
-      )}
-      {creatableChapters.length > 0 && (
-        <Button asChild>
-          <Link href="/protected/admin/events/new">New event</Link>
-        </Button>
-      )}
-    </div>
-  );
-}
-
 export default function AdminEventsIndexPage({
   searchParams,
 }: {
@@ -410,7 +379,7 @@ export default function AdminEventsIndexPage({
           </p>
         </div>
         <Suspense fallback={null}>
-          <AdminIndexActions />
+          <NewEventButton />
         </Suspense>
       </div>
       <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>

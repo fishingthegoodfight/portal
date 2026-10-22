@@ -6,7 +6,7 @@ import { EVENT_LEVEL_OPTIONAL_SECTIONS } from "@/lib/registration-sections";
 // Always-required sections (e.g. emergency contact) apply to every event
 // regardless, and profile-only ones (participant directory) are standing
 // preferences — only optional event-level ones are a per-event choice.
-export const OPTIONAL_REGISTRATION_SECTIONS = EVENT_LEVEL_OPTIONAL_SECTIONS;
+const OPTIONAL_REGISTRATION_SECTIONS = EVENT_LEVEL_OPTIONAL_SECTIONS;
 
 /**
  * The optional-registration-sections checkbox list, shared by the admin

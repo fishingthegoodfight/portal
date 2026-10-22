@@ -35,11 +35,11 @@ export type Chapter = {
   active: boolean;
 };
 
-export const REGION_COLUMNS = "id, name, sort_order, active";
-export const CHAPTER_COLUMNS = "id, name, display_name, region_id, state, timezone, sort_order, active";
+const REGION_COLUMNS = "id, name, sort_order, active";
+const CHAPTER_COLUMNS = "id, name, display_name, region_id, state, timezone, sort_order, active";
 
 /** Chapters in display order: by region's order, then the chapter's own. */
-export function sortChapters(chapters: Chapter[], regions: Region[]): Chapter[] {
+function sortChapters(chapters: Chapter[], regions: Region[]): Chapter[] {
   const regionOrder = new Map(regions.map((r) => [r.id, r.sort_order]));
   return [...chapters].sort(
     (a, b) =>
@@ -184,7 +184,7 @@ export type ChapterFilterOption = {
 
 /** A chapter's filter slug. The chapters table has a unique index on the
  * same expression, so no two chapters share one. */
-export function chapterSlug(name: string): string {
+function chapterSlug(name: string): string {
   return name.toLowerCase().replace(/\s+/g, "-");
 }
 

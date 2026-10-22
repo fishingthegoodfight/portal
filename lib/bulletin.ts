@@ -26,7 +26,7 @@ import { getSiteUrl } from "@/lib/site-url";
  */
 
 /** How far ahead the events section looks. */
-export const BULLETIN_DAYS = 14;
+const BULLETIN_DAYS = 14;
 /** How far ahead the public volunteer page lists events needing help. */
 export const VOLUNTEER_PAGE_DAYS = 42;
 
@@ -89,7 +89,7 @@ const OTHER = "Other";
 /** Retreats open for enrollment, soonest first. None until retreats are
  * built into the portal: return them here then, and they show on the
  * bulletin and in the Monday email with no other change. */
-export async function loadOpenRetreats(): Promise<BulletinRetreat[]> {
+async function loadOpenRetreats(): Promise<BulletinRetreat[]> {
   return [];
 }
 

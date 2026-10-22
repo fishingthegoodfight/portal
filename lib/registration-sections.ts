@@ -101,15 +101,15 @@ export type RegistrationSection = {
   summary: (profileFields: Record<string, string>) => string;
 };
 
-export const FLY_FISHING_EXPERIENCE = ["None", "Beginner", "Intermediate", "Advanced"] as const;
-export const WADER_SIZES = ["S", "M", "L", "XL", "XXL"] as const;
+const FLY_FISHING_EXPERIENCE = ["None", "Beginner", "Intermediate", "Advanced"] as const;
+const WADER_SIZES = ["S", "M", "L", "XL", "XXL"] as const;
 /** profiles.casting_hand: stored value → what's shown. */
-export const CASTING_HANDS = [
+const CASTING_HANDS = [
   { value: "right", label: "Right-handed" },
   { value: "left", label: "Left-handed" },
 ] as const;
 /** US men's 6 through 15, including half sizes. */
-export const BOOT_SIZES: string[] = Array.from({ length: 19 }, (_, i) =>
+const BOOT_SIZES: string[] = Array.from({ length: 19 }, (_, i) =>
   String(6 + i * 0.5),
 );
 

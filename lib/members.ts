@@ -33,7 +33,7 @@ export type MemberSettings = {
   regularCheckins: number;
 };
 
-export const DEFAULT_MEMBER_SETTINGS: MemberSettings = {
+const DEFAULT_MEMBER_SETTINGS: MemberSettings = {
   newDays: 14,
   activeDays: 60,
   droppedDays: 120,
@@ -71,7 +71,7 @@ export function memberSettingsFrom(row: Record<string, unknown> | null | undefin
 
 /** Someone who came once gets their "come back" nudge this long after the
  * visit (8 weeks). */
-export const ONE_VISIT_NUDGE_DAYS = 56;
+const ONE_VISIT_NUDGE_DAYS = 56;
 
 export const MEMBER_BANDS = ["new", "active", "quiet", "dropped", "one_visit", "none"] as const;
 export type MemberBand = (typeof MEMBER_BANDS)[number];
@@ -133,7 +133,7 @@ export type Member = MemberStats & {
 
 const later = (a: string | null, b: string | null) => (!a ? b : !b ? a : a > b ? a : b);
 
-export function memberBand(stats: MemberStats, settings: MemberSettings, today: string): MemberBand {
+function memberBand(stats: MemberStats, settings: MemberSettings, today: string): MemberBand {
   if (!stats.first_seen || !stats.last_seen || stats.total_checkins === 0) return "none";
   if (daysBetween(stats.first_seen, today) <= settings.newDays) return "new";
   if (stats.total_checkins === 1) return "one_visit";
@@ -225,7 +225,7 @@ export type MemberView = keyof typeof MEMBER_VIEWS;
  * The sections of "Needs outreach", in order, with what each is for. Only
  * these bands ever need outreach (none has no schedule).
  */
-export const OUTREACH_SECTIONS: { band: MemberBand; title: string; hint: string }[] = [
+const OUTREACH_SECTIONS: { band: MemberBand; title: string; hint: string }[] = [
   { band: "new", title: "New", hint: "Just started coming. A welcome makes them more likely to come back." },
   { band: "one_visit", title: "One visit", hint: "Came once and hasn't been back in 8 weeks. A nudge to come again." },
   { band: "quiet", title: "Quiet", hint: "Haven't been in a while. A check-in now, before they drift off." },
@@ -235,7 +235,7 @@ export const OUTREACH_SECTIONS: { band: MemberBand; title: string; hint: string 
 
 /** Since when they've needed outreach (the earlier of the due date and an
  * open drop alert), for most-overdue-first; null when they don't. */
-export function outreachDueSince(m: Member): string | null {
+function outreachDueSince(m: Member): string | null {
   if (!m.needsOutreach) return null;
   // Whichever is set and earlier: a future due date is always later than an
   // open (so past) drop alert.

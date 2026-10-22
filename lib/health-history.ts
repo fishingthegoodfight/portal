@@ -69,7 +69,7 @@ export const HEALTH_CONDITION_GROUPS: HealthConditionGroup[] = [
   },
 ];
 
-export const ALL_CONDITIONS: HealthCondition[] = HEALTH_CONDITION_GROUPS.flatMap((g) => g.conditions);
+const ALL_CONDITIONS: HealthCondition[] = HEALTH_CONDITION_GROUPS.flatMap((g) => g.conditions);
 const CONDITION_KEYS = new Set(ALL_CONDITIONS.map((c) => c.key));
 const CARDIOVASCULAR_KEYS = new Set(HEALTH_CONDITION_GROUPS[0].conditions.map((c) => c.key));
 

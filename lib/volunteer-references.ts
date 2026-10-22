@@ -26,17 +26,17 @@ export function referenceSlotLabel(slot: number): string {
 // flagged as needing a replacement. Days are Denver calendar dates. A manual
 // "Send a reminder now" doesn't count toward the three or move the schedule.
 
-export const REFERENCE_REMINDER_INTERVAL_DAYS = 7;
+const REFERENCE_REMINDER_INTERVAL_DAYS = 7;
 export const REFERENCE_MAX_REMINDERS = 3;
 /** Day number (from the request) a reference is flagged as gone quiet. */
-export const REFERENCE_GIVE_UP_DAY = REFERENCE_REMINDER_INTERVAL_DAYS * (REFERENCE_MAX_REMINDERS + 1);
+const REFERENCE_GIVE_UP_DAY = REFERENCE_REMINDER_INTERVAL_DAYS * (REFERENCE_MAX_REMINDERS + 1);
 /** How long we ask a reference to take, for the email's "by" date. */
-export const REFERENCE_RESPONSE_DAYS = 7;
+const REFERENCE_RESPONSE_DAYS = 7;
 
-export const REFERENCE_ZONE = "America/Denver";
+const REFERENCE_ZONE = "America/Denver";
 
 /** An instant's calendar date in Denver, as a day count (UTC days since the epoch). */
-export function denverDayNumber(instant: Date): number {
+function denverDayNumber(instant: Date): number {
   const [y, m, d] = new Intl.DateTimeFormat("en-CA", {
     year: "numeric",
     month: "2-digit",

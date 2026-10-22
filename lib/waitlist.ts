@@ -40,7 +40,7 @@ async function loadEmailEvent(admin: AdminClient, eventId: number): Promise<Emai
 export type WaitlistProfile = { email: string; label: string };
 
 /** userId -> email and a "First Last" label (email if unnamed). */
-export async function loadProfilesById(
+async function loadProfilesById(
   admin: AdminClient,
   userIds: string[],
 ): Promise<Map<string, WaitlistProfile>> {

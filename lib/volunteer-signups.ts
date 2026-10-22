@@ -42,15 +42,6 @@ export async function volunteerStanding(
   return { approved: data?.status === "approved", registered: data?.registered_at != null };
 }
 
-/** volunteers.status === 'approved' — the base gate for every eligibility
- * check below. */
-export async function isApprovedVolunteer(
-  supabase: SupabaseClient,
-  userId: string,
-): Promise<boolean> {
-  return (await volunteerStanding(supabase, userId)).approved;
-}
-
 /** role_type_ids this volunteer has an active (unrevoked) approval for. */
 export async function approvedRoleTypeIds(
   supabase: SupabaseClient,
@@ -67,9 +58,9 @@ export async function approvedRoleTypeIds(
 /** Whether an approved volunteer may sign up for this specific opportunity:
  * a role with no role_type_id (the wizard's "Custom / other") is open to any
  * approved volunteer; otherwise they need an active approval for that
- * role_type_id specifically. Does NOT check volunteers.status itself — call
- * isApprovedVolunteer first. */
-export function isRoleEligible(
+ * role_type_id specifically. Does NOT check volunteers.status itself — check
+ * volunteerStanding first. */
+function isRoleEligible(
   opportunity: Pick<VolunteerOpportunity, "role_type_id">,
   approvedRoleTypes: Set<number>,
 ): boolean {
@@ -86,7 +77,7 @@ export function eligibleOpportunities(
   return opportunities.filter((o) => isRoleEligible(o, approvedRoleTypes));
 }
 
-export const NOT_REGISTERED_MESSAGE =
+const NOT_REGISTERED_MESSAGE =
   "Complete your volunteer registration before signing up for a shift — it's where this year's volunteer waiver is signed.";
 
 export type SignupEligibility =

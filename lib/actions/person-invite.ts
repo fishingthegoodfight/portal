@@ -5,22 +5,15 @@ import { profileEmailPattern } from "@/lib/profile-email";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { assignLeadEventsToNewAccount } from "@/lib/admin/lead-account";
 import { requireAdmin } from "@/lib/admin/require-admin";
-import { getSiteUrl } from "@/lib/site-url";
-import { codePagePath } from "@/lib/code-page";
+import { setupLinkUrl } from "@/lib/code-page";
 import { sendPersonInviteEmail } from "@/lib/email/send";
 import { setDataAccessAction, setUserRoleAction } from "@/lib/actions/roles";
 import type { Role } from "@/lib/roles";
 import { isChapterName, loadChapters, VIRTUAL_CHAPTER } from "@/lib/chapters";
 
-// Set a password, then their profile — the volunteer invite's account setup
-// without the registration form. The /auth/update-password prefix is also
-// what app/auth/error recognizes as an expired/used invite.
+// Set a password, then their profile: the volunteer invite's account setup
+// without the registration form.
 const PROFILE_PATH = "/protected/profile";
-/** The code page, email filled in, then their profile. No credential in it
- * (lib/one-time-links.ts). */
-function setupUrl(email: string): string {
-  return `${getSiteUrl()}${codePagePath({ mode: "setup", email, next: PROFILE_PATH })}`;
-}
 
 const ROLES: Role[] = ["participant", "chapter_lead", "admin"];
 
@@ -114,7 +107,7 @@ export async function invitePersonAction(input: InvitePersonInput): Promise<Invi
       return { ok: false, error: linkError?.message ?? "Failed to create the account" };
     }
     userId = link.user.id;
-    actionUrl = setupUrl(email);
+    actionUrl = setupLinkUrl(email, PROFILE_PATH);
     await assignLeadEventsToNewAccount(adminClient, userId);
 
     // handle_new_user() only copies id/email/directory_opt_in — the name is
@@ -136,7 +129,7 @@ export async function invitePersonAction(input: InvitePersonInput): Promise<Invi
         error: `${email} already has an account. Find them under Everyone and change their role or access on their page.`,
       };
     }
-    actionUrl = setupUrl(email);
+    actionUrl = setupLinkUrl(email, PROFILE_PATH);
   }
 
   // Only what differs from what's on file — a resend never re-saves a role

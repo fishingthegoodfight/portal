@@ -139,7 +139,7 @@ function foldIcsLine(line: string): string {
   return result + rest;
 }
 
-export function icsUidForEvent(eventId: number): string {
+function icsUidForEvent(eventId: number): string {
   return `event-${eventId}@fishingthegoodfight.org`;
 }
 

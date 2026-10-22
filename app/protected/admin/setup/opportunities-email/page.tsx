@@ -31,7 +31,7 @@ export default function OpportunitiesEmailSettingsPage() {
   return (
     <div className="flex-1 w-full flex flex-col gap-6 max-w-2xl">
       <div>
-        <h1 className="font-bold text-2xl mb-1">Volunteer opportunities email</h1>
+        <h1 className="font-bold text-2xl mb-1">Opportunities email</h1>
         <p className="text-sm text-muted-foreground">
           Every two weeks, each approved, registered volunteer gets the open roles they&apos;re approved
           for at events in their region over the next six weeks — every region if they have no local

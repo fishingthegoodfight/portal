@@ -78,7 +78,7 @@ export const CLOSE_PROMPTS = [
 export const CLOSE_SCRIPT =
   "Really appreciate you taking the time. We'll follow up soon with next steps. Either way, thanks for being willing to be part of this.";
 
-export const SECTIONS: RatedSection[] = [
+const SECTIONS: RatedSection[] = [
   {
     key: "why_here",
     title: "Section 1 — Why you're here",

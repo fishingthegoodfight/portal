@@ -9,7 +9,7 @@
 
 export type RecurrenceFrequency = "weekly" | "biweekly" | "monthly";
 
-export const MAX_RECURRENCE_OCCURRENCES = 52;
+const MAX_RECURRENCE_OCCURRENCES = 52;
 
 function parseDate(dateStr: string): Date {
   const [y, m, d] = dateStr.split("-").map(Number);

@@ -29,7 +29,7 @@ function credentials() {
 }
 
 /** Where Twilio reports each text's delivery (set on every send). */
-export function twilioStatusCallbackUrl(): string {
+function twilioStatusCallbackUrl(): string {
   return `${getSiteUrl()}/api/twilio/status`;
 }
 
@@ -132,7 +132,7 @@ export async function sendSms({
  * auth token, of the full URL Twilio called followed by every POST
  * parameter's name and value in name order, base64.
  */
-export function isValidTwilioSignature(url: string, params: Record<string, string>, signature: string): boolean {
+function isValidTwilioSignature(url: string, params: Record<string, string>, signature: string): boolean {
   const authToken = process.env.TWILIO_AUTH_TOKEN;
   if (!authToken || !signature) return false;
   const data = url + Object.keys(params).sort().map((key) => key + params[key]).join("");
