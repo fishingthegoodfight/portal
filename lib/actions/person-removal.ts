@@ -7,7 +7,7 @@ import { emailWaitlistOffers, type OfferedSpot } from "@/lib/waitlist";
 import type { PersonRemovalCounts, PersonRemovalPreview } from "@/lib/person-removal";
 
 /**
- * People & roles → "Remove person…" (admins only). Each database function
+ * "Remove person…" on Team & access or a person's page (admins only). Each database function
  * re-checks the caller is an admin, refuses the caller themselves and the
  * last admin, and does all its work in one transaction; see the 2026-09-29
  * "Removing a person" entry in schema-changes.sql. Every action is recorded

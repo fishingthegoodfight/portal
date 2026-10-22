@@ -50,7 +50,7 @@ export function denverDayNumber(instant: Date): number {
 }
 
 /** Whole Denver days from `from` to `to`. */
-export function daysBetween(from: Date, to: Date): number {
+export function denverDaysBetween(from: Date, to: Date): number {
   return denverDayNumber(to) - denverDayNumber(from);
 }
 
@@ -67,8 +67,8 @@ export function reminderStepDue(
   gaveUp: boolean,
   now: Date,
 ): { kind: "remind"; number: number } | { kind: "give_up" } | null {
-  const days = daysBetween(requestedAt, now);
-  const weekSinceLast = !lastReminderAt || daysBetween(lastReminderAt, now) >= REFERENCE_REMINDER_INTERVAL_DAYS;
+  const days = denverDaysBetween(requestedAt, now);
+  const weekSinceLast = !lastReminderAt || denverDaysBetween(lastReminderAt, now) >= REFERENCE_REMINDER_INTERVAL_DAYS;
   if (remindersSent < REFERENCE_MAX_REMINDERS) {
     const next = remindersSent + 1;
     return days >= next * REFERENCE_REMINDER_INTERVAL_DAYS && weekSinceLast ? { kind: "remind", number: next } : null;

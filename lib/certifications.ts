@@ -1,4 +1,4 @@
-import { todayInZone } from "@/lib/format-date";
+import { addDays, todayInZone } from "@/lib/format-date";
 
 /**
  * Volunteer certifications (volunteer_certifications, files in the private
@@ -26,11 +26,6 @@ export type CertState = "current" | "expiring" | "expired";
 /** Today in CERT_ZONE, "YYYY-MM-DD". */
 export function certToday(): string {
   return todayInZone(CERT_ZONE);
-}
-
-function addDays(isoDate: string, days: number): string {
-  const [y, m, d] = isoDate.split("-").map(Number);
-  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
 }
 
 /** A cert is good through its expiry date; no expiry date never expires. */

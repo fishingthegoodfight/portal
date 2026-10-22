@@ -68,7 +68,7 @@ export type RosterPerson = {
    * (event_no_waiver_records) — flagged for follow-up. Not a waiver. Null
    * when there's none. */
   noWaiverRecord: { recordedBy: string; recordedLabel: string } | null;
-  /** Brought in by the attendance import (rsvps.imported_at): historical,
+  /** Brought in by the (since removed) attendance import (rsvps.imported_at): historical,
    * with no waiver implied. */
   imported: boolean;
   /** Every registration field's value from their profile, keyed by column —
@@ -124,7 +124,7 @@ export type VolunteerRosterPerson = {
    * for "after the event". */
   shiftStart: string;
   shiftEnd: string;
-  /** A shift brought in by the attendance import (historical). */
+  /** A shift brought in by the (since removed) attendance import (historical). */
   imported: boolean;
   firstName: string;
   lastName: string;

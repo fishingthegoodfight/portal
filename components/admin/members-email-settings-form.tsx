@@ -94,7 +94,7 @@ export function MembersEmailSettingsForm({
           </div>
         ))}
         <p className="text-xs text-muted-foreground">
-          The people who can open that chapter on Members: its chapter leads (People &amp; roles), and anyone on its
+          The people who can open that chapter on Members: its chapter leads (Members → Team &amp; access), and anyone on its
           leadership team. Someone picked who later stops leading the chapter isn&apos;t sent it, and the admins&apos;
           summary says so.
         </p>

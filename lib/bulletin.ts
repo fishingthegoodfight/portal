@@ -4,8 +4,8 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { isVirtualChapter, loadRegionsAndChapters } from "@/lib/chapters";
 import { spotsLeft } from "@/lib/event-capacity";
 import { publicEventPath } from "@/lib/event-slug";
-import { formatEventDateRange } from "@/lib/format-date";
-import { dateInZone, SCHEDULE_ZONE } from "@/lib/opportunities-schedule";
+import { dateInZone, formatEventDateRange } from "@/lib/format-date";
+import { SCHEDULE_ZONE } from "@/lib/opportunities-schedule";
 import { loadUpcomingPublicEvents, publicLocationSummary, type PublicEvent } from "@/lib/public-events";
 import { getSiteUrl } from "@/lib/site-url";
 

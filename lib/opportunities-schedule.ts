@@ -22,11 +22,6 @@ export type OpportunitiesSchedule = {
 const dayNumber = (date: string) => Date.parse(`${date}T00:00:00Z`) / 86_400_000;
 const fromDayNumber = (n: number) => new Date(n * 86_400_000).toISOString().slice(0, 10);
 
-/** An instant's calendar date in a timezone, YYYY-MM-DD. */
-export function dateInZone(instant: Date, timeZone: string): string {
-  return new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone }).format(instant);
-}
-
 /** The schedule's weekday in the (Sunday-to-Saturday) week containing the
  * anchor date — one send day; every 14 days either side is another. */
 function firstSendDay(schedule: Pick<OpportunitiesSchedule, "anchor" | "weekday">): number {
@@ -63,9 +58,4 @@ export const CATCH_UP_DAYS = 6;
 export function currentCycleStart(schedule: Pick<OpportunitiesSchedule, "anchor" | "weekday">, today: string): string {
   const diff = dayNumber(today) - firstSendDay(schedule);
   return fromDayNumber(dayNumber(today) - (((diff % 14) + 14) % 14));
-}
-
-/** Days from `from` to `to` (YYYY-MM-DD each). */
-export function daysBetween(from: string, to: string): number {
-  return dayNumber(to) - dayNumber(from);
 }

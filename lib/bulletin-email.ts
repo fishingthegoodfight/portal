@@ -1,7 +1,8 @@
 import { isVirtualChapter } from "@/lib/chapters";
 import { loadBulletin, needsLabel } from "@/lib/bulletin";
 import { sendAdminBulletinEmail } from "@/lib/email/send";
-import { dateInZone, SCHEDULE_ZONE } from "@/lib/opportunities-schedule";
+import { dateInZone } from "@/lib/format-date";
+import { SCHEDULE_ZONE } from "@/lib/opportunities-schedule";
 import { getSiteUrl } from "@/lib/site-url";
 
 /** Monday, in getUTCDay terms. */

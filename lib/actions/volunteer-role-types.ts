@@ -1,6 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { keyFromLabel } from "@/lib/utils";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { countLabel, type DeleteResult, type UsageResult } from "@/lib/admin/usage";
 
@@ -16,16 +17,6 @@ export type RoleTypeInput = {
 };
 
 /** kebab_case-ish key from the name, e.g. "Men's Night Lead" -> "mens_night_lead". */
-function slugify(name: string): string {
-  return (
-    name
-      .toLowerCase()
-      .replace(/'/g, "")
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_+|_+$/g, "") || "role"
-  );
-}
-
 function validate(input: RoleTypeInput): string | null {
   if (!input.name.trim()) return "Name is required";
   if (!input.forRetreats && !input.forChapterEvents) {
@@ -50,7 +41,7 @@ export async function createRoleTypeAction(input: RoleTypeInput): Promise<Action
     .maybeSingle();
   const nextSortOrder = ((maxRow?.sort_order as number | undefined) ?? 0) + 10;
 
-  const baseKey = slugify(input.name);
+  const baseKey = keyFromLabel(input.name, "role");
   let key = baseKey;
   for (let attempt = 0; attempt < 5; attempt++) {
     const { error } = await supabase.from("volunteer_role_types").insert({

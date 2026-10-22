@@ -18,6 +18,8 @@
  * (member_touches): a logged call, text, email or conversation.
  */
 
+import { addDays, daysBetween } from "@/lib/format-date";
+
 export type MemberSettings = {
   newDays: number;
   activeDays: number;
@@ -129,19 +131,6 @@ export type Member = MemberStats & {
   outreachStopped: boolean;
 };
 
-export function addDays(date: string, days: number): string {
-  const [y, m, d] = date.split("-").map(Number);
-  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
-}
-
-export function daysBetween(from: string, to: string): number {
-  const ms = (s: string) => {
-    const [y, m, d] = s.split("-").map(Number);
-    return Date.UTC(y, m - 1, d);
-  };
-  return Math.round((ms(to) - ms(from)) / 86_400_000);
-}
-
 const later = (a: string | null, b: string | null) => (!a ? b : !b ? a : a > b ? a : b);
 
 export function memberBand(stats: MemberStats, settings: MemberSettings, today: string): MemberBand {
@@ -228,7 +217,8 @@ export function agoLabel(date: string, today: string): string {
 }
 
 /** The two views of Members (?view=). */
-export const MEMBER_VIEWS = { outreach: "Needs outreach", everyone: "Everyone" } as const;
+/** Members' tabs. "team" (Team & access) is admins only. */
+export const MEMBER_VIEWS = { outreach: "Needs outreach", everyone: "Everyone", team: "Team & access" } as const;
 export type MemberView = keyof typeof MEMBER_VIEWS;
 
 /**

@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
@@ -8,6 +9,22 @@ export default function Home() {
     <main className="min-h-screen flex flex-col items-center">
       <div className="flex-1 w-full flex flex-col gap-20 items-center">
         <div className="flex-1 flex flex-col items-center justify-center gap-6 max-w-xl p-5 text-center">
+          <Image
+            src="/brand/FTGF_Logo_2Color.png"
+            alt=""
+            width={1547}
+            height={826}
+            priority
+            className="w-64 h-auto dark:hidden"
+          />
+          <Image
+            src="/brand/FTGF_Logo_2Color_Reversed.png"
+            alt=""
+            width={1547}
+            height={827}
+            priority
+            className="hidden w-64 h-auto dark:block"
+          />
           <h1 className="text-3xl lg:text-4xl font-bold !leading-tight">
             Fishing the Good Fight participant portal
           </h1>
@@ -25,18 +42,7 @@ export default function Home() {
           </div>
         </div>
 
-        <footer className="w-full flex items-center justify-center border-t mx-auto text-center text-xs gap-8 py-16">
-          <p>
-            Powered by{" "}
-            <a
-              href="https://supabase.com/?utm_source=create-next-app&utm_medium=template&utm_term=nextjs"
-              target="_blank"
-              className="font-bold hover:underline"
-              rel="noreferrer"
-            >
-              Supabase
-            </a>
-          </p>
+        <footer className="w-full flex items-center justify-center border-t mx-auto text-center text-xs gap-8 py-6">
           <ThemeSwitcher />
         </footer>
       </div>

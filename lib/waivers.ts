@@ -48,10 +48,6 @@ export function waiverStatesForChapters(chapters: Chapter[]): WaiverState[] {
 export const WAIVER_AUDIENCES = { participant: "Participant", volunteer: "Volunteer" } as const;
 export type WaiverAudience = keyof typeof WAIVER_AUDIENCES;
 
-export function isWaiverAudience(value: unknown): value is WaiverAudience {
-  return value === "participant" || value === "volunteer";
-}
-
 /** The waiver state a chapter maps to (its own state), or null for an
  * unknown chapter.
  *

@@ -1,5 +1,5 @@
 /**
- * Removing a person (People & roles → "Remove person…"). The rules live in
+ * Removing a person ("Remove person…" on Members → Team & access or their page). The rules live in
  * the database — admin_remove_person_access, admin_restore_person_access and
  * admin_delete_person (the 2026-09-29 "Removing a person" entry in
  * schema-changes.sql); this file only turns their counts into words.

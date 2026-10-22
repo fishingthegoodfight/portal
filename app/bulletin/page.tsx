@@ -16,6 +16,7 @@ import {
   type BulletinRetreat,
 } from "@/lib/bulletin";
 import { cn } from "@/lib/utils";
+import { CONTACT_EMAIL } from "@/lib/contact";
 
 export const metadata: Metadata = {
   title: "Weekly bulletin · Fishing the Good Fight",
@@ -25,7 +26,6 @@ export const metadata: Metadata = {
 
 /** A printed page is always light, whatever the screen theme: every color
  * here is a fixed one, never a theme token. */
-const CONTACT_EMAIL = "tcramer@fishingthegoodfight.org";
 
 const shortUrl = (url: string) => url.replace(/^https?:\/\//, "");
 

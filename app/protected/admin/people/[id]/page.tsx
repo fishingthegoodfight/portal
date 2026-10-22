@@ -21,16 +21,13 @@ import {
   REGISTRATION_SECTIONS,
 } from "@/lib/registration-sections";
 import { ROLE_LABELS, type Role } from "@/lib/roles";
-import { certIsCurrent, VOLUNTEER_STATUS_LABELS, type VolunteerStatus } from "@/lib/volunteers";
 import { ChapterTag } from "@/components/chapter-tag";
 import { CollapsibleCard } from "@/components/collapsible-card";
 import { LastOutreach, MemberBandBadge } from "@/components/members-view";
 import { ContactDetailsForm, ProfileSectionForm } from "@/components/admin/person-details-forms";
 import { PersonOutreach, type OutreachEntry } from "@/components/admin/person-outreach";
 import { PersonRoles } from "@/components/admin/person-roles";
-import { VolunteerRoleApprovals, type RoleTypeForApproval } from "@/components/admin/volunteer-role-approvals";
-import { VolunteerStatusSelect } from "@/components/admin/volunteer-status-select";
-import { VolunteerNotes } from "@/components/admin/volunteer-notes";
+import { VolunteerSection } from "./volunteer-section";
 import { Badge } from "@/components/ui/badge";
 
 type EventRef = { id: number; name: string; starts_at: string; timezone: string; chapter: string | null; status: string | null };
@@ -84,16 +81,14 @@ async function PersonLoader({ userId }: { userId: string }) {
   const adminCheck = await requireAdmin(supabase);
   if ("error" in adminCheck) notFound();
 
-  const [{ data: profile }, { data: volunteer }, chapters, { data: settingsRow }] = await Promise.all([
+  const [{ data: profile }, chapters, { data: settingsRow }] = await Promise.all([
     supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
-    supabase.from("volunteers").select("status").eq("user_id", userId).maybeSingle(),
     loadChapters(supabase),
     supabase.from("app_settings").select("*").maybeSingle(),
   ]);
   if (!profile) notFound();
 
   const chapter = (profile.chapter as string | null)?.trim() || null;
-  const isVolunteer = volunteer != null;
 
   const [
     membersResult,
@@ -102,10 +97,6 @@ async function PersonLoader({ userId }: { userId: string }) {
     { data: signups },
     { data: signatures },
     { data: healthYears },
-    { data: roleTypes },
-    { data: approvals },
-    { data: certs },
-    { data: notes },
   ] = await Promise.all([
     // The same numbers as Members: their chapter's list, or everyone's for
     // someone with no chapter, picked down to them.
@@ -133,18 +124,6 @@ async function PersonLoader({ userId }: { userId: string }) {
       .order("signed_at", { ascending: false }),
     // The latest year they have a health form on file for, not its content.
     supabase.rpc("health_history_latest_years", { p_user_ids: [userId] }),
-    isVolunteer
-      ? supabase.from("volunteer_role_types").select("id, name, requires_cert").order("sort_order", { ascending: true })
-      : Promise.resolve({ data: null }),
-    isVolunteer
-      ? supabase.from("volunteer_role_approvals").select("id, role_type_id").eq("volunteer_id", userId).is("revoked_at", null)
-      : Promise.resolve({ data: null }),
-    isVolunteer
-      ? supabase.from("volunteer_certifications").select("expires_on").eq("volunteer_id", userId)
-      : Promise.resolve({ data: null }),
-    isVolunteer
-      ? supabase.from("volunteer_notes").select("notes").eq("volunteer_id", userId).maybeSingle()
-      : Promise.resolve({ data: null }),
   ]);
 
   const today = todayInZone("America/Denver");
@@ -207,16 +186,6 @@ async function PersonLoader({ userId }: { userId: string }) {
     by: t.logged_by_name as string,
     note: t.note as string | null,
   }));
-
-  const approvalByRoleType = new Map((approvals ?? []).map((a) => [a.role_type_id, a.id as number]));
-  const roleTypesForApproval: RoleTypeForApproval[] = (roleTypes ?? []).map((rt) => ({
-    id: rt.id as number,
-    name: rt.name as string,
-    requires_cert: rt.requires_cert as boolean,
-    activeApprovalId: approvalByRoleType.get(rt.id as number) ?? null,
-  }));
-  const approvedRoles = roleTypesForApproval.filter((rt) => rt.activeApprovalId != null).map((rt) => rt.name);
-  const volunteerStatus = volunteer?.status as VolunteerStatus | undefined;
 
   const waivers = (signatures ?? []) as unknown as {
     signed_name: string;
@@ -338,65 +307,42 @@ async function PersonLoader({ userId }: { userId: string }) {
 
       <CollapsibleCard
         id="roles"
-        title="Roles & access"
+        title="Site role & access"
         summary={[
-          ROLE_LABELS[role],
-          isVolunteer ? `Volunteer: ${VOLUNTEER_STATUS_LABELS[volunteerStatus!] ?? volunteerStatus}` : "Not a volunteer",
-          approvedRoles.length > 0 && approvedRoles.join(", "),
+          role === "chapter_lead" && ((profile.led_chapters as string[] | null) ?? []).length > 0
+            ? `Chapter lead: ${((profile.led_chapters as string[] | null) ?? []).join(", ")}`
+            : ROLE_LABELS[role],
+          profile.can_view_volunteer_screening && "screening notes",
+          profile.can_view_health_history && "health histories",
         ]
           .filter(Boolean)
           .join(" · ")}
       >
-        <div className="flex flex-col gap-5">
-          <div className="flex flex-col gap-2">
-            <h3 className="text-sm font-semibold">Site role</h3>
-            <PersonRoles
-              isSelf={userId === adminCheck.actor.userId}
-              chapterOptions={eventChapterNames(chapters)}
-              person={{
-                id: userId,
-                name,
-                email,
-                chapter: chapter ?? "",
-                role,
-                ledChapters: (profile.led_chapters as string[] | null) ?? [],
-                canViewScreening: Boolean(profile.can_view_volunteer_screening),
-                canViewHealthHistory: Boolean(profile.can_view_health_history),
-                accessRemovedAt: (profile.access_removed_at as string | null) ?? null,
-              }}
-            />
-          </div>
-          <div className="flex flex-col gap-2 border-t pt-4">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-sm font-semibold">Volunteer</h3>
-              {isVolunteer && (
-                <Link href={`/protected/admin/volunteers/${userId}`} className="text-sm underline underline-offset-4">
-                  Full volunteer record
-                </Link>
-              )}
-            </div>
-            {isVolunteer ? (
-              <>
-                <div className="w-fit">
-                  <VolunteerStatusSelect volunteerId={userId} status={volunteerStatus!} />
-                </div>
-                <VolunteerRoleApprovals
-                  volunteerId={userId}
-                  volunteerName={name}
-                  volunteerStatus={volunteerStatus!}
-                  roleTypes={roleTypesForApproval}
-                  hasCurrentCert={((certs ?? []) as { expires_on: string | null }[]).some(certIsCurrent)}
-                />
-              </>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Not on the volunteer team. People join by applying (Volunteer → Apply), or an admin adds them from
-                Volunteers.
-              </p>
-            )}
-          </div>
-        </div>
+        <PersonRoles
+          isSelf={userId === adminCheck.actor.userId}
+          chapterOptions={eventChapterNames(chapters)}
+          person={{
+            id: userId,
+            name,
+            email,
+            chapter: chapter ?? "",
+            role,
+            ledChapters: (profile.led_chapters as string[] | null) ?? [],
+            canViewScreening: Boolean(profile.can_view_volunteer_screening),
+            canViewHealthHistory: Boolean(profile.can_view_health_history),
+            accessRemovedAt: (profile.access_removed_at as string | null) ?? null,
+          }}
+        />
       </CollapsibleCard>
+
+      <VolunteerSection
+        userId={userId}
+        name={name}
+        email={email}
+        profile={profile}
+        timeZone={timeZone}
+        actorUserId={adminCheck.actor.userId}
+      />
 
       <CollapsibleCard
         id="forms"
@@ -428,24 +374,15 @@ async function PersonLoader({ userId }: { userId: string }) {
         </div>
       </CollapsibleCard>
 
-      {isVolunteer && (
-        <CollapsibleCard
-          id="notes"
-          title="Volunteer notes"
-          summary={(notes?.notes as string | undefined)?.trim() ? "Has notes" : "No notes yet"}
-        >
-          <VolunteerNotes volunteerId={userId} initialNotes={(notes?.notes as string | undefined) ?? ""} />
-        </CollapsibleCard>
-      )}
     </div>
   );
 }
 
 /**
- * An admin's contact profile for anyone with an account: their details,
- * every registration section, roles and volunteer approvals, outreach and
- * participation history, all editable here. Reached from Members (a name)
- * and People & roles.
+ * An admin's page for anyone with an account: their details, every
+ * registration section, outreach and participation history, site role and
+ * access, and their whole volunteer record, all editable here. Reached from
+ * a name on Members, Team & access, or Certifications.
  */
 export default async function PersonPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;

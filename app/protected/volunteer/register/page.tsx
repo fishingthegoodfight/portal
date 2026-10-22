@@ -13,6 +13,7 @@ import {
   type InterestArea,
 } from "@/lib/volunteer-applications";
 import { prefillFromApplication, type RegistrationPrefill } from "@/lib/registration-prefill";
+import { CONTACT_EMAIL } from "@/lib/contact";
 
 async function RegisterLoader() {
   const supabase = await createClient();
@@ -39,8 +40,8 @@ async function RegisterLoader() {
         <p className="text-sm text-muted-foreground">
           Volunteer registration is by invitation only. If you&apos;d like to volunteer with
           Fishing the Good Fight, contact{" "}
-          <a href="mailto:tcramer@fishingthegoodfight.org" className="underline underline-offset-4">
-            tcramer@fishingthegoodfight.org
+          <a href={`mailto:${CONTACT_EMAIL}`} className="underline underline-offset-4">
+            {CONTACT_EMAIL}
           </a>
           .
         </p>

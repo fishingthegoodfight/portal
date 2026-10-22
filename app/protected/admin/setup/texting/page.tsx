@@ -5,7 +5,6 @@ import { createClient } from "@/lib/supabase/server";
 import { TestTextButton } from "@/components/admin/test-text-button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatEventInstant } from "@/lib/format-date";
-import { SMS_CONSENT_IS_PLACEHOLDER } from "@/lib/sms-consent";
 
 type SmsRow = { id: number; to_phone: string | null; body: string; status: string; error: string | null; created_at: string };
 
@@ -49,12 +48,6 @@ export default function TextingSetupPage() {
           profile. Replying STOP or START to the number turns that off or on in the portal too.
         </p>
       </div>
-      {SMS_CONSENT_IS_PLACEHOLDER && (
-        <p className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300">
-          The consent wording is still a placeholder (lib/sms-consent.ts), so only admins can agree to texts for now.
-          Paste the registered 10DLC wording there to offer it to everyone.
-        </p>
-      )}
       <Card>
         <CardHeader>
           <CardTitle>Test text</CardTitle>

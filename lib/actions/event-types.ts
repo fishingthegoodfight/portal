@@ -1,6 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { keyFromLabel } from "@/lib/utils";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { countLabel, type DeleteResult, type UsageResult } from "@/lib/admin/usage";
 import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
@@ -14,16 +15,6 @@ export type EventTypeInput = {
 };
 
 /** kebab_case-ish key from the name, e.g. "Fish A-Long" -> "fish_a_long". */
-function slugify(name: string): string {
-  return (
-    name
-      .toLowerCase()
-      .replace(/'/g, "")
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_+|_+$/g, "") || "type"
-  );
-}
-
 const VALID_SECTION_IDS = new Set(
   REGISTRATION_SECTIONS.filter((s) => !s.alwaysRequired && !s.profileOnly).map((s) => s.id),
 );
@@ -52,7 +43,7 @@ export async function createEventTypeAction(input: EventTypeInput): Promise<Acti
     .maybeSingle();
   const nextSortOrder = ((maxRow?.sort_order as number | undefined) ?? 0) + 10;
 
-  const baseKey = slugify(input.name);
+  const baseKey = keyFromLabel(input.name, "type");
   let key = baseKey;
   for (let attempt = 0; attempt < 5; attempt++) {
     const { error } = await supabase.from("event_types").insert({

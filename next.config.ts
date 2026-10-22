@@ -18,6 +18,21 @@ const codespacesAllowedOrigins = process.env.CODESPACES
 
 const nextConfig: NextConfig = {
   cacheComponents: true,
+  // Old admin addresses, kept working for bookmarks and old emails. The
+  // Volunteers and People & roles pages became Members (Everyone, and Team &
+  // access) and the person page. First match wins, so the fixed paths come
+  // before /volunteers/:id.
+  async redirects() {
+    return [
+      { source: "/protected/admin/roles", destination: "/protected/members?chapter=all&view=team", permanent: false },
+      { source: "/protected/admin/volunteers", destination: "/protected/members?chapter=all&view=everyone", permanent: false },
+      { source: "/protected/admin/volunteers/import", destination: "/protected/members?chapter=all&view=everyone", permanent: false },
+      { source: "/protected/admin/volunteers/certifications", destination: "/protected/admin/certifications", permanent: false },
+      { source: "/protected/admin/volunteers/roles", destination: "/protected/admin/role-types", permanent: false },
+      { source: "/protected/admin/volunteers/:id", destination: "/protected/admin/people/:id", permanent: false },
+      { source: "/protected/admin/setup/attendance-import", destination: "/protected/admin/setup", permanent: false },
+    ];
+  },
   experimental: {
     serverActions: {
       allowedOrigins: codespacesAllowedOrigins,

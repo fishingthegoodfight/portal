@@ -4,7 +4,8 @@ import { createClient } from "@/lib/supabase/server";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { loadSchedule, planOpportunitiesEmails, previewPlannedEmail } from "@/lib/volunteer-opportunities-email";
-import { dateInZone, isSendDate, nextSendDates, SCHEDULE_ZONE } from "@/lib/opportunities-schedule";
+import { dateInZone } from "@/lib/format-date";
+import { isSendDate, nextSendDates, SCHEDULE_ZONE } from "@/lib/opportunities-schedule";
 import { resolveDevVolunteer } from "@/lib/dev-volunteer";
 
 /**

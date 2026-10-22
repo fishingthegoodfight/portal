@@ -75,7 +75,8 @@ Separately, an **event lead** (`events.lead_user_id`) can manage just that one e
 - **Who sees it:** admins (all chapters, plus a "No chapter" group with set-chapter), chapter leads (the chapters they lead), and anyone approved for a role type ticked **Chapter leadership team** (their home chapter). This is enforced in the database (`my_member_chapters`, `members_list`, `can_view_member`).
 - **Logic:** bands, outreach due dates and drop alerts are derived in `lib/members.ts`, and nothing is stored. On the page it's "outreach"; in the code and database it's a "touch" (`member_touches`).
 - **Page:** two views, **Needs outreach** (sections by band: New, One visit, Quiet, Dropped, Active, most overdue first) and **Everyone** (search and band filter). A drop alert isn't shown separately: it puts a lapsed regular into Needs outreach, marked "used to come regularly". Dropped people are prompted every 90 days and stop after 3 tries with no check-in (Setup → Members; 2026-10-09 entry in `schema-changes.sql`).
-- **Contact profile (admins):** `/protected/admin/people/[id]`, opened from a name on Members or People & roles. Contact details and every registration section (editable), roles and volunteer approvals, outreach, participation history, waivers.
+- **Person page (admins):** `/protected/admin/people/[id]`, opened from a name on Members. Contact details and every registration section (editable), site role and access, outreach, participation history, waivers, and the whole volunteer record (status, invites, role approvals, certifications, practical check, registration answers, notes, screening notes).
+- **Managing people (admins, 2026-10-22):** Members is the one place for it. **Add a person** invites a volunteer or gives someone an account with a site role; Everyone tags admins, chapter leads and volunteers (with their approved roles) and filters by them; **Team & access** lists admins, chapter leads, sensitive-data access and removed people. The Volunteers page, People & roles and the volunteer import are gone (old links redirect, `next.config.ts`); Certifications and Volunteer role types moved to `/protected/admin/certifications` and `/protected/admin/role-types`.
 - **Naming:** it's called "Members". "Directory" is kept for the future opt-in participant directory (`profiles.directory_opt_in`, which nothing reads yet).
 
 **Part 2 (done, 2026-10-09): the weekly outreach email** (`lib/members-outreach-email.ts`; 2026-10-09 "Members: the weekly outreach email" entry in `schema-changes.sql`).
@@ -94,7 +95,9 @@ Separately, an **event lead** (`events.lead_user_id`) can manage just that one e
 - **The guard:** `profiles.email` can only be changed by `service_role` or `postgres` (the `profiles_protect_login_email` trigger; see `CLAUDE.md`). So the profile update has to happen server-side with the service role, after confirmation.
 - **Uniqueness:** watch the unique index on `lower(btrim(profiles.email))` (2026-10-06 "One profile per email" entry in `schema-changes.sql`).
 
-### 6. Attendance CSV import
+### 6. Attendance CSV import (built, then removed 2026-10-22)
+**Status:** removed along with the volunteer import: no more bulk uploads are planned. Attendance it already brought in stays, marked "imported" on rosters and person pages (`rsvps.imported_at`, `volunteer_signups.imported_at`). The notes below are kept for reference.
+
 **What:** import past attendance from a spreadsheet.
 
 **Why:** attendance from before the portal, or from events not run through it, doesn't count toward anything: not the volunteer application threshold, and not engagement (item 4).
@@ -158,7 +161,7 @@ Two `schema-changes.sql` entries from 2026-10-12: "Email from Members and event 
   - **Add volunteer** warns when they have an RSVP ("has_rsvp", `lib/actions/admin-volunteer-signup.ts`).
   - Both offer "add anyway".
 - **Self-service sign-up:** check what self RSVP (`rsvp_to_event`) and self shift sign-up do when the other already exists.
-- **The attendance import:** can record both for one person at one event if the file has both rows.
+- **The attendance import (since removed):** may have recorded both for one person at one event, if the file had both rows.
 - **To decide:**
   - Does the rule hold in the database for every path, or only in the forms?
   - When someone is already one, does adding them as the other switch them over, or refuse?

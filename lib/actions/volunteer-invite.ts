@@ -8,7 +8,6 @@ import { requireAdmin } from "@/lib/admin/require-admin";
 import { getSiteUrl } from "@/lib/site-url";
 import { codePagePath } from "@/lib/code-page";
 import { sendVolunteerInviteEmail } from "@/lib/email/send";
-import { PORTAL_INVITE_BATCH_LIMIT } from "@/lib/volunteers";
 
 const REGISTER_PATH = "/protected/volunteer/register";
 /** Where someone setting up their account goes: the code page, email
@@ -22,10 +21,10 @@ export type InviteVolunteerResult =
   | { ok: false; error: string };
 
 /**
- * Admin "Invite volunteer" action, also used to re-send an invite (called
- * again with the same email — the volunteers row is looked up first, so a
- * resend never duplicates it, per the spec) and by "Send portal invite" on
- * the Volunteers list (sendPortalInvitesAction, below).
+ * Admin "Invite volunteer" (Members → Add a person, and the Volunteer card on
+ * someone's profile), also used to re-send an invite (called again with the
+ * same email — the volunteers row is looked up first, so a resend never
+ * duplicates it, per the spec).
  *
  * Three cases, by account state:
  *  - No account at all: creates one via the Supabase Admin API
@@ -52,61 +51,6 @@ export async function inviteVolunteerAction(input: {
   const adminCheck = await requireAdmin(supabase);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
   return inviteOne(supabase, lazyAdminClient(), input);
-}
-
-export type PortalInviteOutcome = {
-  volunteerId: string;
-  name: string;
-  email: string;
-  ok: boolean;
-  error?: string;
-};
-
-export type SendPortalInvitesResult =
-  | { ok: true; outcomes: PortalInviteOutcome[] }
-  | { ok: false; error: string };
-
-/**
- * "Send portal invite" on the Volunteers list, for one volunteer or a
- * selection — the same invite as above, one person at a time. Refuses more
- * than PORTAL_INVITE_BATCH_LIMIT at once, so a mis-click can't email the
- * roster. Each person's outcome is reported separately: one failure doesn't
- * stop the rest.
- */
-export async function sendPortalInvitesAction(volunteerIds: string[]): Promise<SendPortalInvitesResult> {
-  const supabase = await createClient();
-  const adminCheck = await requireAdmin(supabase);
-  if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
-
-  const ids = [...new Set(volunteerIds)];
-  if (ids.length === 0) return { ok: false, error: "Choose at least one volunteer" };
-  if (ids.length > PORTAL_INVITE_BATCH_LIMIT) {
-    return { ok: false, error: `At most ${PORTAL_INVITE_BATCH_LIMIT} invites at a time` };
-  }
-
-  const [{ data: volunteers }, { data: profiles }] = await Promise.all([
-    supabase.from("volunteers").select("user_id").in("user_id", ids),
-    supabase.from("profiles").select("id, first_name, last_name, email").in("id", ids),
-  ]);
-  const isVolunteer = new Set((volunteers ?? []).map((v) => v.user_id as string));
-  const profileById = new Map((profiles ?? []).map((p) => [p.id as string, p]));
-
-  const getAdminClient = lazyAdminClient();
-  const outcomes: PortalInviteOutcome[] = [];
-  for (const [index, id] of ids.entries()) {
-    // Spaced out to stay under the email provider's per-second rate limit.
-    if (index > 0) await new Promise((resolve) => setTimeout(resolve, 600));
-    const profile = profileById.get(id);
-    const email = ((profile?.email as string | null) ?? "").trim();
-    const name = [profile?.first_name, profile?.last_name].filter(Boolean).join(" ");
-    if (!isVolunteer.has(id) || !email) {
-      outcomes.push({ volunteerId: id, name, email, ok: false, error: "No volunteer record with an email" });
-      continue;
-    }
-    const result = await inviteOne(supabase, getAdminClient, { email });
-    outcomes.push({ volunteerId: id, name, email, ok: result.ok, error: result.ok ? undefined : result.error });
-  }
-  return { ok: true, outcomes };
 }
 
 type ServerClient = Awaited<ReturnType<typeof createClient>>;
@@ -223,7 +167,7 @@ async function inviteOne(
       return { ok: false, error: insertError.message };
     }
   } else {
-    // The latest send — the Volunteers list shows "Invited <date>" from this.
+    // The latest send — their page shows "invited <date>" from this.
     const { error: stampError } = await supabase
       .from("volunteers")
       .update({ invited_at: now, updated_at: now })

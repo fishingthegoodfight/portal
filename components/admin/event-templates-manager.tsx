@@ -22,7 +22,7 @@ import { chapterByName, VIRTUAL_CHAPTER, type Chapter } from "@/lib/chapters";
 import { DescriptionField, EventTypeField } from "@/components/admin/fields/event-text-fields";
 import { RoleDescriptionField } from "@/components/admin/fields/volunteer-role-fields";
 import { RegistrationSectionsFields } from "@/components/admin/fields/registration-sections-fields";
-import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
+import { sectionsLabel } from "@/lib/registration-sections";
 import { ShowInactiveToggle, useDeleteFlow } from "@/components/admin/setup-list-controls";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -88,12 +88,6 @@ function toInput(template: EventTemplateWithRoles): TemplateInput {
         numberNeeded: String(r.number_needed),
       })),
   };
-}
-
-function sectionsLabel(ids: string[]): string {
-  const set = new Set(ids);
-  const labels = REGISTRATION_SECTIONS.filter((s) => set.has(s.id)).map((s) => s.title);
-  return labels.length > 0 ? labels.join(", ") : "None";
 }
 
 const ANCHOR_LABEL: Record<ShiftAnchor, string> = {

@@ -26,6 +26,7 @@ import {
   isSectionComplete,
   sectionsForEvent,
 } from "@/lib/registration-sections";
+import { CONTACT_EMAIL } from "@/lib/contact";
 
 export type EligibleVolunteerRole = {
   id: number;
@@ -102,8 +103,8 @@ export function VolunteerSignupSection({
         <CardContent>
           <p className="text-sm text-muted-foreground">
             Volunteering at this event requires an approved volunteer registration. Contact{" "}
-            <a href="mailto:tcramer@fishingthegoodfight.org" className="underline underline-offset-4">
-              tcramer@fishingthegoodfight.org
+            <a href={`mailto:${CONTACT_EMAIL}`} className="underline underline-offset-4">
+              {CONTACT_EMAIL}
             </a>{" "}
             to get started.
           </p>

@@ -40,7 +40,7 @@ export type InvitePersonResult =
 
 
 /**
- * Admin "Invite a person": an account and a profile, nothing
+ * Admin "Add a person" (Members) with a site role: an account and a profile, nothing
  * volunteer-specific — no volunteers row, so no registration form, volunteer
  * waiver, health-history placeholder or approval status. For staff, board
  * members, anyone who needs to sign in without joining the volunteer team.
@@ -55,9 +55,9 @@ export type InvitePersonResult =
  *  - An account that was never confirmed (an earlier invite, of either kind,
  *    they didn't finish): re-sends the same button.
  *  - A confirmed account: refused, with a pointer to changing their role
- *    below. Nothing is sent and nothing changes.
+ *    on their page. Nothing is sent and nothing changes.
  * Role and flags are applied through the same admin-only functions as the
- * People & roles rows (admin_set_user_role, admin_set_data_access), before
+ * Team & access rows (admin_set_user_role, admin_set_data_access), before
  * the email goes out.
  */
 export async function invitePersonAction(input: InvitePersonInput): Promise<InvitePersonResult> {
@@ -133,7 +133,7 @@ export async function invitePersonAction(input: InvitePersonInput): Promise<Invi
     if (authUser.user?.email_confirmed_at) {
       return {
         ok: false,
-        error: `${email} already has an account. Search for them under "Find someone" to change their role or access.`,
+        error: `${email} already has an account. Find them under Everyone and change their role or access on their page.`,
       };
     }
     actionUrl = setupUrl(email);

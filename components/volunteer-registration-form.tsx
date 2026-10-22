@@ -26,6 +26,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
+import { CONTACT_EMAIL } from "@/lib/contact";
 
 type ProfileData = {
   first_name: string;
@@ -265,8 +266,8 @@ export function VolunteerRegistrationForm({
             <Input id="v_email" type="email" value={profile.email} readOnly aria-describedby="v_email_note" />
             <p id="v_email_note" className="text-sm text-muted-foreground">
               This is the email you log in with. To change it, contact{" "}
-              <a href="mailto:tcramer@fishingthegoodfight.org" className="underline underline-offset-4">
-                tcramer@fishingthegoodfight.org
+              <a href={`mailto:${CONTACT_EMAIL}`} className="underline underline-offset-4">
+                {CONTACT_EMAIL}
               </a>
               .
             </p>

@@ -114,8 +114,24 @@ export function formatEventDateRangeLong(
   return `${longDate.format(start)} · ${time.format(start)} – ${longDate.format(end)} · ${timeWithZone.format(end)}`;
 }
 
+/** An instant's calendar date in a timezone, as "YYYY-MM-DD". */
+export function dateInZone(instant: Date, timeZone: string): string {
+  return new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone }).format(instant);
+}
+
 /** Today's calendar date in a timezone, as "YYYY-MM-DD" (for a date input's
  * default — the UTC date is tomorrow every evening in the Americas). */
 export function todayInZone(timeZone: string): string {
-  return new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone }).format(new Date());
+  return dateInZone(new Date(), timeZone);
+}
+
+/** A "YYYY-MM-DD" date moved by `days` calendar days. */
+export function addDays(date: string, days: number): string {
+  const [y, m, d] = date.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
+}
+
+/** Calendar days from `from` to `to` ("YYYY-MM-DD" each). */
+export function daysBetween(from: string, to: string): number {
+  return (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000;
 }

@@ -30,6 +30,7 @@ import {
   memberDefaultChapterSelection,
   parseChapterSelection,
 } from "@/lib/chapters";
+import { CONTACT_EMAIL } from "@/lib/contact";
 
 async function VolunteerHomeLoader({
   searchParams,
@@ -335,10 +336,10 @@ async function VolunteerHomeLoader({
                       Your volunteer status is {VOLUNTEER_STATUS_LABELS[status] ?? status}, so you
                       can&apos;t sign up for shifts right now. Contact{" "}
                       <a
-                        href="mailto:tcramer@fishingthegoodfight.org"
+                        href={`mailto:${CONTACT_EMAIL}`}
                         className="underline underline-offset-4"
                       >
-                        tcramer@fishingthegoodfight.org
+                        {CONTACT_EMAIL}
                       </a>{" "}
                       with any questions.
                     </>

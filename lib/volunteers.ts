@@ -23,16 +23,9 @@ export const VOLUNTEER_STATUS_LABELS: Record<VolunteerStatus, string> = {
   declined: "Declined",
 };
 
-/** The Volunteers list's extra status filter: approved but never through
- * the registration form (volunteers.registered_at is null). */
-export const NOT_REGISTERED_FILTER = "approved_not_registered";
-
-/** Most "Send portal invite" emails one batch can send
- * (sendPortalInvitesAction) — so a mis-click can't email the whole roster. */
-export const PORTAL_INVITE_BATCH_LIMIT = 25;
-
 /**
- * Whether a volunteer can sign in yet — the Volunteers list's account column.
+ * Whether a volunteer can sign in yet — shown on the Volunteer card of their
+ * profile.
  * "none": never signed in and never sent a portal invite (a backfilled or
  * imported volunteer). "invited": never signed in, last sent an invite on
  * invitedAt. "active": has signed in at least once. From auth.users
@@ -49,7 +42,7 @@ export function accountStateOf(lastSignInAt: string | null | undefined, invitedA
   return { kind: "none" };
 }
 
-/** Help text under every general-notes field (import and detail page). */
+/** Help text under the volunteer notes field on a person's page. */
 export const VOLUNTEER_NOTES_HELP =
   "Operational notes only — how they help, what they're good at, availability. Health, personal or screening information goes elsewhere.";
 
@@ -93,8 +86,6 @@ export const PROGRAM_INTERESTS = [
 ] as const;
 
 export const TSHIRT_SIZES = ["XS", "S", "M", "L", "XL", "XXL", "XXXL"] as const;
-
-export const CERTIFICATION_KINDS = { first_aid_cpr_aed: "First Aid/CPR/AED" } as const;
 
 /** A cert is "missing or expired" for the admin list's flag when the role
  * needs one and there's no row on file good through today (Denver) — see

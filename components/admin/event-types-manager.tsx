@@ -15,7 +15,7 @@ import {
 } from "@/lib/actions/event-types";
 import type { EventTypeOption } from "@/lib/event-types";
 import { RegistrationSectionsFields } from "@/components/admin/fields/registration-sections-fields";
-import { REGISTRATION_SECTIONS } from "@/lib/registration-sections";
+import { sectionsLabel } from "@/lib/registration-sections";
 import { ShowInactiveToggle, useDeleteFlow } from "@/components/admin/setup-list-controls";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,12 +32,6 @@ function toInput(type: EventTypeOption): EventTypeInput {
     defaultRegistrationSections: type.default_registration_sections,
     requiresHealthHistory: type.requires_health_history,
   };
-}
-
-function sectionsLabel(ids: string[]): string {
-  const set = new Set(ids);
-  const labels = REGISTRATION_SECTIONS.filter((s) => set.has(s.id)).map((s) => s.title);
-  return labels.length > 0 ? labels.join(", ") : "None";
 }
 
 function EventTypeFields({

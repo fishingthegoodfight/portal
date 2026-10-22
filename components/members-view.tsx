@@ -19,6 +19,8 @@ import {
   type TouchType,
 } from "@/lib/members";
 import { formatCertDate } from "@/lib/certifications";
+import { ROLE_LABELS, type Role } from "@/lib/roles";
+import { VOLUNTEER_STATUS_LABELS, type VolunteerStatus } from "@/lib/volunteers";
 import { ChapterTag } from "@/components/chapter-tag";
 import { FilterPill, filterHref } from "@/components/filter-pills";
 import { LogOutreachForm } from "@/components/log-outreach-form";
@@ -46,11 +48,29 @@ export function MemberBandBadge({ band }: { band: MemberBand }) {
 
 const byName = (a: Member, b: Member) => a.name.localeCompare(b.name);
 
+/** Admins only: what a row's tags show, from the page (loadPersonTags). */
+export type PersonTags = {
+  /** Only when above participant. */
+  role?: Exclude<Role, "participant">;
+  volunteer?: { status: VolunteerStatus; roles: string[] };
+};
+
+/** Everyone's "Who" filter (admins): "" for everyone, "staff", "volunteers",
+ * or "role:<role type name>". */
+function matchesWho(tags: PersonTags | undefined, who: string): boolean {
+  if (!who) return true;
+  if (who === "staff") return tags?.role != null;
+  if (who === "volunteers") return tags?.volunteer != null;
+  return tags?.volunteer?.roles.includes(who.slice("role:".length)) ?? false;
+}
+
 /**
- * Members (app/protected/members), two views:
+ * Members (app/protected/members), three views:
  *  - Needs outreach: who's due, in sections by band, most overdue first;
- *  - Everyone: the chapter's full list, searchable, filterable by band.
- * Admins' names open the contact profile (/protected/admin/people/[id]).
+ *  - Everyone: the chapter's full list, searchable, filterable by band, and
+ *    for admins tagged and filterable by site role and volunteer role;
+ *  - Team & access (admins): `team`, rendered by the page.
+ * Admins' names open the person's page (/protected/admin/people/[id]).
  * Tick people (or "select all shown") and Email them, or email one person
  * from their row (components/email-composer.tsx). The selection stays
  * through view and filter changes; a different chapter is a new page
@@ -65,6 +85,9 @@ export function MembersView({
   allValue,
   isAdmin,
   chapterNames,
+  tags,
+  roleTypeNames,
+  team,
 }: {
   members: Member[];
   today: string;
@@ -74,8 +97,15 @@ export function MembersView({
   allValue: string;
   isAdmin: boolean;
   chapterNames: string[];
+  /** Admins only (null otherwise): tags by user id. */
+  tags: Record<string, PersonTags> | null;
+  /** Admins only: the volunteer role types, for the "Who" filter. */
+  roleTypeNames: string[];
+  /** The Team & access content, when that's the view. */
+  team: React.ReactNode;
 }) {
   const [band, setBand] = useState<MemberBand | null>(null);
+  const [who, setWho] = useState("");
   const [query, setQuery] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [composing, setComposing] = useState<null | { userIds: string[]; audience: string }>(null);
@@ -97,11 +127,12 @@ export function MembersView({
     const q = query.trim().toLowerCase();
     return members
       .filter((m) => !band || m.band === band)
+      .filter((m) => !tags || matchesWho(tags[m.user_id], who))
       .filter((m) => !q || [m.name, m.email, m.phone, m.chapter].join(" ").toLowerCase().includes(q))
       .sort(byName);
-  }, [members, band, query]);
+  }, [members, band, query, tags, who]);
 
-  const shown = view === "outreach" ? due : everyone;
+  const shown = view === "outreach" ? due : view === "everyone" ? everyone : [];
   const allShownPicked = shown.length > 0 && shown.every((m) => picked.has(m.user_id));
   const togglePicked = (userId: string) =>
     setPicked((prev) => {
@@ -128,6 +159,7 @@ export function MembersView({
       today={today}
       showChapter={showAll}
       isAdmin={isAdmin}
+      tags={tags?.[m.user_id]}
       chapterNames={chapterNames}
       picked={picked.has(m.user_id)}
       onTogglePicked={() => togglePicked(m.user_id)}
@@ -153,11 +185,14 @@ export function MembersView({
         <div className="flex flex-col gap-1.5">
           <span className="text-xs font-medium text-muted-foreground">Show</span>
           <div role="group" aria-label="Show" className="flex flex-wrap gap-2">
-            {(Object.keys(MEMBER_VIEWS) as MemberView[]).map((v) => (
-              <FilterPill key={v} href={href(selected, v)} active={v === view}>
-                {MEMBER_VIEWS[v]} ({v === "outreach" ? due.length : members.length})
-              </FilterPill>
-            ))}
+            {(Object.keys(MEMBER_VIEWS) as MemberView[])
+              .filter((v) => v !== "team" || isAdmin)
+              .map((v) => (
+                <FilterPill key={v} href={href(selected, v)} active={v === view}>
+                  {MEMBER_VIEWS[v]}
+                  {v !== "team" && ` (${v === "outreach" ? due.length : members.length})`}
+                </FilterPill>
+              ))}
           </div>
         </div>
       </div>
@@ -169,7 +204,9 @@ export function MembersView({
         </label>
       )}
 
-      {view === "outreach" ? (
+      {view === "team" ? (
+        team
+      ) : view === "outreach" ? (
         sections.length === 0 ? (
           <p className="text-sm text-muted-foreground">
             Nobody needs outreach right now.{" "}
@@ -201,6 +238,18 @@ export function MembersView({
             aria-label="Search members"
             className="sm:max-w-sm"
           />
+          {tags && (
+            <Select value={who} onChange={(e) => setWho(e.target.value)} aria-label="Who" className="w-auto sm:max-w-sm">
+              <option value="">Anyone</option>
+              <option value="staff">Admins and chapter leads</option>
+              <option value="volunteers">Volunteers</option>
+              {roleTypeNames.map((name) => (
+                <option key={name} value={`role:${name}`}>
+                  Volunteers: {name}
+                </option>
+              ))}
+            </Select>
+          )}
           <div role="group" aria-label="Filter by band" className="flex flex-wrap gap-2">
             <BandPill active={band == null} onClick={() => setBand(null)}>
               All
@@ -219,14 +268,16 @@ export function MembersView({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-        <Link
-          href={filterHref("/protected/emails", { chapter: showAll ? undefined : selected })}
-          className="underline underline-offset-4"
-        >
-          Emails sent{showAll ? "" : ` to ${selected}`}
-        </Link>
-      </div>
+      {view !== "team" && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+          <Link
+            href={filterHref("/protected/emails", { chapter: showAll ? undefined : selected })}
+            className="underline underline-offset-4"
+          >
+            Emails sent{showAll ? "" : ` to ${selected}`}
+          </Link>
+        </div>
+      )}
 
       {picked.size > 0 && (
         <div className="sticky bottom-4 z-40 flex flex-wrap items-center gap-3 rounded-lg border bg-background p-3 shadow-lg">
@@ -299,6 +350,7 @@ function MemberRow({
   today,
   showChapter,
   isAdmin,
+  tags,
   chapterNames,
   picked,
   onTogglePicked,
@@ -308,6 +360,7 @@ function MemberRow({
   today: string;
   showChapter: boolean;
   isAdmin: boolean;
+  tags: PersonTags | undefined;
   chapterNames: string[];
   picked: boolean;
   onTogglePicked: () => void;
@@ -345,8 +398,18 @@ function MemberRow({
               <span className="font-medium">{m.name}</span>
             )}
             <MemberBandBadge band={m.band} />
+            {tags?.role && <Badge variant="outline">{ROLE_LABELS[tags.role]}</Badge>}
+            {tags?.volunteer && (
+              <Badge variant="outline" className="border-sky-500/50 text-sky-700 dark:text-sky-400">
+                Volunteer
+                {tags.volunteer.status !== "approved" && ` · ${VOLUNTEER_STATUS_LABELS[tags.volunteer.status]}`}
+              </Badge>
+            )}
             {showChapter && !noChapter && <ChapterTag chapter={m.chapter as string} />}
           </span>
+          {tags?.volunteer && tags.volunteer.roles.length > 0 && (
+            <span className="text-muted-foreground">{tags.volunteer.roles.join(", ")}</span>
+          )}
           {(m.phone || m.email) && (
             <span className="flex flex-wrap gap-x-2 text-muted-foreground">
               {m.phone && (

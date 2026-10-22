@@ -33,6 +33,7 @@ import {
 } from "@/lib/registration-sections";
 import { US_STATES } from "@/lib/us-states";
 import { cn } from "@/lib/utils";
+import { CONTACT_EMAIL } from "@/lib/contact";
 
 type ProfileData = {
   first_name: string;
@@ -60,7 +61,6 @@ export function ProfileForm({
   initialOpportunitiesEmail,
   initialChapterEmails,
   initialSmsConsent,
-  showSmsConsent,
 }: {
   userId: string;
   /** Shown read-only: it's the email they log in with, and the profile page
@@ -76,9 +76,6 @@ export function ProfileForm({
   initialChapterEmails: boolean;
   /** profiles.sms_consent. */
   initialSmsConsent: boolean;
-  /** Whether to offer it: always once the registered wording is in
-   * lib/sms-consent.ts; to admins only while it's a placeholder. */
-  showSmsConsent: boolean;
   /** Every registration section field's current value, keyed by its profile
    * column (see lib/registration-sections.ts). Rendered generically below so
    * a future section needs no changes here. */
@@ -251,7 +248,7 @@ export function ProfileForm({
           chapter_emails: chapterEmails,
           // The wording shown is stored with the consent (the database
           // stamps when, and keeps both unless consent changes).
-          ...(showSmsConsent && smsConsent !== initialSmsConsent
+          ...(smsConsent !== initialSmsConsent
             ? { sms_consent: smsConsent, sms_consent_text: smsConsent ? SMS_CONSENT_TEXT : null }
             : {}),
         })
@@ -324,8 +321,8 @@ export function ProfileForm({
             <Input id="email" type="email" value={loginEmail} readOnly aria-describedby="email-note" />
             <p id="email-note" className="text-sm text-muted-foreground">
               This is the email you log in with. To change it, contact{" "}
-              <a href="mailto:tcramer@fishingthegoodfight.org" className="underline underline-offset-4">
-                tcramer@fishingthegoodfight.org
+              <a href={`mailto:${CONTACT_EMAIL}`} className="underline underline-offset-4">
+                {CONTACT_EMAIL}
               </a>
               .
             </p>
@@ -452,7 +449,7 @@ export function ProfileForm({
 
       <Card id="messages">
         <CardHeader>
-          <CardTitle>{showSmsConsent ? "Emails and texts" : "Emails"}</CardTitle>
+          <CardTitle>Emails and texts</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <label htmlFor="chapter_emails" className="flex items-start gap-2 text-sm">
@@ -474,26 +471,24 @@ export function ProfileForm({
               </span>
             </span>
           </label>
-          {showSmsConsent && (
-            <label htmlFor="sms_consent" className="flex items-start gap-2 text-sm">
-              <Checkbox
-                id="sms_consent"
-                className="mt-0.5"
-                checked={smsConsent}
-                disabled={!smsConsent && profile.phone.replace(/\D/g, "").length !== 10}
-                onCheckedChange={(checked) => {
-                  setSmsConsent(checked === true);
-                  setSuccess(false);
-                }}
-              />
-              <span className="flex flex-col gap-1">
-                <span>{SMS_CONSENT_TEXT}</span>
-                {!smsConsent && profile.phone.replace(/\D/g, "").length !== 10 && (
-                  <span className="text-muted-foreground">Add your phone number above first.</span>
-                )}
-              </span>
-            </label>
-          )}
+          <label htmlFor="sms_consent" className="flex items-start gap-2 text-sm">
+            <Checkbox
+              id="sms_consent"
+              className="mt-0.5"
+              checked={smsConsent}
+              disabled={!smsConsent && profile.phone.replace(/\D/g, "").length !== 10}
+              onCheckedChange={(checked) => {
+                setSmsConsent(checked === true);
+                setSuccess(false);
+              }}
+            />
+            <span className="flex flex-col gap-1">
+              <span>{SMS_CONSENT_TEXT}</span>
+              {!smsConsent && profile.phone.replace(/\D/g, "").length !== 10 && (
+                <span className="text-muted-foreground">Add your phone number above first.</span>
+              )}
+            </span>
+          </label>
         </CardContent>
       </Card>
 

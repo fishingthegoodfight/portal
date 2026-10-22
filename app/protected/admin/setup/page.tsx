@@ -5,11 +5,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 
 const SETUP_LINKS = [
   {
-    href: "/protected/admin/roles",
-    title: "People & roles",
-    description: "Make someone an admin or a chapter lead, and pick which chapters a lead covers.",
-  },
-  {
     href: "/protected/admin/setup/chapters",
     title: "Regions & chapters",
     description: "Add, rename, reorder and deactivate chapters, and the regions they're grouped into.",
@@ -45,11 +40,6 @@ const SETUP_LINKS = [
     description: "The thresholds behind Members (engagement bands, when someone needs outreach) and the weekly outreach email.",
   },
   {
-    href: "/protected/admin/setup/attendance-import",
-    title: "Import attendance",
-    description: "Bring past attendance in from a CSV: people, events and who attended or volunteered, previewed before anything is written.",
-  },
-  {
     href: "/protected/admin/setup/walkup-welcome",
     title: "Walk-up welcome emails",
     description: "The welcome email for accounts made at a walk-up. See who hasn't had it and send it to them.",
@@ -65,7 +55,7 @@ const SETUP_LINKS = [
     description: "The plain-language “What are you interested in helping with?” choices on the volunteer application. Separate from role types.",
   },
   {
-    href: "/protected/admin/volunteers/roles",
+    href: "/protected/admin/role-types",
     title: "Volunteer role types",
     description: "The catalog of roles volunteers can be approved for and events can ask for.",
   },

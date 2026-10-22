@@ -169,7 +169,7 @@ export function EventCard({
         </CardContent>
       )}
       {(action || spotsLeftLabel) && (
-        <CardFooter className="flex items-center justify-between">
+        <CardFooter className="flex flex-wrap items-center justify-between gap-2">
           <span className="text-sm text-muted-foreground">
             {spotsLeftLabel}
           </span>

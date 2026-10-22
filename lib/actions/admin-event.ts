@@ -24,6 +24,7 @@ import {
   isSectionComplete,
   profileValueFromColumn,
   REGISTRATION_SECTIONS,
+  sectionsLabel,
 } from "@/lib/registration-sections";
 import {
   previewEventCancellationEmail,
@@ -247,12 +248,6 @@ function toEmailEvent(event: EventRow, icsSequence: number): RsvpEmailEvent {
     virtual_access_notes: event.virtual_access_notes,
     ics_sequence: icsSequence,
   };
-}
-
-function sectionsLabel(ids: string[] | null | undefined): string {
-  const set = new Set(ids ?? []);
-  const labels = REGISTRATION_SECTIONS.filter((s) => set.has(s.id)).map((s) => s.title);
-  return labels.length > 0 ? labels.join(", ") : "None";
 }
 
 function capacityLabel(n: number | null): string {

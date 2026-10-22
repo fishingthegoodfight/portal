@@ -8,7 +8,7 @@ import {
   type Chapter,
 } from "@/lib/chapters";
 import { cityStateZip } from "@/lib/event-location";
-import { formatEventDateRange } from "@/lib/format-date";
+import { dateInZone, daysBetween, formatEventDateRange } from "@/lib/format-date";
 import { getSiteUrl } from "@/lib/site-url";
 import { PRACTICAL_CHECK_ROLE_KEYS } from "@/lib/practical-checks";
 import {
@@ -21,8 +21,6 @@ import type { OpportunitiesEmailEvent, RenderedEmail } from "@/lib/email/templat
 import {
   CATCH_UP_DAYS,
   currentCycleStart,
-  dateInZone,
-  daysBetween,
   SCHEDULE_ZONE,
   type OpportunitiesSchedule,
 } from "@/lib/opportunities-schedule";

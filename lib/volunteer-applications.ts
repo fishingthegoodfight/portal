@@ -561,9 +561,3 @@ export type ApplicationRecord = {
   references_reviewed_at: string | null;
   references_reviewed_by: string | null;
 };
-
-/** Where the attendance count points, for the review screen: the numbers
- * only suggest; the reviewer chooses. */
-export function attendanceSuggestion(attended: number, target: number): "invite" | "attend_more" {
-  return attended >= target ? "invite" : "attend_more";
-}

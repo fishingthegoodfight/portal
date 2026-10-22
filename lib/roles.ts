@@ -10,7 +10,7 @@ export const ROLE_LABELS: Record<Role, string> = {
 
 /**
  * What profiles.can_view_volunteer_screening grants someone, in words, by
- * role — for the People & roles screen. Two separate things:
+ * role — for Members → Team & access and the person page. Two separate things:
  *  - the volunteer registry's screening notes: admins only
  *    (can_view_volunteer_screening());
  *  - screening calls on volunteer applications: anyone with the flag, for
@@ -24,9 +24,9 @@ export function screeningFlagGrants(role: Role, ledChapters: string[]): string {
   }
   if (role === "chapter_lead") {
     const chapters = ledChapters.length > 0 ? ledChapters.join(", ") : "their chapters";
-    return `Grants: screening calls on volunteer applications for ${chapters}. Not the registry's screening notes — those are admins only.`;
+    return `Grants: screening calls on volunteer applications for ${chapters}. Not the screening notes on volunteers' pages — those are admins only.`;
   }
-  return "Grants nothing right now: they can't see any volunteer applications, and the registry's screening notes are admins only.";
+  return "Grants nothing right now: they can't see any volunteer applications, and the screening notes on volunteers' pages are admins only.";
 }
 
 /** The general rule, for forms where the person's role isn't settled yet. */

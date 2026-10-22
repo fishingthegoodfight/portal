@@ -15,7 +15,8 @@ import {
   type Member,
   type MemberStats,
 } from "@/lib/members";
-import { dateInZone, SCHEDULE_ZONE } from "@/lib/opportunities-schedule";
+import { dateInZone } from "@/lib/format-date";
+import { SCHEDULE_ZONE } from "@/lib/opportunities-schedule";
 
 /**
  * The weekly "who to reach out to" email (Part 2 of Members; 2026-10-09

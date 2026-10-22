@@ -3,7 +3,8 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/supabase/server";
 import { OpportunitiesEmailSettingsForm } from "@/components/admin/opportunities-email-settings-form";
 import { Card, CardContent } from "@/components/ui/card";
-import { dateInZone, SCHEDULE_ZONE } from "@/lib/opportunities-schedule";
+import { dateInZone } from "@/lib/format-date";
+import { SCHEDULE_ZONE } from "@/lib/opportunities-schedule";
 
 async function SettingsLoader() {
   const supabase = await createClient();

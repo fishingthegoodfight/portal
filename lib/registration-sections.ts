@@ -362,11 +362,6 @@ export function withHiddenFieldsCleared(
   return next;
 }
 
-/** Every profile column any section might read or write, deduped. */
-export const REGISTRATION_PROFILE_FIELD_KEYS = Array.from(
-  new Set(REGISTRATION_SECTIONS.flatMap((s) => s.fields.map((f) => f.key))),
-);
-
 /**
  * True once the member has entered *anything* for this section — even a
  * partial answer. The profile page uses this to decide whether an optional
@@ -542,4 +537,12 @@ export function rosterSectionAnswer(
   profileFields: Record<string, string>,
 ): string | null {
   return isSectionComplete(section, profileFields) ? section.summary(profileFields) || "—" : null;
+}
+
+/** "Dietary needs, Emergency contact", or "None": a list of section ids as
+ * their titles, in the order the sections are defined. */
+export function sectionsLabel(ids: string[] | null | undefined): string {
+  const set = new Set(ids ?? []);
+  const labels = REGISTRATION_SECTIONS.filter((s) => set.has(s.id)).map((s) => s.title);
+  return labels.length > 0 ? labels.join(", ") : "None";
 }

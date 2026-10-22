@@ -15021,3 +15021,77 @@ commit;
 --     left join public.volunteer_role_approvals a on a.volunteer_id = v.user_id and a.revoked_at is null
 --     left join public.volunteer_role_types rt on rt.id = a.role_type_id
 --    where lower(u.email) = 'tcramer@fishingthegoodfight.org';
+
+
+-- =============================================================================
+-- 2026-10-22 — Drop volunteers who never registered
+-- =============================================================================
+-- Run 2026-10-22: step 2 dropped 14 (all approved, imported 2026-09-28,
+-- never registered); the four with shifts were kept.
+--
+-- Data only: no schema change, no new tables.
+--
+-- The Volunteers page is going away (its work moves to Members and the
+-- person page), along with bulk import. Volunteers who never completed the
+-- registration form have had invites and fortnightly "finish your
+-- registration" nudges for weeks; drop their volunteer record. They keep
+-- their account, profile, RSVPs and attendance. An admin can invite any of
+-- them again from Members.
+--
+-- Dropped: status 'invited' or 'approved' with registered_at null.
+-- Kept anyway:
+--   - tcramer@fishingthegoodfight.org (made a volunteer in the 2026-10-14 entry to test
+--     the volunteer pages; never registered by design)
+--   - anyone with an approved volunteer application: approved through the
+--     real process and due to register next, not a stale import.
+--   - anyone with a volunteer shift on record: they're actively volunteering
+--     and just never filled in the form (step 1 on 2026-10-22 showed four:
+--     Cooper Jacobs, Charlie Sanady, Kevin Bolinsky, Justin Chambers).
+-- The volunteers row's children (role approvals, notes, screening notes,
+-- certifications, registration details) go with it (on delete cascade).
+--
+-- Step 1 is read-only. Step 2 deletes. Run step 1 first and check the list.
+
+-- Step 1 (read-only): everyone in scope, and whether they'd be kept.
+select p.first_name, p.last_name, p.email, v.status,
+       v.invited_at::date as invited, v.approved_at::date as approved,
+       (select count(*) from public.volunteer_role_approvals a
+         where a.volunteer_id = v.user_id and a.revoked_at is null) as role_approvals,
+       (select count(*) from public.volunteer_certifications c
+         where c.volunteer_id = v.user_id) as certificates,
+       (select count(*) from public.volunteer_signups s
+         where s.user_id = v.user_id) as shifts,
+       case
+         when lower(p.email) = 'tcramer@fishingthegoodfight.org' then 'KEEP: admin account'
+         when exists (select 1 from public.volunteer_applications va
+                       where va.user_id = v.user_id and va.status = 'approved') then 'KEEP: approved application'
+         when exists (select 1 from public.volunteer_signups s
+                       where s.user_id = v.user_id) then 'KEEP: has volunteered'
+         else 'drop'
+       end as outcome
+  from public.volunteers v
+  join public.profiles p on p.id = v.user_id
+ where v.registered_at is null
+   and v.status in ('invited', 'approved')
+ order by outcome desc, v.status, p.last_name, p.first_name;
+
+-- Step 2: delete. Returns who was dropped.
+begin;
+
+delete from public.volunteers v
+ using public.profiles p
+ where p.id = v.user_id
+   and v.registered_at is null
+   and v.status in ('invited', 'approved')
+   and lower(coalesce(p.email, '')) <> 'tcramer@fishingthegoodfight.org'
+   and not exists (
+     select 1 from public.volunteer_applications va
+      where va.user_id = v.user_id and va.status = 'approved'
+   )
+   and not exists (
+     select 1 from public.volunteer_signups s
+      where s.user_id = v.user_id
+   )
+returning p.first_name, p.last_name, p.email, v.status;
+
+commit;

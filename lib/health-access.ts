@@ -29,8 +29,6 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
  * any screen that doesn't go through one of these.
  */
 
-export type HealthAccessAction = "view" | "print";
-
 /** Whether the signed-in person may see health data for this event at all
  * (the flag, within their can_manage_event scope) — e.g. to show the
  * roster's health links. Not a read; not logged. */
@@ -42,42 +40,6 @@ export async function canViewEventHealthHistory(
     p_event_id: eventId,
   });
   return !error && data === true;
-}
-
-/** Whether the signed-in person may see this person's health data, in the
- * context of this event. Not a read; not logged. */
-export async function canViewHealthHistory(
-  supabase: SupabaseServerClient,
-  subjectUserId: string,
-  eventId: number,
-): Promise<boolean> {
-  const { data, error } = await supabase.rpc("can_view_health_history", {
-    p_subject_user_id: subjectUserId,
-    p_event_id: eventId,
-  });
-  return !error && data === true;
-}
-
-/** Records a staff read or print in health_access_log. The read functions
- * below already log their own access — this is for anything that shows
- * health data some other way. False when the access isn't allowed or the
- * entry couldn't be written; either way the data must not be shown. */
-export async function logHealthAccess(
-  supabase: SupabaseServerClient,
-  subjectUserId: string,
-  eventId: number,
-  action: HealthAccessAction,
-): Promise<boolean> {
-  const { error } = await supabase.rpc("log_health_access", {
-    p_subject_user_id: subjectUserId,
-    p_event_id: eventId,
-    p_action: action,
-  });
-  if (error) {
-    console.error(`[health access] ${action} of ${subjectUserId} for event ${eventId}: ${error.message}`);
-    return false;
-  }
-  return true;
 }
 
 export type HealthRead<T> = { ok: true; data: T } | { ok: false; error: string };

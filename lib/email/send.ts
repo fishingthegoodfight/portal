@@ -51,6 +51,7 @@ import {
   chapterMessageEmail,
   type ChapterMessageContent,
 } from "@/lib/email/templates";
+import { CONTACT_EMAIL } from "@/lib/contact";
 
 type EmailProvider = "resend" | "smtp";
 
@@ -58,7 +59,7 @@ type EmailProvider = "resend" | "smtp";
 // domain is verified with Resend. The SMTP path uses EMAIL_FROM instead.
 const RESEND_FROM_ADDRESS =
   process.env.RESEND_FROM || "Fishing the Good Fight <onboarding@resend.dev>";
-const REPLY_TO = "tcramer@fishingthegoodfight.org";
+const REPLY_TO = CONTACT_EMAIL;
 
 type OutgoingEmail = {
   to: string | string[];

@@ -12,10 +12,6 @@
 export const SMS_CONSENT_TEXT =
   "Yes, text me event reminders and volunteer updates from Fishing the Good Fight at the number above. Message frequency varies. Message and data rates may apply. Reply HELP for help, STOP to opt out. Consent isn't required to join, RSVP or volunteer.";
 
-/** True while SMS_CONSENT_TEXT was a stand-in: the checkbox was then shown
- * to admins only. */
-export const SMS_CONSENT_IS_PLACEHOLDER = false;
-
 /** Linked from the public opt-in page (app/sms) and meant to match the
  * campaign registration. Null = not published yet, so not linked. */
 export const PRIVACY_POLICY_URL: string | null =

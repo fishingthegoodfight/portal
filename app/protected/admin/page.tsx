@@ -346,8 +346,8 @@ function FillFigure({ label, fill, low }: { label: string; fill: Fill; low: bool
  * see only the events they manage. The chapter filter defaults to All for
  * an admin and to a chapter lead's own chapters.
  */
-/** The header buttons, limited to what this person can reach: the volunteer
- * registry, waivers, marketing and setup are admin-only; "New event" needs a chapter
+/** The header buttons, limited to what this person can reach:
+ * certifications, waivers, marketing and setup are admin-only; "New event" needs a chapter
  * they can create events in (manageable_chapters). */
 async function AdminIndexActions() {
   const supabase = await createClient();
@@ -370,7 +370,7 @@ async function AdminIndexActions() {
       {access?.isAdmin && (
         <>
           <Button asChild variant="outline">
-            <Link href="/protected/admin/volunteers">Volunteers</Link>
+            <Link href="/protected/admin/certifications">Certifications</Link>
           </Button>
           <Button asChild variant="outline">
             <Link href="/protected/admin/waivers">Waivers</Link>

@@ -1,6 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { keyFromLabel } from "@/lib/utils";
 import { requireAdmin } from "@/lib/admin/require-admin";
 import { INTEREST_AREA_KINDS, type InterestAreaKind } from "@/lib/volunteer-applications";
 
@@ -9,10 +10,6 @@ export type InterestAreaResult = { ok: true } | { ok: false; error: string };
 export type InterestAreaInput = { kind: InterestAreaKind; label: string; description: string; sortOrder: number };
 
 /** "Teaching fly fishing on the water" -> "teaching_fly_fishing_on_the_water". */
-function slugify(label: string): string {
-  return label.toLowerCase().replace(/'/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 60) || "area";
-}
-
 function validate(input: InterestAreaInput): string | null {
   if (!INTEREST_AREA_KINDS.some((k) => k.value === input.kind)) return "Choose which list it goes in";
   if (!input.label.trim()) return "The wording is required";
@@ -34,7 +31,7 @@ export async function createInterestAreaAction(input: InterestAreaInput): Promis
   const problem = validate(input);
   if (problem) return { ok: false, error: problem };
 
-  const base = slugify(input.label);
+  const base = keyFromLabel(input.label, "area").slice(0, 60);
   for (let attempt = 0; attempt < 5; attempt++) {
     const { error } = await supabase.from("volunteer_interest_areas").insert({
       key: attempt === 0 ? base : `${base}_${attempt + 1}`,

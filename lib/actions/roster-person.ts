@@ -9,7 +9,7 @@ export type RosterDetailsResult = { ok: true } | { ok: false; error: string };
 
 /**
  * "Edit details" on a roster row: fixes someone's name or phone at check-in
- * (a misspelling, a wrong digit) without a trip to People & roles. Name and
+ * (a misspelling, a wrong digit) without a trip to their page. Name and
  * phone only.
  *
  * For whoever manages the event (can_manage_event) — the event's own lead

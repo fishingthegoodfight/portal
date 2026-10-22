@@ -3,7 +3,7 @@ import type { AdminDigestSection } from "@/lib/email/templates";
 import { getSiteUrl } from "@/lib/site-url";
 import { formatDateInZone } from "@/lib/format-date";
 import { formatCheckDate } from "@/lib/practical-checks";
-import { daysBetween, REFERENCE_MAX_REMINDERS } from "@/lib/volunteer-references";
+import { denverDaysBetween, REFERENCE_MAX_REMINDERS } from "@/lib/volunteer-references";
 import { loadChapters } from "@/lib/chapters";
 import { eventYear, waiverStateForEvent } from "@/lib/waivers";
 
@@ -195,7 +195,7 @@ async function loadOutstandingReferences(admin: AdminClient): Promise<Outstandin
 }
 
 function referenceItem(row: OutstandingReferenceRow, extra: string) {
-  const waiting = daysBetween(new Date(row.requested_at), new Date());
+  const waiting = denverDaysBetween(new Date(row.requested_at), new Date());
   const manual = row.manual_reminders_sent > 0 ? ` (+${row.manual_reminders_sent} by hand)` : "";
   return {
     label: `${row.volunteer_applications?.full_name ?? "An applicant"} — reference ${row.slot} (${row.name})`,

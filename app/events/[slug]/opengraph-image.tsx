@@ -36,7 +36,7 @@ export default async function Image({ params }: { params: Promise<{ slug: string
           flexDirection: "column",
           justifyContent: "space-between",
           padding: 72,
-          background: "#14532d",
+          background: "#39523f" /* FTGF green */,
           color: "#ffffff",
           fontFamily: "Geist",
         }}

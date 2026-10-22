@@ -43,7 +43,7 @@ import {
 } from "@/lib/registration-sections";
 import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
 import { missingDetailsFields, type DetailsCardKey } from "@/lib/core-profile";
-import { SMS_CONSENT_IS_PLACEHOLDER, SMS_CONSENT_TEXT } from "@/lib/sms-consent";
+import { SMS_CONSENT_TEXT } from "@/lib/sms-consent";
 import { Checkbox } from "@/components/ui/checkbox";
 import { activeChapters, isChapterName, type Chapter } from "@/lib/chapters";
 import { formatPhoneNumber } from "@/lib/phone";
@@ -756,21 +756,18 @@ function YourDetails({
           />
         </div>
       )}
-      {/* Optional, off by default. Hidden until the registered 10DLC wording
-        * replaces the placeholder in lib/sms-consent.ts. */}
-      {!SMS_CONSENT_IS_PLACEHOLDER && (
-        <label htmlFor="details_sms_consent" className="flex items-start gap-2 text-sm">
-          <Checkbox
-            id="details_sms_consent"
-            className="mt-0.5"
-            checked={smsConsent}
-            onCheckedChange={(checked) => onSmsConsentChange(checked === true)}
-          />
-          <span>
-            {SMS_CONSENT_TEXT} <span className="text-muted-foreground">(optional)</span>
-          </span>
-        </label>
-      )}
+      {/* Optional, off by default. */}
+      <label htmlFor="details_sms_consent" className="flex items-start gap-2 text-sm">
+        <Checkbox
+          id="details_sms_consent"
+          className="mt-0.5"
+          checked={smsConsent}
+          onCheckedChange={(checked) => onSmsConsentChange(checked === true)}
+        />
+        <span>
+          {SMS_CONSENT_TEXT} <span className="text-muted-foreground">(optional)</span>
+        </span>
+      </label>
     </fieldset>
   );
 }

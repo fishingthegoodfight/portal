@@ -14,7 +14,7 @@ import {
 } from "@/lib/volunteer-applications";
 import { SCREENABLE_STATUSES, type ScreeningRecord } from "@/lib/volunteer-screenings";
 import {
-  daysBetween,
+  denverDaysBetween,
   referenceAnswerRows,
   referenceFishingAnswerRows,
   type ReferenceRequest,
@@ -373,7 +373,7 @@ async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }
                   relationship: r.relationship,
                   matchedVolunteer: r.matched_volunteer,
                   requestedOn: on(r.requested_at) as string,
-                  daysWaiting: daysBetween(new Date(r.requested_at), now),
+                  daysWaiting: denverDaysBetween(new Date(r.requested_at), now),
                   remindersSent: r.reminders_sent,
                   lastReminderOn: on(r.last_reminder_at),
                   manualReminders: r.manual_reminders_sent,

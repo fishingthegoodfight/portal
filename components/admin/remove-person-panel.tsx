@@ -19,7 +19,7 @@ import { Textarea } from "@/components/ui/textarea";
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /**
- * "Remove person…" on a People & roles row. Loads what's attached to them
+ * "Remove person…" on a Team & access row or a person's page. Loads what's attached to them
  * first, then:
  *  - nothing attached: delete outright, confirmed by typing their email;
  *  - something attached: Remove access (history kept) is the offer, with a

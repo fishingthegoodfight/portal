@@ -14,7 +14,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
@@ -65,16 +64,17 @@ function roleSummary(person: RolePerson): string {
 }
 
 /**
- * Admin-only screen for setting someone's role and, for a chapter lead, the
- * chapters they cover. Removing your own admin role asks first — only
- * another admin can give it back. Each row other than your own also has
- * "Remove person…" (see RemovePersonPanel).
+ * Members → Team & access (admins only): who's an admin or chapter lead,
+ * who has sensitive-data access, and who has had access removed, each with
+ * the same controls as their profile. Removing your own admin role asks
+ * first — only another admin can give it back. Each row other than your own
+ * also has "Remove person…" (see RemovePersonPanel). Anyone else's role is
+ * changed from their profile (a name on Members → Everyone).
  */
 export function RolesManager({
   currentUserId,
   staff,
-  query,
-  results,
+  removed,
   removals,
   chapterOptions,
 }: {
@@ -85,9 +85,9 @@ export function RolesManager({
   /** Everyone who's currently an admin or chapter lead, or has either
    * sensitive-data flag. */
   staff: RolePerson[];
-  query: string;
-  /** Search matches for `query`, or null when nothing's been searched. */
-  results: RolePerson[] | null;
+  /** Everyone whose access is currently removed, so it can be restored:
+   * they're left off Members' other views. */
+  removed: RolePerson[];
   /** The latest person_removal_log entries, newest first. */
   removals: RemovalLogEntry[];
 }) {
@@ -138,47 +138,22 @@ export function RolesManager({
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Find someone</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          {/* A plain GET form: the search lives in the URL (?q=). */}
-          <form method="get" className="flex gap-2">
-            <Label htmlFor="roles_q" className="sr-only">
-              Name or email
-            </Label>
-            <Input
-              id="roles_q"
-              name="q"
-              type="search"
-              defaultValue={query}
-              placeholder="Name or email"
-            />
-            <Button type="submit" variant="outline">
-              Search
-            </Button>
-          </form>
-          {results &&
-            (results.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No one matches &ldquo;{query}&rdquo;.</p>
-            ) : (
-              results.map(renderRow)
-            ))}
-          {!results && query.length > 0 && (
-            <p className="text-sm text-muted-foreground">Type at least 2 characters.</p>
-          )}
-        </CardContent>
-      </Card>
+      {removed.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Access removed</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">{removed.map(renderRow)}</CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
-          <CardTitle>Removed people</CardTitle>
+          <CardTitle>Removal history</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-2 text-sm">
           <p className="text-muted-foreground">
-            Every Remove access, Restore access and delete, newest first. Find someone above to
-            restore their access.
+            Every Remove access, Restore access and delete, newest first.
           </p>
           {removals.length === 0 ? (
             <p className="text-muted-foreground">Nobody has been removed yet.</p>
@@ -209,7 +184,7 @@ export function RolesManager({
 
 /**
  * One person's role, sensitive-data flags, Remove person and Restore access.
- * A row on People & roles, and the "Roles & access" card on the contact
+ * A row on Members → Team & access, and the "Site role & access" card on the person
  * profile (`onProfile`: their name and email are already in the page's
  * header, so only the role line is shown).
  */

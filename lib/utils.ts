@@ -5,7 +5,14 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-// This check can be removed, it is just for tutorial purposes
-export const hasEnvVars =
-  process.env.NEXT_PUBLIC_SUPABASE_URL &&
-  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+/** A stable key from a display name: "Men's Nights" → "mens_nights".
+ * `fallback` when nothing usable is left. */
+export function keyFromLabel(label: string, fallback: string): string {
+  return (
+    label
+      .toLowerCase()
+      .replace(/'/g, "")
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "") || fallback
+  );
+}
