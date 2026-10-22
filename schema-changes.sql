@@ -15095,3 +15095,78 @@ delete from public.volunteers v
 returning p.first_name, p.last_name, p.email, v.status;
 
 commit;
+
+-- =============================================================================
+-- 2026-10-22 — Trim authenticated's leftover automatic grants to match RLS
+-- =============================================================================
+-- Run 2026-10-22: step 1 returned no rows; step 3 showed all 12 as below.
+-- Grants only: no new tables, no policy changes, anon untouched.
+--
+-- These 12 tables were created while Supabase still auto-granted everything
+-- to anon, authenticated and service_role. Their entries revoked anon and
+-- granted authenticated what its policies allow, but never revoked
+-- authenticated first, so it kept the rest of the automatic grant: DELETE
+-- (and on volunteer_signups INSERT) with no policy allowing it, plus
+-- TRUNCATE, TRIGGER, REFERENCES and MAINTAIN on all 12. RLS already blocked
+-- the INSERT/DELETE and the Data API can't send the others, so nothing was
+-- reachable; this brings them in line with CLAUDE.md (grants match policies).
+--
+-- Each table: revoke all from authenticated, then grant back exactly what it
+-- had in its own entry. volunteer_screening_notes has an ALL policy but its
+-- entry granted select/insert/update only, and nothing deletes from it, so it
+-- stays at those three. service_role and anon are not touched, and nor are
+-- sequence grants. Every app write to these tables is an insert, update or
+-- upsert that stays granted; deletes go through the service role or
+-- SECURITY DEFINER functions (step 1 checks for any that don't).
+
+-- Step 1 (read-only): functions that run as the caller and need a privilege
+-- this removes. Expect no rows. If any come back, stop and paste them.
+select p.proname
+from pg_proc p
+join pg_namespace n on n.oid = p.pronamespace
+where n.nspname = 'public'
+  and not p.prosecdef
+  and (
+    p.prosrc ~* 'delete\s+from\s+(public\.)?(volunteers|volunteer_role_approvals|volunteer_certifications|volunteer_signups|volunteer_screening_notes|waivers|waiver_signatures)\M'
+    or p.prosrc ~* 'insert\s+into\s+(public\.)?volunteer_signups\M'
+    or p.prosrc ~* '\mtruncate\M'
+  );
+
+-- Step 2: the trim.
+begin;
+
+revoke all on public.volunteers, public.volunteer_role_approvals, public.volunteer_certifications
+  from authenticated;
+grant select, insert, update on public.volunteers, public.volunteer_role_approvals, public.volunteer_certifications
+  to authenticated;
+
+revoke all on public.volunteer_signups from authenticated;
+grant select, update on public.volunteer_signups to authenticated;
+
+revoke all on public.volunteer_screening_notes from authenticated;
+grant select, insert, update on public.volunteer_screening_notes to authenticated;
+
+revoke all on public.waivers, public.waiver_signatures from authenticated;
+grant select, insert on public.waivers, public.waiver_signatures to authenticated;
+
+revoke all on public.event_types, public.event_templates, public.event_template_roles,
+  public.volunteer_role_types, public.venues
+  from authenticated;
+grant select, insert, update, delete on public.event_types, public.event_templates, public.event_template_roles,
+  public.volunteer_role_types, public.venues
+  to authenticated;
+
+commit;
+
+-- Step 3 (read-only): what authenticated has on the 12 now.
+select c.relname, string_agg(a.privilege_type, ', ' order by a.privilege_type) as authenticated
+from pg_class c
+join pg_namespace n on n.oid = c.relnamespace
+cross join lateral aclexplode(c.relacl) a
+where n.nspname = 'public'
+  and a.grantee = 'authenticated'::regrole
+  and c.relname in ('volunteers', 'volunteer_role_approvals', 'volunteer_certifications', 'volunteer_signups',
+                    'volunteer_screening_notes', 'waivers', 'waiver_signatures', 'event_types', 'event_templates',
+                    'event_template_roles', 'volunteer_role_types', 'venues')
+group by c.relname
+order by c.relname;
