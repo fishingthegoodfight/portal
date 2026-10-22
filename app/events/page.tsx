@@ -5,6 +5,7 @@ import { Suspense } from "react";
 
 import { ChapterTag } from "@/components/chapter-tag";
 import { Card, CardContent } from "@/components/ui/card";
+import { EVENTS_PAGE_SIZE, groupByMonth, MonthHeading, ShowMoreEvents, showLimit } from "@/components/event-months";
 import { isVirtualChapter } from "@/lib/chapters";
 import { publicEventPath } from "@/lib/event-slug";
 import { formatEventDateRange } from "@/lib/format-date";
@@ -19,9 +20,19 @@ export const metadata: Metadata = {
 const VIRTUAL = "Virtual";
 const pillLabel = (chapter: string) => (isVirtualChapter(chapter) ? VIRTUAL : chapter);
 
-async function EventList({ searchParams }: { searchParams: Promise<{ chapter?: string }> }) {
+type EventsSearchParams = { chapter?: string; show?: string };
+
+function eventsHref(chapter: string | null, show?: number): string {
+  const params = new URLSearchParams();
+  if (chapter) params.set("chapter", chapter);
+  if (show) params.set("show", String(show));
+  const query = params.toString();
+  return query ? `/events?${query}` : "/events";
+}
+
+async function EventList({ searchParams }: { searchParams: Promise<EventsSearchParams> }) {
   await connection(); // "upcoming" is about now, not build time
-  const { chapter } = await searchParams;
+  const { chapter, show } = await searchParams;
   let events;
   try {
     events = await loadUpcomingPublicEvents(new Date());
@@ -31,7 +42,9 @@ async function EventList({ searchParams }: { searchParams: Promise<{ chapter?: s
 
   const chapters = [...new Set(events.map((e) => (e.chapter ? pillLabel(e.chapter) : null)).filter(Boolean))] as string[];
   const selected = chapter && chapters.includes(chapter) ? chapter : null;
-  const shown = selected ? events.filter((e) => e.chapter && pillLabel(e.chapter) === selected) : events;
+  const matching = selected ? events.filter((e) => e.chapter && pillLabel(e.chapter) === selected) : events;
+  const limit = showLimit(show);
+  const shown = matching.slice(0, limit);
 
   return (
     <div className="flex flex-col gap-4">
@@ -40,7 +53,7 @@ async function EventList({ searchParams }: { searchParams: Promise<{ chapter?: s
           {[null, ...chapters].map((name) => (
             <Link
               key={name ?? "all"}
-              href={name ? `/events?chapter=${encodeURIComponent(name)}` : "/events"}
+              href={eventsHref(name)}
               aria-current={name === selected ? "page" : undefined}
               className={cn(
                 "rounded-full border px-3 py-1 text-sm",
@@ -55,29 +68,37 @@ async function EventList({ searchParams }: { searchParams: Promise<{ chapter?: s
       {shown.length === 0 ? (
         <p className="text-sm text-muted-foreground">No upcoming events right now. Check back soon.</p>
       ) : (
-        <ul className="flex flex-col gap-3">
-          {shown.map((event) => {
-            const where = publicLocationSummary(event);
-            return (
-              <li key={event.id}>
-                <Link href={publicEventPath(event.slug)} className="block">
-                  <Card className="transition-colors hover:bg-accent/50">
-                    <CardContent className="flex flex-col gap-1 py-4">
-                      <span className="font-semibold">{event.name}</span>
-                      <span className="text-sm text-muted-foreground">
-                        {formatEventDateRange(event.starts_at, event.ends_at, event.timezone)}
-                      </span>
-                      <span className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                        {event.chapter && <ChapterTag chapter={event.chapter} />}
-                        {where}
-                      </span>
-                    </CardContent>
-                  </Card>
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
+        <div className="flex flex-col gap-6">
+          {groupByMonth(shown).map((month) => (
+            <section key={month.label} className="flex flex-col gap-3">
+              <MonthHeading label={month.label} />
+              <ul className="flex flex-col gap-3">
+                {month.events.map((event) => {
+                  const where = publicLocationSummary(event);
+                  return (
+                    <li key={event.id}>
+                      <Link href={publicEventPath(event.slug)} className="block">
+                        <Card className="transition-colors hover:bg-accent/50">
+                          <CardContent className="flex flex-col gap-1 py-4">
+                            <span className="font-semibold">{event.name}</span>
+                            <span className="text-sm text-muted-foreground">
+                              {formatEventDateRange(event.starts_at, event.ends_at, event.timezone)}
+                            </span>
+                            <span className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                              {event.chapter && <ChapterTag chapter={event.chapter} />}
+                              {where}
+                            </span>
+                          </CardContent>
+                        </Card>
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ))}
+          <ShowMoreEvents href={eventsHref(selected, limit + EVENTS_PAGE_SIZE)} shown={shown.length} total={matching.length} />
+        </div>
       )}
     </div>
   );
@@ -89,7 +110,7 @@ async function EventList({ searchParams }: { searchParams: Promise<{ chapter?: s
  * to the event's existing public page; nothing is shown that those pages
  * don't already show (loadUpcomingPublicEvents).
  */
-export default function UpcomingEventsPage({ searchParams }: { searchParams: Promise<{ chapter?: string }> }) {
+export default function UpcomingEventsPage({ searchParams }: { searchParams: Promise<EventsSearchParams> }) {
   return (
     <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 p-6 md:p-10">
       <div>

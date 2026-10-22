@@ -32,15 +32,15 @@ function activeHref(pathname: string, items: AdminNavItem[]): string | null {
 
 /**
  * The bar across the top of every admin page (app/protected/admin/layout),
- * limited to what this person can reach. On a phone it scrolls sideways
- * rather than wrapping.
+ * limited to what this person can reach. On a narrow screen it wraps onto a
+ * second line rather than scrolling.
  */
 export function AdminNav({ items }: { items: AdminNavItem[] }) {
   const pathname = usePathname();
   const active = activeHref(pathname, items);
   return (
-    <nav aria-label="Admin" className="w-full overflow-x-auto border-b print:hidden">
-      <ul className="flex min-w-max gap-5 text-sm">
+    <nav aria-label="Admin" className="w-full border-b print:hidden">
+      <ul className="flex flex-wrap gap-x-5 text-sm">
         {items.map((item) => {
           const isActive = item.href === active;
           return (
@@ -49,7 +49,7 @@ export function AdminNav({ items }: { items: AdminNavItem[] }) {
                 href={item.href}
                 aria-current={isActive ? "page" : undefined}
                 className={cn(
-                  "-mb-px inline-block border-b-2 py-2 transition-colors",
+                  "inline-block border-b-2 py-2 transition-colors",
                   isActive
                     ? "border-foreground font-medium text-foreground"
                     : "border-transparent text-muted-foreground hover:text-foreground",

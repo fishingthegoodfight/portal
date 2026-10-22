@@ -6,6 +6,7 @@ import { CheckCircle2, XCircle } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { Button } from "@/components/ui/button";
 import { EventCard } from "@/components/event-card";
+import { EVENTS_PAGE_SIZE, groupByMonth, MonthHeading, ShowMoreEvents, showLimit } from "@/components/event-months";
 import { formatEventDateRange } from "@/lib/format-date";
 import {
   chapterFilterOptions,
@@ -52,11 +53,7 @@ async function ConfirmationBannerLoader({
 
   return (
     <div className="bg-accent text-sm p-3 px-5 rounded-md text-foreground flex gap-3 items-center">
-      {cancelled ? (
-        <XCircle size={16} strokeWidth={2} />
-      ) : (
-        <CheckCircle2 size={16} strokeWidth={2} />
-      )}
+      {cancelled ? <XCircle size={16} strokeWidth={2} /> : <CheckCircle2 size={16} strokeWidth={2} />}
       {message}
     </div>
   );
@@ -104,9 +101,9 @@ function EventsFilterBar({
 async function EventsListLoader({
   searchParams,
 }: {
-  searchParams: Promise<{ chapter?: string; volunteers?: string }>;
+  searchParams: Promise<{ chapter?: string; volunteers?: string; show?: string }>;
 }) {
-  const { chapter: chapterParam, volunteers: volunteersParam } = await searchParams;
+  const { chapter: chapterParam, volunteers: volunteersParam, show } = await searchParams;
   const supabase = await createClient();
   const { data, error } = await supabase.auth.getClaims();
 
@@ -145,19 +142,11 @@ async function EventsListLoader({
     .order("starts_at", { ascending: true });
 
   if (eventsError) {
-    return (
-      <p className="text-sm text-red-500">
-        Couldn&apos;t load events: {eventsError.message}
-      </p>
-    );
+    return <p className="text-sm text-red-500">Couldn&apos;t load events: {eventsError.message}</p>;
   }
 
   if (!events || events.length === 0) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        No upcoming events right now — check back soon.
-      </p>
-    );
+    return <p className="text-sm text-muted-foreground">No upcoming events right now — check back soon.</p>;
   }
 
   const chapterEvents = events.filter((event) => matchesChapterSelection(selection, event.chapter, filterOptions));
@@ -173,9 +162,11 @@ async function EventsListLoader({
     : [];
   const needsVolunteerIds = new Set(openShifts.map((shift) => shift.event.id));
   const needsVolunteersFilter = isVolunteer && volunteersParam === "1";
-  const shownEvents = needsVolunteersFilter
+  const matchingEvents = needsVolunteersFilter
     ? chapterEvents.filter((event) => needsVolunteerIds.has(event.id))
     : chapterEvents;
+  const limit = showLimit(show);
+  const shownEvents = matchingEvents.slice(0, limit);
 
   // Filter by user_id explicitly: RLS alone isn't enough, because admins have
   // a policy (admin_select_all_rsvps) that lets them read EVERYONE's rows —
@@ -190,9 +181,7 @@ async function EventsListLoader({
     );
   // A lapsed offer ('expired') is no longer an active RSVP — treat it as none.
   const rsvpStatusByEvent = new Map(
-    (rsvps ?? [])
-      .filter((rsvp) => rsvp.status !== "expired")
-      .map((rsvp) => [rsvp.event_id, rsvp.status]),
+    (rsvps ?? []).filter((rsvp) => rsvp.status !== "expired").map((rsvp) => [rsvp.event_id, rsvp.status]),
   );
 
   // Open offers hold a spot but aren't in events.spots_taken, so fold them
@@ -223,67 +212,70 @@ async function EventsListLoader({
             : `No upcoming events for ${chapterSelectionLabel(selection, filterOptions)}.`}
         </p>
       ) : (
-        shownEvents.map((event) => {
-          const rsvpStatus = rsvpStatusByEvent.get(event.id) ?? null;
-          const hasActiveRsvp =
-            rsvpStatus != null && rsvpStatus !== "cancelled";
-          const spotsTaken = (event.spots_taken ?? 0) + (offeredByEvent.get(event.id) ?? 0);
-          const spotsLeft = computeSpotsLeft(event.capacity, spotsTaken);
-          const isFull = spotsLeft != null && spotsLeft <= 0 && !hasActiveRsvp;
+        <div className="flex flex-col gap-6">
+          {groupByMonth(shownEvents).map((month) => (
+            <section key={month.label} className="flex flex-col gap-4">
+              <MonthHeading label={month.label} />
+              {month.events.map((event) => {
+                const rsvpStatus = rsvpStatusByEvent.get(event.id) ?? null;
+                const hasActiveRsvp = rsvpStatus != null && rsvpStatus !== "cancelled";
+                const spotsTaken = (event.spots_taken ?? 0) + (offeredByEvent.get(event.id) ?? 0);
+                const spotsLeft = computeSpotsLeft(event.capacity, spotsTaken);
+                const isFull = spotsLeft != null && spotsLeft <= 0 && !hasActiveRsvp;
 
-          return (
-            <EventCard
-              key={event.id}
-              event={{
-                id: event.id,
-                name: event.name,
-                chapter: event.chapter,
-                location: event.location,
-                description: event.description,
-                occurrenceNote: event.occurrence_note,
-                dateRange: formatEventDateRange(
-                  event.starts_at,
-                  event.ends_at,
-                  event.timezone,
-                ),
-                capacity: event.capacity,
-                spots_taken: spotsTaken,
-                needsVolunteers: needsVolunteerIds.has(event.id),
-              }}
-              rsvpStatus={rsvpStatus}
-              action={
-                <div className="flex gap-2">
-                  {managedEventIds.has(event.id) && (
-                    <Button asChild variant="outline">
-                      <Link href={`/protected/admin/events/${event.id}`}>
-                        Manage
-                      </Link>
-                    </Button>
-                  )}
-                  {rsvpStatus === "offered" ? (
-                    <Button asChild>
-                      <Link href={`/protected/events/${event.id}/rsvp`}>
-                        Claim your spot
-                      </Link>
-                    </Button>
-                  ) : hasActiveRsvp ? (
-                    <Button asChild variant="outline">
-                      <Link href={`/protected/events/${event.id}/rsvp`}>
-                        View / Change RSVP
-                      </Link>
-                    </Button>
-                  ) : (
-                    <Button asChild>
-                      <Link href={`/protected/events/${event.id}/rsvp`}>
-                        {isFull ? "Join waitlist" : "RSVP"}
-                      </Link>
-                    </Button>
-                  )}
-                </div>
-              }
-            />
-          );
-        })
+                return (
+                  <EventCard
+                    key={event.id}
+                    event={{
+                      id: event.id,
+                      name: event.name,
+                      chapter: event.chapter,
+                      location: event.location,
+                      description: event.description,
+                      occurrenceNote: event.occurrence_note,
+                      dateRange: formatEventDateRange(event.starts_at, event.ends_at, event.timezone),
+                      capacity: event.capacity,
+                      spots_taken: spotsTaken,
+                      needsVolunteers: needsVolunteerIds.has(event.id),
+                    }}
+                    rsvpStatus={rsvpStatus}
+                    action={
+                      <div className="flex gap-2">
+                        {managedEventIds.has(event.id) && (
+                          <Button asChild variant="outline">
+                            <Link href={`/protected/admin/events/${event.id}`}>Manage</Link>
+                          </Button>
+                        )}
+                        {rsvpStatus === "offered" ? (
+                          <Button asChild>
+                            <Link href={`/protected/events/${event.id}/rsvp`}>Claim your spot</Link>
+                          </Button>
+                        ) : hasActiveRsvp ? (
+                          <Button asChild variant="outline">
+                            <Link href={`/protected/events/${event.id}/rsvp`}>View / Change RSVP</Link>
+                          </Button>
+                        ) : (
+                          <Button asChild>
+                            <Link href={`/protected/events/${event.id}/rsvp`}>{isFull ? "Join waitlist" : "RSVP"}</Link>
+                          </Button>
+                        )}
+                      </div>
+                    }
+                  />
+                );
+              })}
+            </section>
+          ))}
+          <ShowMoreEvents
+            href={filterHref("/protected/events", {
+              chapter: chapterSelectionParam(selection),
+              volunteers: needsVolunteersFilter ? "1" : undefined,
+              show: String(limit + EVENTS_PAGE_SIZE),
+            })}
+            shown={shownEvents.length}
+            total={matchingEvents.length}
+          />
+        </div>
       )}
     </div>
   );
@@ -292,7 +284,7 @@ async function EventsListLoader({
 export default function EventsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ rsvp?: string; event?: string; chapter?: string; volunteers?: string }>;
+  searchParams: Promise<{ rsvp?: string; event?: string; chapter?: string; volunteers?: string; show?: string }>;
 }) {
   return (
     <div className="flex-1 w-full flex flex-col gap-8 max-w-2xl">
@@ -308,11 +300,7 @@ export default function EventsPage({
           Published, upcoming events. RSVP below for the ones you can make.
         </p>
       </div>
-      <Suspense
-        fallback={
-          <p className="text-sm text-muted-foreground">Loading...</p>
-        }
-      >
+      <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>
         <EventsListLoader searchParams={searchParams} />
       </Suspense>
     </div>
