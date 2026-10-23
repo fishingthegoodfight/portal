@@ -15170,3 +15170,684 @@ where n.nspname = 'public'
                     'event_template_roles', 'volunteer_role_types', 'venues')
 group by c.relname
 order by c.relname;
+
+-- =============================================================================
+-- 2026-10-23 — Duplicate profiles: suggestions, "not a duplicate", and merging
+-- =============================================================================
+-- Run 2026-10-23.
+--
+-- Someone who signed in with two different emails has two profiles, each
+-- with part of their history. This finds likely pairs and merges one
+-- profile (the "merged" one) into the other (the "kept" one).
+--
+-- 1. admin_possible_duplicates(): pairs of profiles with the same first and
+--    last name (case and spacing ignored), or the same phone number (last 10
+--    digits), minus pairs an admin has marked "not a duplicate". Each side
+--    comes with its email, phone, chapter, when it was created, last sign-in
+--    and how many RSVPs and shifts it has, for Setup → Duplicate profiles.
+--
+-- 2. person_duplicate_dismissals: "these two aren't the same person", one
+--    row per pair (user_a < user_b). No foreign keys on the pair, like
+--    email_preference_tokens: one would count as a reference in "Remove
+--    person". A row for a deleted person simply never matches again.
+--
+-- 3. admin_merge_people(keep, merge, typed email, fields, login, volunteer):
+--    everything of the merged profile moves to the kept one, then the merged
+--    profile and its login are deleted. One transaction; nothing is
+--    half-done.
+--      - Profile fields: the kept profile's values stay, except the columns
+--        named in p_fields_from_merged, copied from the merged one. Two
+--        names stand for groups: 'access' (role, led chapters, the two
+--        sensitive-data flags) and 'sms_consent' (consent, when, the wording,
+--        opted out). id, email, created_at/updated_at, access_removed_at and
+--        lead_events_checked_at are never copied.
+--      - Login (p_login_from_merged): false keeps the kept profile's email
+--        and password. true gives the kept login the merged one's email AND
+--        password, so they sign in exactly as they did with that email.
+--      - RSVPs and shifts: where both have one for the same event or role,
+--        the further-along one stays (checked in > confirmed > offered >
+--        waitlisted > anything else; a tie keeps the kept profile's). The
+--        other is removed with cancel's bookkeeping: a confirmed spot or
+--        slot is given back and a freed spot goes to the waitlist (returned
+--        as `offered` for the app to email). A paper-waiver or no-waiver
+--        record on the removed RSVP moves to the one that stays.
+--      - Waivers: where both signed the same waiver, the earlier signature
+--        stays.
+--      - Health forms, check-in answers, practical checks, applications:
+--        all moved. health_histories_immutable lets this one change through
+--        (the owner changes; nothing in the form does). Refused if both
+--        have an open volunteer application: withdraw one first.
+--      - Attendance credit: both → added together, notes joined.
+--      - Volunteer record: only the merged one has it → it moves. Both →
+--        the kept record's status and dates stay unless
+--        p_volunteer_from_merged, and its registration answers likewise.
+--        Role approvals, certifications and notes from both are kept (notes
+--        joined; a role approved on both stays approved once).
+--      - Leading events, "who did it" columns, outreach touches, texts and
+--        bulk-email recipients all point at the kept profile afterwards.
+--        health_access_log isn't touched (it can't be): entries about the
+--        merged profile keep its old id.
+--      - Certification files stay in the merged profile's storage folder
+--        until the app moves them; the function returns their rows.
+--    Before deleting anything it checks that nothing in public still points
+--    at the merged profile or its volunteer record, so a table added later
+--    and not handled here stops the merge instead of being cascaded away.
+--    Recorded in person_removal_log as action 'merged' (new), subject the
+--    merged profile, with the kept profile in details.
+--    Refuses: a non-admin caller, merging yourself away, the same profile
+--    twice, a typed email that isn't the merged profile's, and a merge that
+--    would leave no admin.
+--
+-- Also: the stamp triggers that rewrite timestamps (SMS consent,
+-- registration answers' confirmed_at) stand aside while a merge moves rows
+-- (ftgf.merging_person, transaction-local, set only inside the function; the
+-- SMS one also requires an admin caller). ftgf.deleting_person is set too,
+-- so the three stamp triggers from the "Removing a person" entry keep "who
+-- did it" columns as the merge rewrites them.
+--
+-- Step 0 checks this role can change auth.users and auth.identities, and
+-- that every foreign key into auth.users, profiles or volunteers is one this
+-- entry handles. If not, nothing is applied: send the list over.
+--
+-- New table person_duplicate_dismissals ships with its grants: RLS on,
+-- admin-only select/insert/delete policies; authenticated gets exactly
+-- those three; anon nothing; service_role all. No sequence.
+--
+-- Safe to re-run. One transaction.
+
+begin;
+
+-- ---- 0. Checks --------------------------------------------------------------------
+do $check$
+declare
+  v_unexpected text;
+begin
+  if not (has_table_privilege('auth.users', 'UPDATE')
+          and has_table_privilege('auth.users', 'DELETE')
+          and has_table_privilege('auth.identities', 'UPDATE')) then
+    raise exception 'This role can''t update/delete auth.users or update auth.identities — nothing was applied';
+  end if;
+
+  -- Cascading or multi-column foreign keys that admin_merge_people doesn't
+  -- know about (the "who did it" columns are handled generically).
+  select string_agg(format('%s.%s -> %s (on delete %s, %s columns)',
+                           c.conrelid::regclass, a.attname, c.confrelid::regclass, c.confdeltype,
+                           cardinality(c.conkey)), E'\n')
+    into v_unexpected
+    from pg_constraint c
+    join pg_class s on s.oid = c.conrelid
+    join pg_namespace n on n.oid = s.relnamespace
+    join pg_attribute a on a.attrelid = c.conrelid and a.attnum = c.conkey[1]
+   where c.contype = 'f'
+     and c.confrelid in ('auth.users'::regclass, 'public.profiles'::regclass, 'public.volunteers'::regclass)
+     and n.nspname = 'public'
+     and (c.confdeltype = 'c' or cardinality(c.conkey) > 1)
+     and (s.relname::text, a.attname::text) not in (
+       ('profiles', 'id'),
+       ('rsvps', 'user_id'),
+       ('volunteer_signups', 'user_id'),
+       ('waiver_signatures', 'user_id'),
+       ('health_histories', 'user_id'),
+       ('health_checkin_answers', 'user_id'),
+       ('attendance_credits', 'user_id'),
+       ('practical_instruction_checks', 'user_id'),
+       ('volunteer_applications', 'user_id'),
+       ('volunteers', 'user_id'),
+       ('volunteer_screening_notes', 'volunteer_id'),
+       ('volunteer_role_approvals', 'volunteer_id'),
+       ('volunteer_certifications', 'volunteer_id'),
+       ('volunteer_notes', 'volunteer_id'),
+       ('volunteer_registration_details', 'volunteer_id')
+     );
+
+  if nullif(v_unexpected, '') is not null then
+    raise exception E'Unexpected foreign keys reference people — nothing was applied:\n%', v_unexpected;
+  end if;
+end $check$;
+
+-- ---- 1. "Not a duplicate" ----------------------------------------------------------
+create table if not exists public.person_duplicate_dismissals (
+  user_a uuid not null,
+  user_b uuid not null,
+  dismissed_by uuid references auth.users(id) on delete set null,
+  dismissed_at timestamptz not null default now(),
+  primary key (user_a, user_b),
+  check (user_a < user_b)
+);
+
+alter table public.person_duplicate_dismissals enable row level security;
+
+drop policy if exists person_duplicate_dismissals_select_admin on public.person_duplicate_dismissals;
+create policy person_duplicate_dismissals_select_admin on public.person_duplicate_dismissals
+  for select to authenticated
+  using (public.is_admin());
+
+drop policy if exists person_duplicate_dismissals_insert_admin on public.person_duplicate_dismissals;
+create policy person_duplicate_dismissals_insert_admin on public.person_duplicate_dismissals
+  for insert to authenticated
+  with check (public.is_admin() and dismissed_by = auth.uid());
+
+drop policy if exists person_duplicate_dismissals_delete_admin on public.person_duplicate_dismissals;
+create policy person_duplicate_dismissals_delete_admin on public.person_duplicate_dismissals
+  for delete to authenticated
+  using (public.is_admin());
+
+revoke all on public.person_duplicate_dismissals from anon;
+revoke all on public.person_duplicate_dismissals from authenticated;
+grant select, insert, delete on public.person_duplicate_dismissals to authenticated;
+grant all on public.person_duplicate_dismissals to service_role;
+-- No sequence: the key is the pair.
+
+-- ---- 2. Likely duplicates ------------------------------------------------------------
+create or replace function public.admin_possible_duplicates()
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+begin
+  if not public.is_admin() then
+    raise exception 'Admins only' using errcode = '42501';
+  end if;
+
+  return coalesce((
+    with p as (
+      select pr.id,
+             case
+               when nullif(btrim(pr.first_name), '') is not null and nullif(btrim(pr.last_name), '') is not null
+               then lower(regexp_replace(btrim(pr.first_name) || ' ' || btrim(pr.last_name), '\s+', ' ', 'g'))
+             end as name_key,
+             nullif(right(regexp_replace(coalesce(pr.phone, ''), '\D', '', 'g'), 10), '') as phone_key
+        from public.profiles pr
+    ),
+    pairs as (
+      select a.id as a_id, b.id as b_id,
+             array_remove(array[
+               case when a.name_key = b.name_key then 'name' end,
+               case when length(a.phone_key) = 10 and a.phone_key = b.phone_key then 'phone' end
+             ], null) as reasons
+        from p a
+        join p b on a.id < b.id
+                and (a.name_key = b.name_key or (length(a.phone_key) = 10 and a.phone_key = b.phone_key))
+       where not exists (
+         select 1 from public.person_duplicate_dismissals d where d.user_a = a.id and d.user_b = b.id
+       )
+    ),
+    side as (
+      select pr.id,
+             jsonb_build_object(
+               'id', pr.id,
+               'name', nullif(concat_ws(' ', pr.first_name, pr.last_name), ''),
+               'email', pr.email,
+               'phone', pr.phone,
+               'chapter', pr.chapter,
+               'role', pr.role,
+               'access_removed_at', pr.access_removed_at,
+               'created_at', u.created_at,
+               'last_sign_in_at', u.last_sign_in_at,
+               'rsvps', (select count(*) from public.rsvps r where r.user_id = pr.id),
+               'shifts', (select count(*) from public.volunteer_signups s where s.user_id = pr.id),
+               'volunteer_status', (select v.status from public.volunteers v where v.user_id = pr.id)
+             ) as info
+        from public.profiles pr
+        left join auth.users u on u.id = pr.id
+       where pr.id in (select a_id from pairs union select b_id from pairs)
+    )
+    select jsonb_agg(
+             jsonb_build_object('reasons', to_jsonb(pairs.reasons), 'a', sa.info, 'b', sb.info)
+             order by sa.info->>'name' nulls last, pairs.a_id, pairs.b_id
+           )
+      from pairs
+      join side sa on sa.id = pairs.a_id
+      join side sb on sb.id = pairs.b_id
+  ), '[]'::jsonb);
+end $function$;
+
+-- ---- 3. Merges are logged with removals --------------------------------------------
+alter table public.person_removal_log
+  drop constraint if exists person_removal_log_action_check;
+alter table public.person_removal_log
+  add constraint person_removal_log_action_check
+  check (action in ('access_removed', 'access_restored', 'deleted', 'merged'));
+
+-- ---- 4. Stamp triggers stand aside while a merge moves rows ------------------------
+-- As the 2026-09-25 version, plus: admin_merge_people may change the owner
+-- (only the owner) of a form.
+create or replace function public.health_histories_immutable()
+returns trigger
+language plpgsql
+as $function$
+begin
+  if current_setting('ftgf.merging_person', true) = 'on'
+     and (to_jsonb(new) - 'user_id') = (to_jsonb(old) - 'user_id') then
+    return new;
+  end if;
+  raise exception 'Health forms can''t be edited — submit a new one instead' using errcode = '42501';
+end $function$;
+
+-- As the 2026-09-28 version, plus: moving the answers to the kept profile
+-- keeps when they were confirmed.
+create or replace function public.volunteer_registration_details_stamp()
+returns trigger
+language plpgsql
+as $function$
+begin
+  if tg_op = 'UPDATE'
+     and current_setting('ftgf.merging_person', true) = 'on'
+     and new.volunteer_id is distinct from old.volunteer_id then
+    return new;
+  end if;
+  new.confirmed_at := now();
+  return new;
+end $function$;
+
+-- As the 2026-10-12 version, plus: copying consent from the merged profile
+-- keeps its date and wording instead of restamping them.
+create or replace function public.profiles_sms_consent_stamp()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if tg_op = 'UPDATE' and current_setting('ftgf.merging_person', true) = 'on' and public.is_admin() then
+    return new;
+  end if;
+  if tg_op = 'UPDATE' and new.sms_consent = old.sms_consent then
+    new.sms_consent_at := old.sms_consent_at;
+    new.sms_consent_text := old.sms_consent_text;
+    new.sms_opted_out_at := old.sms_opted_out_at;
+  elsif new.sms_consent then
+    if nullif(btrim(new.sms_consent_text), '') is null then
+      raise exception 'SMS consent needs the wording that was shown' using errcode = '22023';
+    end if;
+    new.sms_consent_at := now();
+    new.sms_opted_out_at := null;
+  elsif tg_op = 'UPDATE' then
+    new.sms_opted_out_at := now();
+    new.sms_consent_text := old.sms_consent_text;
+    new.sms_consent_at := old.sms_consent_at;
+  end if;
+  return new;
+end $function$;
+
+-- ---- 5. The merge ----------------------------------------------------------------------
+create or replace function public.admin_merge_people(
+  p_keep_id uuid,
+  p_merge_id uuid,
+  p_confirm_email text,
+  p_fields_from_merged text[] default '{}'::text[],
+  p_login_from_merged boolean default false,
+  p_volunteer_from_merged boolean default false
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_keep public.profiles%rowtype;
+  v_merge public.profiles%rowtype;
+  v_merge_email text;
+  v_keep_email text;
+  v_login record;
+  v_allowed text[];
+  v_cols text[] := '{}'::text[];
+  v_field text;
+  v_counts jsonb;
+  v_offered jsonb := '[]'::jsonb;
+  v_status text;
+  v_opportunity bigint;
+  v_winner bigint;
+  v_loser bigint;
+  v_keep_vol boolean;
+  v_merge_vol boolean;
+  v_left boolean;
+  v_certs jsonb;
+  r record;
+begin
+  if not public.is_admin() then
+    raise exception 'Only admins can merge profiles' using errcode = '42501';
+  end if;
+  if p_keep_id is null or p_merge_id is null or p_keep_id = p_merge_id then
+    raise exception 'Pick two different profiles' using errcode = '22023';
+  end if;
+  if p_merge_id = auth.uid() then
+    raise exception 'You can''t merge your own profile away — keep yours, or ask another admin' using errcode = '42501';
+  end if;
+
+  -- Same lock as admin_set_user_role, so the admin count holds.
+  perform 1 from public.profiles where role = 'admin' for update;
+  select * into v_keep from public.profiles where id = p_keep_id for update;
+  if not found then
+    raise exception 'The profile to keep wasn''t found';
+  end if;
+  select * into v_merge from public.profiles where id = p_merge_id for update;
+  if not found then
+    raise exception 'The profile to merge wasn''t found';
+  end if;
+  select coalesce(v_merge.email, u.email) into v_merge_email from auth.users u where u.id = p_merge_id;
+  v_merge_email := coalesce(v_merge_email, v_merge.email);
+  select coalesce(v_keep.email, u.email) into v_keep_email from auth.users u where u.id = p_keep_id;
+  v_keep_email := coalesce(v_keep_email, v_keep.email);
+  if v_merge_email is null or lower(btrim(coalesce(p_confirm_email, ''))) <> lower(btrim(v_merge_email)) then
+    raise exception 'Type the merged profile''s email exactly to confirm' using errcode = '22023';
+  end if;
+  if exists (
+       select 1 from public.volunteer_applications
+        where user_id = p_keep_id and status not in ('approved', 'declined', 'withdrawn')
+     ) and exists (
+       select 1 from public.volunteer_applications
+        where user_id = p_merge_id and status not in ('approved', 'declined', 'withdrawn')
+     ) then
+    raise exception 'Both have an open volunteer application. Withdraw one first, then merge.' using errcode = '22023';
+  end if;
+
+  -- Profile columns that can be copied, and the two groups.
+  select array_agg(c.column_name::text) into v_allowed
+    from information_schema.columns c
+   where c.table_schema = 'public' and c.table_name = 'profiles'
+     and c.is_generated = 'NEVER'
+     and c.column_name not in (
+       'id', 'email', 'created_at', 'updated_at', 'access_removed_at', 'lead_events_checked_at',
+       'role', 'led_chapters', 'is_admin', 'can_view_volunteer_screening', 'can_view_health_history',
+       'sms_consent', 'sms_consent_at', 'sms_consent_text', 'sms_opted_out_at'
+     );
+  foreach v_field in array coalesce(p_fields_from_merged, '{}'::text[]) loop
+    if v_field = 'access' then
+      v_cols := v_cols || array['role', 'led_chapters', 'can_view_volunteer_screening', 'can_view_health_history'];
+    elsif v_field = 'sms_consent' then
+      v_cols := v_cols || array['sms_consent', 'sms_consent_at', 'sms_consent_text', 'sms_opted_out_at'];
+    elsif v_field = any(v_allowed) then
+      v_cols := v_cols || v_field;
+    else
+      raise exception 'Unknown profile field %', v_field using errcode = '22023';
+    end if;
+  end loop;
+  select coalesce(array_agg(distinct c), '{}'::text[]) into v_cols from unnest(v_cols) c;
+
+  v_counts := public.person_removal_counts(p_merge_id);
+
+  -- Transaction-local; cleared again below. See the header.
+  perform set_config('ftgf.merging_person', 'on', true);
+  perform set_config('ftgf.deleting_person', 'on', true);
+
+  -- ---- Profile fields
+  if cardinality(v_cols) > 0 then
+    execute format(
+      'update public.profiles k set (%s) = (select %s from public.profiles d where d.id = $2) where k.id = $1',
+      (select string_agg(format('%I', c), ', ') from unnest(v_cols) c),
+      (select string_agg(format('d.%I', c), ', ') from unnest(v_cols) c)
+    ) using p_keep_id, p_merge_id;
+  end if;
+
+  -- ---- RSVPs: one per event; the further-along one stays
+  for r in
+    select k.event_id, k.id as k_id, d.id as d_id,
+           case when k.status = 'confirmed' and k.checked_in_at is not null then 5
+                when k.status = 'confirmed' then 4 when k.status = 'offered' then 3
+                when k.status = 'waitlisted' then 2 else 1 end as k_rank,
+           case when d.status = 'confirmed' and d.checked_in_at is not null then 5
+                when d.status = 'confirmed' then 4 when d.status = 'offered' then 3
+                when d.status = 'waitlisted' then 2 else 1 end as d_rank
+      from public.rsvps k
+      join public.rsvps d on d.event_id = k.event_id
+     where k.user_id = p_keep_id and d.user_id = p_merge_id
+     order by k.event_id
+  loop
+    perform 1 from public.events where id = r.event_id for update;
+    if r.d_rank > r.k_rank then
+      v_winner := r.d_id; v_loser := r.k_id;
+    else
+      v_winner := r.k_id; v_loser := r.d_id;
+    end if;
+    update public.event_paper_waivers set rsvp_id = v_winner
+     where rsvp_id = v_loser and not exists (select 1 from public.event_paper_waivers where rsvp_id = v_winner);
+    update public.event_no_waiver_records set rsvp_id = v_winner
+     where rsvp_id = v_loser and not exists (select 1 from public.event_no_waiver_records where rsvp_id = v_winner);
+    update public.event_paper_waiver_removals set rsvp_id = v_winner where rsvp_id = v_loser;
+
+    v_status := null;
+    delete from public.rsvps where id = v_loser returning status into v_status;
+    if v_status = 'confirmed' then
+      update public.events
+         set spots_taken = greatest(spots_taken - 1, 0), updated_at = now()
+       where id = r.event_id;
+    end if;
+    if v_status in ('confirmed', 'offered') then
+      v_offered := v_offered || coalesce((
+        select jsonb_agg(jsonb_build_object('event_id', r.event_id, 'user_id', o.o_user_id, 'expires_at', o.o_expires_at))
+          from public.offer_waitlisted_spots(r.event_id) o
+      ), '[]'::jsonb);
+    end if;
+  end loop;
+  update public.rsvps set user_id = p_keep_id where user_id = p_merge_id;
+
+  -- ---- Volunteer shifts: one per role; the further-along one stays
+  for r in
+    select k.opportunity_id, k.id as k_id, d.id as d_id,
+           case when k.status = 'confirmed' and k.checked_in_at is not null then 3
+                when k.status = 'confirmed' then 2 else 1 end as k_rank,
+           case when d.status = 'confirmed' and d.checked_in_at is not null then 3
+                when d.status = 'confirmed' then 2 else 1 end as d_rank
+      from public.volunteer_signups k
+      join public.volunteer_signups d on d.opportunity_id = k.opportunity_id
+     where k.user_id = p_keep_id and d.user_id = p_merge_id
+     order by k.opportunity_id
+  loop
+    perform 1 from public.volunteer_opportunities where id = r.opportunity_id for update;
+    v_loser := case when r.d_rank > r.k_rank then r.k_id else r.d_id end;
+    v_status := null;
+    delete from public.volunteer_signups where id = v_loser returning status, opportunity_id into v_status, v_opportunity;
+    if v_status = 'confirmed' then
+      update public.volunteer_opportunities
+         set slots_taken = greatest(slots_taken - 1, 0)
+       where id = v_opportunity;
+    end if;
+  end loop;
+  update public.volunteer_signups set user_id = p_keep_id where user_id = p_merge_id;
+
+  -- ---- Waivers: the earlier signature of the same waiver stays
+  delete from public.waiver_signatures d
+   using public.waiver_signatures k
+   where d.user_id = p_merge_id and k.user_id = p_keep_id
+     and k.waiver_id = d.waiver_id and d.signed_at >= k.signed_at;
+  delete from public.waiver_signatures k
+   using public.waiver_signatures d
+   where k.user_id = p_keep_id and d.user_id = p_merge_id and k.waiver_id = d.waiver_id;
+  update public.waiver_signatures set user_id = p_keep_id where user_id = p_merge_id;
+
+  -- ---- Forms, checks and applications: all moved
+  update public.health_histories set user_id = p_keep_id where user_id = p_merge_id;
+  update public.health_checkin_answers set user_id = p_keep_id where user_id = p_merge_id;
+  update public.practical_instruction_checks set user_id = p_keep_id where user_id = p_merge_id;
+  update public.volunteer_applications set user_id = p_keep_id where user_id = p_merge_id;
+
+  -- ---- Attendance credit: one per person
+  if exists (select 1 from public.attendance_credits where user_id = p_keep_id) then
+    update public.attendance_credits k
+       set events = k.events + d.events,
+           note = k.note || '; ' || d.note
+      from public.attendance_credits d
+     where k.user_id = p_keep_id and d.user_id = p_merge_id;
+    delete from public.attendance_credits where user_id = p_merge_id;
+  else
+    update public.attendance_credits set user_id = p_keep_id where user_id = p_merge_id;
+  end if;
+
+  -- ---- Volunteer record
+  v_keep_vol := exists (select 1 from public.volunteers where user_id = p_keep_id);
+  v_merge_vol := exists (select 1 from public.volunteers where user_id = p_merge_id);
+  if v_merge_vol then
+    if not v_keep_vol then
+      insert into public.volunteers
+      select (jsonb_populate_record(null::public.volunteers, to_jsonb(v) || jsonb_build_object('user_id', p_keep_id))).*
+        from public.volunteers v
+       where v.user_id = p_merge_id;
+    elsif p_volunteer_from_merged then
+      execute format(
+        'update public.volunteers k set (%s) = (select %s from public.volunteers d where d.user_id = $2) where k.user_id = $1',
+        (select string_agg(format('%I', c.column_name), ', ')
+           from information_schema.columns c
+          where c.table_schema = 'public' and c.table_name = 'volunteers' and c.column_name <> 'user_id'),
+        (select string_agg(format('d.%I', c.column_name), ', ')
+           from information_schema.columns c
+          where c.table_schema = 'public' and c.table_name = 'volunteers' and c.column_name <> 'user_id')
+      ) using p_keep_id, p_merge_id;
+    end if;
+
+    -- A role approved on both stays approved once (the kept one's).
+    delete from public.volunteer_role_approvals d
+     where d.volunteer_id = p_merge_id and d.revoked_at is null
+       and exists (
+         select 1 from public.volunteer_role_approvals k
+          where k.volunteer_id = p_keep_id and k.role_type_id = d.role_type_id and k.revoked_at is null
+       );
+    update public.volunteer_role_approvals set volunteer_id = p_keep_id where volunteer_id = p_merge_id;
+    update public.volunteer_certifications set volunteer_id = p_keep_id where volunteer_id = p_merge_id;
+
+    if exists (select 1 from public.volunteer_notes where volunteer_id = p_keep_id) then
+      update public.volunteer_notes k
+         set notes = concat_ws(E'\n\n', nullif(btrim(k.notes), ''), nullif(btrim(d.notes), ''))
+        from public.volunteer_notes d
+       where k.volunteer_id = p_keep_id and d.volunteer_id = p_merge_id;
+      delete from public.volunteer_notes where volunteer_id = p_merge_id;
+    else
+      update public.volunteer_notes set volunteer_id = p_keep_id where volunteer_id = p_merge_id;
+    end if;
+
+    if exists (select 1 from public.volunteer_screening_notes where volunteer_id = p_keep_id) then
+      update public.volunteer_screening_notes k
+         set admin_notes = nullif(concat_ws(E'\n\n', nullif(btrim(k.admin_notes), ''), nullif(btrim(d.admin_notes), '')), '')
+        from public.volunteer_screening_notes d
+       where k.volunteer_id = p_keep_id and d.volunteer_id = p_merge_id;
+      delete from public.volunteer_screening_notes where volunteer_id = p_merge_id;
+    else
+      update public.volunteer_screening_notes set volunteer_id = p_keep_id where volunteer_id = p_merge_id;
+    end if;
+
+    if exists (select 1 from public.volunteer_registration_details where volunteer_id = p_keep_id)
+       and exists (select 1 from public.volunteer_registration_details where volunteer_id = p_merge_id) then
+      if p_volunteer_from_merged then
+        delete from public.volunteer_registration_details where volunteer_id = p_keep_id;
+      else
+        delete from public.volunteer_registration_details where volunteer_id = p_merge_id;
+      end if;
+    end if;
+    update public.volunteer_registration_details set volunteer_id = p_keep_id where volunteer_id = p_merge_id;
+    -- The merged volunteers row itself goes after the check below.
+  end if;
+
+  -- ---- Everything else that names them
+  update public.events set lead_user_id = p_keep_id where lead_user_id = p_merge_id;
+  for r in select * from public.person_other_references() loop
+    execute format('update %s set %I = $1 where %I = $2', r.src, r.col, r.col) using p_keep_id, p_merge_id;
+  end loop;
+
+  -- Columns with no foreign key.
+  update public.member_touches set member_id = p_keep_id where member_id = p_merge_id;
+  update public.sms_messages set user_id = p_keep_id where user_id = p_merge_id;
+  delete from public.bulk_email_recipients d
+   where d.user_id = p_merge_id
+     and exists (select 1 from public.bulk_email_recipients k where k.bulk_email_id = d.bulk_email_id and k.user_id = p_keep_id);
+  update public.bulk_email_recipients set user_id = p_keep_id where user_id = p_merge_id;
+  if exists (select 1 from public.email_preference_tokens where user_id = p_keep_id) then
+    delete from public.email_preference_tokens where user_id = p_merge_id;
+  else
+    update public.email_preference_tokens set user_id = p_keep_id where user_id = p_merge_id;
+  end if;
+  if exists (select 1 from public.walkup_welcome_emails where user_id = p_keep_id) then
+    delete from public.walkup_welcome_emails where user_id = p_merge_id;
+  else
+    update public.walkup_welcome_emails set user_id = p_keep_id where user_id = p_merge_id;
+  end if;
+  delete from public.person_duplicate_dismissals where p_merge_id in (user_a, user_b);
+
+  -- ---- Nothing may be left pointing at them (it would be cascaded away).
+  -- Their own profile and volunteers rows are deleted just after.
+  for r in
+    select c.conrelid::regclass as src, a.attname as col
+      from pg_constraint c
+      join pg_class s on s.oid = c.conrelid
+      join pg_namespace n on n.oid = s.relnamespace
+      join pg_attribute a on a.attrelid = c.conrelid and a.attnum = c.conkey[1]
+     where c.contype = 'f'
+       and c.confrelid in ('auth.users'::regclass, 'public.profiles'::regclass, 'public.volunteers'::regclass)
+       and n.nspname = 'public'
+       and (s.relname::text, a.attname::text) not in (('profiles', 'id'), ('volunteers', 'user_id'))
+  loop
+    execute format('select exists (select 1 from %s where %I = $1)', r.src, r.col) into v_left using p_merge_id;
+    if v_left then
+      raise exception 'Something still points at the merged profile (%.%) — nothing was changed', r.src, r.col;
+    end if;
+  end loop;
+
+  select coalesce(jsonb_agg(jsonb_build_object('id', c.id, 'file_path', c.file_path)), '[]'::jsonb)
+    into v_certs
+    from public.volunteer_certifications c
+   where c.volunteer_id = p_keep_id and c.file_path like p_merge_id::text || '/%';
+
+  perform public.log_person_removal(
+    'merged', p_merge_id, v_merge_email,
+    nullif(concat_ws(' ', v_merge.first_name, v_merge.last_name), ''),
+    jsonb_build_object(
+      'counts', v_counts,
+      'kept_user_id', p_keep_id,
+      'kept_email', v_keep_email,
+      'login_from_merged', p_login_from_merged,
+      'fields_from_merged', to_jsonb(v_cols),
+      'volunteer_from_merged', p_volunteer_from_merged,
+      'previous_role', v_merge.role
+    ),
+    'Duplicate of ' || coalesce(nullif(concat_ws(' ', v_keep.first_name, v_keep.last_name), '') || ' <' || v_keep_email || '>', v_keep_email)
+  );
+
+  -- ---- The merged profile and its login go; the kept login may take its email
+  if p_login_from_merged then
+    select u.email, u.encrypted_password, u.email_confirmed_at into v_login
+      from auth.users u where u.id = p_merge_id;
+  end if;
+
+  delete from public.volunteers where user_id = p_merge_id;
+  delete from public.profiles where id = p_merge_id;
+  delete from auth.users where id = p_merge_id;
+
+  if p_login_from_merged then
+    update auth.users
+       set email = v_login.email,
+           encrypted_password = v_login.encrypted_password,
+           email_confirmed_at = coalesce(v_login.email_confirmed_at, email_confirmed_at, now()),
+           updated_at = now()
+     where id = p_keep_id;
+    update auth.identities
+       set identity_data = identity_data || jsonb_build_object('email', v_login.email),
+           updated_at = now()
+     where user_id = p_keep_id and provider = 'email';
+    update public.profiles set email = v_login.email where id = p_keep_id;
+    v_keep_email := v_login.email;
+  end if;
+
+  if not exists (select 1 from public.profiles where role = 'admin') then
+    raise exception 'That would leave no admin. Keep the admin''s access in the merge, or make someone else an admin first.'
+      using errcode = '42501';
+  end if;
+
+  perform set_config('ftgf.merging_person', '', true);
+  perform set_config('ftgf.deleting_person', '', true);
+
+  return jsonb_build_object('offered', v_offered, 'certifications', v_certs, 'email', v_keep_email);
+end $function$;
+
+-- ---- Grants --------------------------------------------------------------------------------
+-- Admin-only (each re-checks is_admin()).
+revoke all on function public.admin_possible_duplicates() from public, anon;
+grant execute on function public.admin_possible_duplicates() to authenticated;
+revoke all on function public.admin_merge_people(uuid, uuid, text, text[], boolean, boolean) from public, anon;
+grant execute on function public.admin_merge_people(uuid, uuid, text, text[], boolean, boolean) to authenticated;
+-- Trigger functions: as before.
+revoke all on function public.health_histories_immutable() from public, anon, authenticated;
+revoke all on function public.volunteer_registration_details_stamp() from public, anon, authenticated;
+revoke all on function public.profiles_sms_consent_stamp() from public, anon, authenticated;
+
+commit;

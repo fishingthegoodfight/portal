@@ -936,6 +936,88 @@ export function walkupWelcomeEmail({
 }
 
 /**
+ * Sent when an admin merges two profiles of the same person
+ * (lib/actions/person-merge.ts), to both addresses: the one they sign in
+ * with now, and the one that stopped working, since that's the inbox where
+ * "don't use this email" matters most. Lists the contact details kept, with
+ * the profile page to fix them, or a reply for the sign-in email, which
+ * they can't change themselves.
+ */
+export function mergedAccountsEmail({
+  firstName,
+  loginEmail,
+  otherEmail,
+  details,
+  profileUrl,
+}: {
+  firstName: string | null;
+  /** The email they sign in with now. */
+  loginEmail: string;
+  /** The other profile's email, which no longer signs in. */
+  otherEmail: string;
+  /** What's on their profile now, in order; value null when nothing is on file. */
+  details: { label: string; value: string | null }[];
+  profileUrl: string;
+}): RenderedEmail {
+  const subject = `We combined your two ${ORG_NAME} accounts`;
+  const greeting = firstName ? `Hi ${firstName},` : "Hi,";
+  const intro = `You had two accounts with us, one for ${otherEmail} and one for ${loginEmail}. We've combined them into one, so your RSVPs, volunteer shifts, waivers and history are all in one place.`;
+  const signIn = `From now on, sign in with ${loginEmail}, using the password you had for that email. Forgot it? Use "Forgot your password?" on the sign-in page.`;
+  const dontUse = `Please don't sign in with ${otherEmail} or make a new account with it. That account is gone, and a new one would split your history again.`;
+  const keptIntro = "Here's what's on your profile now:";
+  const notOnFile = "Not on file";
+  const fix =
+    "If any of this is wrong or out of date, you can change it on your profile. Your sign-in email can't be changed there: reply to this email if it's wrong.";
+  const buttonLabel = "Review your profile";
+  const reply = "Didn't expect this, or think we got it wrong? Just reply to this email.";
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;font-size:18px;font-weight:600;">Your accounts are combined</p>`,
+      `<p style="margin:0 0 16px;">${escapeHtml(greeting)}</p>`,
+      `<p style="margin:0 0 16px;">${escapeHtml(intro)}</p>`,
+      `<p style="margin:0 0 16px;">${escapeHtml(signIn)}</p>`,
+      `<p style="margin:0 0 16px;padding:12px;background:#fef3c7;border-radius:6px;">${escapeHtml(dontUse)}</p>`,
+      `<p style="margin:0 0 8px;"><strong>${keptIntro}</strong></p>`,
+      `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 16px;font-size:14px;">`,
+      ...details.map(
+        (d) =>
+          `<tr><td style="padding:2px 12px 2px 0;color:#57534e;vertical-align:top;white-space:nowrap;">${escapeHtml(d.label)}</td><td style="padding:2px 0;vertical-align:top;">${
+            d.value ? htmlWithLineBreaks(d.value) : `<span style="color:#78716c;">${notOnFile}</span>`
+          }</td></tr>`,
+      ),
+      `</table>`,
+      `<p style="margin:0 0 16px;">${escapeHtml(fix)}</p>`,
+      `<p style="margin:16px 0 16px;"><a href="${profileUrl}" style="${BUTTON_STYLE}">${buttonLabel}</a></p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">${escapeHtml(reply)}</p>`,
+    ].join("\n"),
+  );
+
+  const text = [
+    "Your accounts are combined",
+    "",
+    greeting,
+    "",
+    intro,
+    "",
+    signIn,
+    "",
+    dontUse,
+    "",
+    keptIntro,
+    ...details.map((d) => `  ${d.label}: ${(d.value ?? notOnFile).replace(/\n/g, ", ")}`),
+    "",
+    fix,
+    "",
+    `${buttonLabel}: ${profileUrl}`,
+    "",
+    reply,
+  ].join("\n");
+
+  return { subject, html, text };
+}
+
+/**
  * Internal heads-up to an event's lead (lead_email) when a participant
  * cancels their confirmed RSVP: who cancelled, and whether the freed spot
  * went to someone on the waitlist.

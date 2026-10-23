@@ -374,6 +374,12 @@ async function PersonLoader({ userId }: { userId: string }) {
         </div>
       </CollapsibleCard>
 
+      <p className="text-sm text-muted-foreground">
+        Same person with another login?{" "}
+        <Link href={`/protected/admin/people/${userId}/merge`} className="underline underline-offset-4">
+          Merge with another profile
+        </Link>
+      </p>
     </div>
   );
 }

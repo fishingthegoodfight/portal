@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { requireAdmin } from "@/lib/admin/require-admin";
-import { emailWaitlistOffers, type OfferedSpot } from "@/lib/waitlist";
+import { emailWaitlistOffersByEvent, type EventOfferedSpot } from "@/lib/waitlist";
 import type { PersonRemovalCounts, PersonRemovalPreview } from "@/lib/person-removal";
 
 /**
@@ -15,20 +15,6 @@ import type { PersonRemovalCounts, PersonRemovalPreview } from "@/lib/person-rem
  */
 
 type Result<T = object> = ({ ok: true } & T) | { ok: false; error: string };
-
-type RawOffer = OfferedSpot & { event_id: number };
-
-/** Emails "a spot opened" to whoever was offered a spot the person gave up,
- * one batch per event. Never throws (emailWaitlistOffers logs failures). */
-async function emailOffers(offers: RawOffer[] | null | undefined) {
-  const byEvent = new Map<number, OfferedSpot[]>();
-  for (const o of offers ?? []) {
-    const list = byEvent.get(o.event_id) ?? [];
-    list.push({ user_id: o.user_id, expires_at: o.expires_at });
-    byEvent.set(o.event_id, list);
-  }
-  for (const [eventId, list] of byEvent) await emailWaitlistOffers(eventId, list);
-}
 
 export async function personRemovalPreviewAction(
   userId: string,
@@ -84,7 +70,7 @@ export async function removePersonAccessAction(userId: string, reason: string): 
     p_reason: reason.trim() || null,
   });
   if (error) return { ok: false, error: error.message };
-  await emailOffers((data as { offered?: RawOffer[] } | null)?.offered);
+  await emailWaitlistOffersByEvent((data as { offered?: EventOfferedSpot[] } | null)?.offered);
   return { ok: true };
 }
 
@@ -122,9 +108,9 @@ export async function deletePersonAction(
     p_reason: reason.trim() || null,
   });
   if (error) return { ok: false, error: error.message };
-  const result = data as { counts: PersonRemovalCounts; offered: RawOffer[] };
+  const result = data as { counts: PersonRemovalCounts; offered: EventOfferedSpot[] };
 
-  await emailOffers(result.offered);
+  await emailWaitlistOffersByEvent(result.offered);
 
   let warning: string | null = null;
   if (result.counts.certification_files > 0) {

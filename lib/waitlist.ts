@@ -90,6 +90,21 @@ export async function emailWaitlistOffers(eventId: number, offers: OfferedSpot[]
   return sent;
 }
 
+/** Offers from a function that touched several events (removing or merging
+ * a person), each tagged with its event. */
+export type EventOfferedSpot = OfferedSpot & { event_id: number };
+
+/** emailWaitlistOffers for offers across events, one batch per event. */
+export async function emailWaitlistOffersByEvent(offers: EventOfferedSpot[] | null | undefined): Promise<void> {
+  const byEvent = new Map<number, OfferedSpot[]>();
+  for (const o of offers ?? []) {
+    const list = byEvent.get(o.event_id) ?? [];
+    list.push({ user_id: o.user_id, expires_at: o.expires_at });
+    byEvent.set(o.event_id, list);
+  }
+  for (const [eventId, list] of byEvent) await emailWaitlistOffers(eventId, list);
+}
+
 /** Emails "your offer lapsed" — skipped for an event that was cancelled or
  * has already started (nothing left to rejoin). `now` is the cron's clock,
  * which is faked in dev. Every outcome is logged (sent, failed, or skipped and

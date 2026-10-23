@@ -18,6 +18,11 @@ const SETUP_GROUPS: { title: string; links: SetupLink[] }[] = [
         title: "Members settings",
         description: "When someone counts as new, quiet or dropped, when they need outreach, and the weekly outreach email.",
       },
+      {
+        href: "/protected/admin/setup/duplicates",
+        title: "Duplicate profiles",
+        description: "People with two profiles from signing in with two emails: find likely pairs and merge them.",
+      },
     ],
   },
   {

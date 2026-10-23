@@ -37,7 +37,7 @@ export type RolePerson = {
 /** One person_removal_log row. */
 export type RemovalLogEntry = {
   id: number;
-  action: "access_removed" | "access_restored" | "deleted";
+  action: "access_removed" | "access_restored" | "deleted" | "merged";
   subject: string;
   actor: string;
   /** Why, as the admin wrote it — null when they left it blank. */
@@ -49,6 +49,7 @@ const REMOVAL_ACTION_LABELS: Record<RemovalLogEntry["action"], string> = {
   access_removed: "Access removed",
   access_restored: "Access restored",
   deleted: "Deleted",
+  merged: "Merged into another profile",
 };
 
 const shortDate = (instant: string) => formatDateInZone(instant, "America/Denver");

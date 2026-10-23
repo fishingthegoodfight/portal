@@ -25,6 +25,7 @@ import {
   personInviteEmail,
   accessCodeEmail,
   walkupWelcomeEmail,
+  mergedAccountsEmail,
   adminBulletinEmail,
   adminDigestEmail,
   adminMemberOutreachEmail,
@@ -625,6 +626,16 @@ export async function sendWalkupWelcomeEmail({
 }: { toEmail: string } & Parameters<typeof walkupWelcomeEmail>[0]): Promise<void> {
   const { subject, html, text } = walkupWelcomeEmail(content);
   await deliverEmail({ to: toEmail, subject, html, text });
+}
+
+/** "We combined your two accounts" (mergedAccountsEmail), to both of
+ * their addresses. Throws on failure. */
+export async function sendMergedAccountsEmail({
+  toEmails,
+  ...content
+}: { toEmails: string[] } & Parameters<typeof mergedAccountsEmail>[0]): Promise<void> {
+  const { subject, html, text } = mergedAccountsEmail(content);
+  await deliverEmail({ to: toEmails, subject, html, text });
 }
 
 /** A portal invite for someone who isn't a volunteer (personInviteEmail). */
