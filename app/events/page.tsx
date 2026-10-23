@@ -4,12 +4,14 @@ import { connection } from "next/server";
 import { Suspense } from "react";
 
 import { ChapterTag } from "@/components/chapter-tag";
+import { calendarMonth, calendarRange, EventCalendar, EventsViewToggle } from "@/components/event-calendar";
 import { Card, CardContent } from "@/components/ui/card";
 import { EVENTS_PAGE_SIZE, groupByMonth, MonthHeading, ShowMoreEvents, showLimit } from "@/components/event-months";
-import { isVirtualChapter } from "@/lib/chapters";
+import { isVirtualChapter, loadChapters } from "@/lib/chapters";
 import { publicEventPath } from "@/lib/event-slug";
-import { formatEventDateRange } from "@/lib/format-date";
+import { formatEventDateRange, todayInZone } from "@/lib/format-date";
 import { loadUpcomingPublicEvents, publicLocationSummary } from "@/lib/public-events";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = {
@@ -20,19 +22,22 @@ export const metadata: Metadata = {
 const VIRTUAL = "Virtual";
 const pillLabel = (chapter: string) => (isVirtualChapter(chapter) ? VIRTUAL : chapter);
 
-type EventsSearchParams = { chapter?: string; show?: string };
+type EventsSearchParams = { chapter?: string; show?: string; view?: string; month?: string };
 
-function eventsHref(chapter: string | null, show?: number): string {
+function eventsHref(chapter: string | null, opts: { show?: number; calendar?: boolean; month?: string } = {}): string {
   const params = new URLSearchParams();
   if (chapter) params.set("chapter", chapter);
-  if (show) params.set("show", String(show));
+  if (opts.calendar) params.set("view", "calendar");
+  if (opts.month) params.set("month", opts.month);
+  if (opts.show) params.set("show", String(opts.show));
   const query = params.toString();
   return query ? `/events?${query}` : "/events";
 }
 
 async function EventList({ searchParams }: { searchParams: Promise<EventsSearchParams> }) {
   await connection(); // "upcoming" is about now, not build time
-  const { chapter, show } = await searchParams;
+  const { chapter, show, view, month: monthParam } = await searchParams;
+  const calendar = view === "calendar";
   let events;
   try {
     events = await loadUpcomingPublicEvents(new Date());
@@ -48,12 +53,18 @@ async function EventList({ searchParams }: { searchParams: Promise<EventsSearchP
 
   return (
     <div className="flex flex-col gap-4">
+      <EventsViewToggle
+        view={calendar ? "calendar" : "list"}
+        listHref={eventsHref(selected)}
+        calendarHref={eventsHref(selected, { calendar: true })}
+      />
       {chapters.length > 1 && (
         <nav aria-label="Chapters" className="flex flex-wrap gap-2">
           {[null, ...chapters].map((name) => (
             <Link
               key={name ?? "all"}
-              href={eventsHref(name)}
+              href={eventsHref(name, { calendar })}
+              scroll={false}
               aria-current={name === selected ? "page" : undefined}
               className={cn(
                 "rounded-full border px-3 py-1 text-sm",
@@ -65,7 +76,9 @@ async function EventList({ searchParams }: { searchParams: Promise<EventsSearchP
           ))}
         </nav>
       )}
-      {shown.length === 0 ? (
+      {calendar ? (
+        <PublicCalendar events={matching} chapter={selected} monthParam={monthParam} />
+      ) : shown.length === 0 ? (
         <p className="text-sm text-muted-foreground">No upcoming events right now. Check back soon.</p>
       ) : (
         <div className="flex flex-col gap-6">
@@ -97,10 +110,53 @@ async function EventList({ searchParams }: { searchParams: Promise<EventsSearchP
               </ul>
             </section>
           ))}
-          <ShowMoreEvents href={eventsHref(selected, limit + EVENTS_PAGE_SIZE)} shown={shown.length} total={matching.length} />
+          <ShowMoreEvents href={eventsHref(selected, { show: limit + EVENTS_PAGE_SIZE })} shown={shown.length} total={matching.length} />
         </div>
       )}
     </div>
+  );
+}
+
+/** Chapter names in display order, for the calendar's colors. Chapters
+ * aren't readable by anon, and their names are public anyway (every event
+ * shows one), so read them with the service role. Without them the colors
+ * still work, just picked from each name. */
+async function chapterOrder(): Promise<string[]> {
+  try {
+    return (await loadChapters(createAdminClient())).map((c) => c.name);
+  } catch {
+    return [];
+  }
+}
+
+async function PublicCalendar({
+  events,
+  chapter,
+  monthParam,
+}: {
+  events: Awaited<ReturnType<typeof loadUpcomingPublicEvents>>;
+  chapter: string | null;
+  monthParam: string | undefined;
+}) {
+  const today = todayInZone("America/Denver");
+  const range = calendarRange(events, today);
+  return (
+    <EventCalendar
+      events={events.map((e) => ({
+        id: e.id,
+        name: e.name,
+        href: publicEventPath(e.slug),
+        chapter: e.chapter,
+        starts_at: e.starts_at,
+        ends_at: e.ends_at,
+        timezone: e.timezone,
+      }))}
+      month={calendarMonth(monthParam, range.firstMonth, range.lastMonth)}
+      today={today}
+      {...range}
+      chapterOrder={await chapterOrder()}
+      monthHref={(month) => eventsHref(chapter, { calendar: true, month })}
+    />
   );
 }
 

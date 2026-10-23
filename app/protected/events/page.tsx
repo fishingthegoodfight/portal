@@ -6,8 +6,9 @@ import { CheckCircle2, XCircle } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { Button } from "@/components/ui/button";
 import { EventCard } from "@/components/event-card";
+import { calendarMonth, calendarRange, EventCalendar, EventsViewToggle } from "@/components/event-calendar";
 import { EVENTS_PAGE_SIZE, groupByMonth, MonthHeading, ShowMoreEvents, showLimit } from "@/components/event-months";
-import { formatEventDateRange } from "@/lib/format-date";
+import { formatEventDateRange, todayInZone } from "@/lib/format-date";
 import {
   chapterFilterOptions,
   chapterSelectionLabel,
@@ -59,27 +60,38 @@ async function ConfirmationBannerLoader({
   );
 }
 
-/** Chapter pills, plus — for approved, registered volunteers only — a
- * "Needs volunteers" toggle that combines with whichever chapters are
- * selected. */
+/** List | Calendar, then chapter pills, plus — for approved, registered
+ * volunteers only — a "Needs volunteers" toggle that combines with whichever
+ * chapters are selected. Each keeps the others. */
 function EventsFilterBar({
   selection,
   options,
   showVolunteerFilter,
   needsVolunteers,
+  calendar,
 }: {
   selection: ChapterSelection;
   options: ChapterFilterOption[];
   showVolunteerFilter: boolean;
   needsVolunteers: boolean;
+  calendar: boolean;
 }) {
+  const kept = {
+    chapter: chapterSelectionParam(selection),
+    volunteers: needsVolunteers ? "1" : undefined,
+  };
   return (
     <div className="flex flex-col gap-2">
+      <EventsViewToggle
+        view={calendar ? "calendar" : "list"}
+        listHref={filterHref("/protected/events", kept)}
+        calendarHref={filterHref("/protected/events", { ...kept, view: "calendar" })}
+      />
       <ChapterFilterPills
         selection={selection}
         options={options}
         basePath="/protected/events"
-        otherParams={{ volunteers: needsVolunteers ? "1" : undefined }}
+        otherParams={{ volunteers: needsVolunteers ? "1" : undefined, view: calendar ? "calendar" : undefined }}
       />
       {showVolunteerFilter && (
         <div>
@@ -87,6 +99,7 @@ function EventsFilterBar({
             href={filterHref("/protected/events", {
               chapter: chapterSelectionParam(selection),
               volunteers: needsVolunteers ? undefined : "1",
+              view: calendar ? "calendar" : undefined,
             })}
             active={needsVolunteers}
           >
@@ -101,9 +114,10 @@ function EventsFilterBar({
 async function EventsListLoader({
   searchParams,
 }: {
-  searchParams: Promise<{ chapter?: string; volunteers?: string; show?: string }>;
+  searchParams: Promise<{ chapter?: string; volunteers?: string; show?: string; view?: string; month?: string }>;
 }) {
-  const { chapter: chapterParam, volunteers: volunteersParam, show } = await searchParams;
+  const { chapter: chapterParam, volunteers: volunteersParam, show, view, month: monthParam } = await searchParams;
+  const calendar = view === "calendar";
   const supabase = await createClient();
   const { data, error } = await supabase.auth.getClaims();
 
@@ -166,7 +180,8 @@ async function EventsListLoader({
     ? chapterEvents.filter((event) => needsVolunteerIds.has(event.id))
     : chapterEvents;
   const limit = showLimit(show);
-  const shownEvents = matchingEvents.slice(0, limit);
+  // The calendar shows every matching event; the list a page at a time.
+  const shownEvents = calendar ? matchingEvents : matchingEvents.slice(0, limit);
 
   // Filter by user_id explicitly: RLS alone isn't enough, because admins have
   // a policy (admin_select_all_rsvps) that lets them read EVERYONE's rows —
@@ -196,6 +211,9 @@ async function EventsListLoader({
     ]),
   );
 
+  const today = todayInZone("America/Denver");
+  const range = calendarRange(shownEvents, today);
+
   return (
     <div className="flex flex-col gap-4">
       <EventsFilterBar
@@ -203,9 +221,38 @@ async function EventsListLoader({
         options={filterOptions}
         showVolunteerFilter={isVolunteer}
         needsVolunteers={needsVolunteersFilter}
+        calendar={calendar}
       />
 
-      {shownEvents.length === 0 ? (
+      {calendar ? (
+        <EventCalendar
+          events={shownEvents.map((event) => {
+            const status = rsvpStatusByEvent.get(event.id);
+            return {
+              id: event.id,
+              name: event.name,
+              href: `/protected/events/${event.id}/rsvp`,
+              chapter: event.chapter,
+              starts_at: event.starts_at,
+              ends_at: event.ends_at,
+              timezone: event.timezone,
+              going: status === "confirmed",
+            };
+          })}
+          month={calendarMonth(monthParam, range.firstMonth, range.lastMonth)}
+          today={today}
+          {...range}
+          chapterOrder={chapters.map((c) => c.name)}
+          monthHref={(month) =>
+            filterHref("/protected/events", {
+              chapter: chapterSelectionParam(selection),
+              volunteers: needsVolunteersFilter ? "1" : undefined,
+              view: "calendar",
+              month,
+            })
+          }
+        />
+      ) : shownEvents.length === 0 ? (
         <p className="text-sm text-muted-foreground">
           {needsVolunteersFilter
             ? `No upcoming events for ${chapterSelectionLabel(selection, filterOptions)} need volunteers in your roles right now.`
