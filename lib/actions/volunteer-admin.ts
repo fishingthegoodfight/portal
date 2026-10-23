@@ -91,6 +91,14 @@ export async function approveRoleAction(
   const adminCheck = await requireAdmin(supabase);
   if ("error" in adminCheck) return { ok: false, error: adminCheck.error };
 
+  const { data: roleType } = await supabase
+    .from("volunteer_role_types")
+    .select("requires_cert, active")
+    .eq("id", roleTypeId)
+    .maybeSingle();
+  if (!roleType) return { ok: false, error: "Role type not found" };
+  if (!roleType.active) return { ok: false, error: "That role type is turned off" };
+
   if (setApproved) {
     const now = new Date().toISOString();
     const { error: statusError } = await supabase
@@ -100,13 +108,6 @@ export async function approveRoleAction(
       .neq("status", "approved");
     if (statusError) return { ok: false, error: statusError.message };
   }
-
-  const { data: roleType } = await supabase
-    .from("volunteer_role_types")
-    .select("requires_cert")
-    .eq("id", roleTypeId)
-    .maybeSingle();
-  if (!roleType) return { ok: false, error: "Role type not found" };
 
   const { error } = await supabase.from("volunteer_role_approvals").insert({
     volunteer_id: volunteerId,

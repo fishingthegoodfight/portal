@@ -79,7 +79,10 @@ export async function VolunteerSection({
       .select("first_name, last_name, can_view_volunteer_screening")
       .eq("id", actorUserId)
       .maybeSingle(),
-    supabase.from("volunteer_role_types").select("id, name, requires_cert").order("sort_order", { ascending: true }),
+    supabase
+      .from("volunteer_role_types")
+      .select("id, name, requires_cert, active")
+      .order("sort_order", { ascending: true }),
     supabase.from("volunteer_role_approvals").select("id, role_type_id").eq("volunteer_id", userId).is("revoked_at", null),
     supabase
       .from("volunteer_certifications")
@@ -104,12 +107,16 @@ export async function VolunteerSection({
       );
 
   const approvalByRoleType = new Map((approvals ?? []).map((a) => [a.role_type_id, a.id as number]));
-  const roleTypesForApproval: RoleTypeForApproval[] = (roleTypes ?? []).map((rt) => ({
-    id: rt.id as number,
-    name: rt.name as string,
-    requires_cert: rt.requires_cert as boolean,
-    activeApprovalId: approvalByRoleType.get(rt.id as number) ?? null,
-  }));
+  // Turned-off role types aren't offered, but one this person still holds
+  // stays listed so it can be revoked.
+  const roleTypesForApproval: RoleTypeForApproval[] = (roleTypes ?? [])
+    .filter((rt) => rt.active || approvalByRoleType.has(rt.id))
+    .map((rt) => ({
+      id: rt.id as number,
+      name: rt.name as string,
+      requires_cert: rt.requires_cert as boolean,
+      activeApprovalId: approvalByRoleType.get(rt.id as number) ?? null,
+    }));
   const approvedRoles = roleTypesForApproval.filter((rt) => rt.activeApprovalId != null);
   const certRows = (certs ?? []) as {
     id: number;
