@@ -208,6 +208,7 @@ export async function VolunteerSection({
             checks={practical.checks}
             recorderNames={practical.recorderNames}
             canRecord
+            canWaive
             defaultAssessor={[viewer?.first_name, viewer?.last_name].filter(Boolean).join(" ")}
           />
         </Subsection>

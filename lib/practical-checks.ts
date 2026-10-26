@@ -10,14 +10,28 @@
  * fishing (lib/volunteer-references.ts) are reference signal — they may
  * suggest scheduling a check, or who should run it — and must never be read
  * as satisfying this requirement.
+ *
+ * An admin can instead record a waiver ("waived", with a required reason)
+ * for an instructor they know well and vouch for — the 2026-10-26 "Waiving
+ * the practical instruction check" entry. It counts the same as a pass.
  */
 
 export const PRACTICAL_OUTCOMES = [
   { value: "passed", label: "Passed" },
   { value: "needs_work", label: "Needs work, recheck" },
   { value: "not_ready", label: "Not ready" },
+  { value: "waived", label: "Waived" },
 ] as const;
 export type PracticalOutcome = (typeof PRACTICAL_OUTCOMES)[number]["value"];
+
+/** Only an admin can record one (the database's insert policy agrees). */
+export const WAIVED_OUTCOME = "waived";
+
+/** Passed or waived — what instructor shifts at a health-history event
+ * need. Same rule as volunteer_signups_practical_check_guard. */
+export function clearsPracticalCheck(outcome: string | null | undefined): boolean {
+  return outcome === "passed" || outcome === WAIVED_OUTCOME;
+}
 
 export function practicalOutcomeLabel(value: string): string {
   return PRACTICAL_OUTCOMES.find((o) => o.value === value)?.label ?? value;
@@ -44,6 +58,9 @@ export function formatCheckDate(isoDate: string): string {
 /** One line for anywhere the check appears: the latest outcome, when, by whom. */
 export function practicalCheckSummary(latest: Pick<PracticalCheck, "outcome" | "checked_on" | "assessor_name"> | null): string {
   if (!latest) return "No practical instruction check yet";
+  if (latest.outcome === WAIVED_OUTCOME) {
+    return `Waived — ${formatCheckDate(latest.checked_on)}, vouched for by ${latest.assessor_name}`;
+  }
   return `${practicalOutcomeLabel(latest.outcome)} — ${formatCheckDate(latest.checked_on)}, assessed by ${latest.assessor_name}`;
 }
 

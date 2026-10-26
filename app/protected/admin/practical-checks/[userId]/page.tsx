@@ -54,6 +54,7 @@ async function PracticalCheckLoader({ params }: { params: Promise<{ userId: stri
             checks={checks}
             recorderNames={recorderNames}
             canRecord
+            canWaive={access?.isAdmin ?? false}
             defaultAssessor={[me?.first_name, me?.last_name].filter(Boolean).join(" ")}
           />
         </CardContent>

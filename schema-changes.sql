@@ -15851,3 +15851,119 @@ revoke all on function public.volunteer_registration_details_stamp() from public
 revoke all on function public.profiles_sms_consent_stamp() from public, anon, authenticated;
 
 commit;
+
+-- =============================================================================
+-- 2026-10-26 — Waiving the practical instruction check
+-- =============================================================================
+-- For instructors an admin already knows well and can vouch for: an admin
+-- can record a practical check with outcome 'waived' instead of running the
+-- 45 minutes on the water. It's a row in practical_instruction_checks like
+-- any other check, so the existing rules carry over: the LATEST check counts
+-- (a later needs_work / not_ready replaces a waiver), it's insert-only, and
+-- every display shows the date and who recorded it.
+--
+-- 1. outcome accepts 'waived'. A waiver must say why (notes, non-blank);
+--    assessor_name holds who is vouching for them.
+-- 2. Only an admin can record a waiver (the insert policy). Chapter leads
+--    record passed / needs_work / not_ready as before.
+-- 3. The shift block (volunteer_signups_practical_check_guard) treats
+--    'waived' the same as 'passed', still as of the shift's date, so a
+--    waiver dated today covers upcoming shifts, not past ones.
+--
+-- Approving someone for Fishing Instructor still doesn't clear the check on
+-- its own; the waiver is the explicit step (also offered on the approval
+-- screen). No new table, so no new grants. Safe to re-run. One transaction.
+
+begin;
+
+-- ---- 1. 'waived', with a reason ----------------------------------------------------------
+alter table public.practical_instruction_checks
+  drop constraint if exists practical_instruction_checks_outcome_check;
+alter table public.practical_instruction_checks
+  add constraint practical_instruction_checks_outcome_check
+  check (outcome in ('passed', 'needs_work', 'not_ready', 'waived'));
+
+alter table public.practical_instruction_checks
+  drop constraint if exists practical_instruction_checks_waiver_reason;
+alter table public.practical_instruction_checks
+  add constraint practical_instruction_checks_waiver_reason
+  check (outcome <> 'waived' or btrim(coalesce(notes, '')) <> '');
+
+-- ---- 2. Admins only for a waiver --------------------------------------------------------
+drop policy if exists practical_instruction_checks_insert on public.practical_instruction_checks;
+create policy practical_instruction_checks_insert on public.practical_instruction_checks
+  for insert to authenticated
+  with check (
+    public.can_record_practical_check(user_id)
+    and (outcome <> 'waived' or public.is_admin())
+  );
+
+-- ---- 3. The shift block: waived counts as passed ------------------------------------------
+-- Same as the 2026-10-06 version apart from accepting 'waived'.
+create or replace function public.volunteer_signups_practical_check_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_needs_check boolean;
+  v_shift_date date;
+  v_outcome text;
+  v_passed_later boolean;
+  v_override text := nullif(btrim(coalesce(current_setting('ftgf.practical_check_override', true), '')), '');
+begin
+  if new.status <> 'confirmed' or (tg_op = 'UPDATE' and old.status = 'confirmed') then
+    return new;
+  end if;
+
+  select e.requires_health_history and rt.key in ('fishing_instructor', 'lead_fly_fishing_instructor')
+    into v_needs_check
+    from public.volunteer_opportunities vo
+    join public.events e on e.id = vo.event_id
+    left join public.volunteer_role_types rt on rt.id = vo.role_type_id
+   where vo.id = new.opportunity_id;
+  if not coalesce(v_needs_check, false) then
+    return new;
+  end if;
+
+  v_shift_date := public.opportunity_shift_date(new.opportunity_id);
+  v_outcome := public.latest_practical_check_outcome(new.user_id, v_shift_date);
+  if v_outcome in ('passed', 'waived') then
+    return new;
+  end if;
+  v_passed_later := public.latest_practical_check_outcome(new.user_id) in ('passed', 'waived');
+
+  if v_override is not null and public.is_admin() then
+    new.practical_check_override_reason := v_override;
+    new.practical_check_override_by := auth.uid();
+    new.practical_check_override_at := now();
+    return new;
+  end if;
+
+  raise exception '%', case
+    when auth.uid() is not null and new.user_id = auth.uid() then
+      'This shift is fishing instruction at a retreat or on-the-water event, which needs a practical instruction check first — 45 minutes on the water with an experienced instructor. Contact your chapter lead to set one up.'
+    else
+      'This person hadn''t passed a practical instruction check by this shift''s date' ||
+        case
+          when v_passed_later then ' (they passed one later)'
+          when v_outcome is not null then ' (their latest check by then wasn''t a pass)'
+          else ''
+        end ||
+        ', which instructor shifts at this event need.' ||
+        case when public.is_admin() then ' You can add them anyway with a reason, or waive the check on their page.'
+             else ' Only an admin can override that.' end
+  end
+  using errcode = 'P0001', hint = 'practical_check_required';
+end $function$;
+
+revoke all on function public.volunteer_signups_practical_check_guard() from public, anon, authenticated;
+
+commit;
+
+-- Check it: expect both constraints, and the policy's check mentioning 'waived'.
+--   select conname, pg_get_constraintdef(oid) from pg_constraint
+--    where conrelid = 'public.practical_instruction_checks'::regclass and contype = 'c';
+--   select with_check from pg_policies
+--    where tablename = 'practical_instruction_checks' and policyname = 'practical_instruction_checks_insert';

@@ -10,7 +10,7 @@ import {
 import { cityStateZip } from "@/lib/event-location";
 import { dateInZone, daysBetween, formatEventDateRange } from "@/lib/format-date";
 import { getSiteUrl } from "@/lib/site-url";
-import { PRACTICAL_CHECK_ROLE_KEYS } from "@/lib/practical-checks";
+import { clearsPracticalCheck, PRACTICAL_CHECK_ROLE_KEYS } from "@/lib/practical-checks";
 import {
   bulkSendGapMs,
   renderFinishRegistrationEmail,
@@ -40,8 +40,8 @@ import {
  *     Only roles they could actually take: approved for the role type (or a
  *     role with no type, open to any approved volunteer), an open slot, not
  *     already theirs, and — for an instructor role at an event that requires
- *     health history — a passed practical instruction check. Nothing to show
- *     = nothing sent.
+ *     health history — a passed (or waived) practical instruction check.
+ *     Nothing to show = nothing sent.
  *   - not registered: the short finish-registration nudge instead.
  * Invited, registered-but-not-approved, inactive and declined volunteers get
  * nothing.
@@ -357,7 +357,7 @@ export async function planOpportunitiesEmails(
     const coverage = everywhere ? "every region" : (regionName.get(homeRegion!) ?? "their region");
 
     const types = approvedTypes.get(v.user_id) ?? new Set<number>();
-    const passedCheck = latestCheck.get(v.user_id)?.outcome === "passed";
+    const passedCheck = clearsPracticalCheck(latestCheck.get(v.user_id)?.outcome);
     const events = new Map<number, OpportunitiesEmailEvent>();
     let roleCount = 0;
     for (const o of sorted) {
@@ -365,7 +365,7 @@ export async function planOpportunitiesEmails(
       if (!everywhere && !isVirtualChapter(event.chapter) && regionOf(chapters, event.chapter) !== homeRegion) continue;
       if (o.role_type_id != null && !types.has(o.role_type_id)) continue;
       if (signedUp.has(`${v.user_id}:${o.id}`)) continue;
-      // The database refuses these without a passed check
+      // The database refuses these without a passed or waived check
       // (volunteer_signups_practical_check_guard), so they're never offered.
       const needsCheck =
         event.requires_health_history === true && PRACTICAL_CHECK_ROLE_KEYS.includes(o.role_type?.key ?? "");

@@ -25,7 +25,7 @@ import { ApplicationAnswers } from "@/components/application-answers";
 import { ScreeningView } from "@/components/admin/screening-view";
 import { PracticalChecksPanel } from "@/components/admin/practical-checks-panel";
 import { loadPracticalChecks } from "@/lib/admin/practical-checks";
-import { formatCheckDate, practicalCheckSummary } from "@/lib/practical-checks";
+import { clearsPracticalCheck, formatCheckDate, practicalCheckSummary } from "@/lib/practical-checks";
 import { approvalPrefill, type ApprovalRoleType } from "@/lib/volunteer-approval";
 import { ApprovalPanel, ResendRegistrationEmailButton } from "@/components/admin/approval-panel";
 import { Button } from "@/components/ui/button";
@@ -335,13 +335,15 @@ async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }
             ) : (
               <ApprovalPanel
                 applicationId={app.id}
+                applicantUserId={app.user_id}
                 applicantName={app.full_name}
                 roleTypes={approvalRoles}
                 firstTimer={firstTimer}
                 initialSelected={prefill.selected}
                 prefillNote={prefillNote}
                 practicalSummary={practicalCheckSummary(latestCheck)}
-                practicalPassed={latestCheck?.outcome === "passed"}
+                practicalPassed={clearsPracticalCheck(latestCheck?.outcome)}
+                voucherName={access?.userId ? nameOf(access.userId) : ""}
               />
             )}
           </CardContent>
@@ -499,6 +501,7 @@ async function ApplicationLoader({ params }: { params: Promise<{ id: string }> }
               checks={practical.checks}
               recorderNames={practical.recorderNames}
               canRecord
+              canWaive={isAdmin}
               defaultAssessor={access?.userId ? nameOf(access.userId) : ""}
             />
           </CardContent>

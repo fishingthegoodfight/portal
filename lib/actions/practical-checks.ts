@@ -1,7 +1,8 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
-import { PRACTICAL_OUTCOMES, type PracticalOutcome } from "@/lib/practical-checks";
+import { requireAdmin } from "@/lib/admin/require-admin";
+import { PRACTICAL_OUTCOMES, WAIVED_OUTCOME, type PracticalOutcome } from "@/lib/practical-checks";
 
 export type PracticalCheckResult = { ok: true } | { ok: false; error: string };
 
@@ -10,7 +11,8 @@ export type PracticalCheckResult = { ok: true } | { ok: false; error: string };
  * lead for anyone with an application in one of their chapters or on a
  * roster of one of their chapters' events (can_record_practical_check —
  * the database enforces it). Checks aren't edited: a correction is a new
- * one, and the latest counts.
+ * one, and the latest counts. A waiver ("waived") is admins only and needs
+ * a reason in the notes; the assessor is whoever vouches for them.
  */
 export async function recordPracticalCheckAction(
   userId: string,
@@ -20,6 +22,10 @@ export async function recordPracticalCheckAction(
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.checkedOn)) return { ok: false, error: "Give the date of the check" };
   if (!input.assessorName.trim()) return { ok: false, error: "Say who assessed them" };
   if (!PRACTICAL_OUTCOMES.some((o) => o.value === input.outcome)) return { ok: false, error: "Choose an outcome" };
+  if (input.outcome === WAIVED_OUTCOME) {
+    if ("error" in (await requireAdmin(supabase))) return { ok: false, error: "Only an admin can waive the practical check" };
+    if (!input.notes.trim()) return { ok: false, error: "Say why you're waiving it" };
+  }
 
   const { data: allowed } = await supabase.rpc("can_record_practical_check", { p_user_id: userId });
   if (!allowed) return { ok: false, error: "You can't record a practical check for this person" };

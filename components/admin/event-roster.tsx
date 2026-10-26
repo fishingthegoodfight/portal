@@ -36,7 +36,7 @@ import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
 import { RosterAddVolunteerDialog } from "@/components/admin/roster-add-volunteer-dialog";
 import { RosterWalkupDialog } from "@/components/admin/roster-walkup-dialog";
 import { RosterHealthLine, type RosterHealth } from "@/components/admin/roster-health";
-import { practicalCheckSummary, type PracticalCheck } from "@/lib/practical-checks";
+import { clearsPracticalCheck, practicalCheckSummary, type PracticalCheck } from "@/lib/practical-checks";
 import type { Chapter } from "@/lib/chapters";
 import { personDisplayName } from "@/lib/person-name";
 import { isAfterEvent, type EventTiming } from "@/lib/event-timing";
@@ -1108,7 +1108,7 @@ function VolunteerRosterRow({
             href={`/protected/admin/practical-checks/${person.userId}`}
             className={cn(
               "w-fit text-sm underline underline-offset-4",
-              practicalCheck.latest?.outcome === "passed" ? "text-muted-foreground" : "font-medium text-amber-700 dark:text-amber-400",
+              clearsPracticalCheck(practicalCheck.latest?.outcome) ? "text-muted-foreground" : "font-medium text-amber-700 dark:text-amber-400",
             )}
           >
             Practical check: {practicalCheckSummary(practicalCheck.latest)}

@@ -5,12 +5,14 @@ import { useRouter } from "next/navigation";
 
 import { recordPracticalCheckAction } from "@/lib/actions/practical-checks";
 import {
+  clearsPracticalCheck,
   formatCheckDate,
   PRACTICAL_OUTCOMES,
   practicalCheckSummary,
   practicalOutcomeLabel,
   type PracticalCheck,
   type PracticalOutcome,
+  WAIVED_OUTCOME,
 } from "@/lib/practical-checks";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,13 +25,15 @@ import { todayInZone } from "@/lib/format-date";
  * A person's practical instruction checks: the one that counts (the
  * latest) up top with its date and assessor, earlier ones below, and — for
  * someone who can record one — the form. No expiry; the date is there for
- * the reader to judge.
+ * the reader to judge. Admins (`canWaive`) can also waive it for an
+ * instructor they vouch for, with a reason.
  */
 export function PracticalChecksPanel({
   userId,
   checks,
   recorderNames,
   canRecord,
+  canWaive = false,
   defaultAssessor,
 }: {
   userId: string;
@@ -37,6 +41,8 @@ export function PracticalChecksPanel({
   checks: PracticalCheck[];
   recorderNames: Record<string, string>;
   canRecord: boolean;
+  /** Admins only — the database refuses a waiver from anyone else. */
+  canWaive?: boolean;
   defaultAssessor: string;
 }) {
   const router = useRouter();
@@ -50,6 +56,8 @@ export function PracticalChecksPanel({
 
   const latest = checks[0] ?? null;
   const previous = checks.slice(1);
+  const waiving = outcome === WAIVED_OUTCOME;
+  const outcomes = PRACTICAL_OUTCOMES.filter((o) => canWaive || o.value !== WAIVED_OUTCOME);
 
   const save = async () => {
     setSaving(true);
@@ -71,13 +79,13 @@ export function PracticalChecksPanel({
       <div
         className={cn(
           "rounded-md border p-3",
-          latest?.outcome === "passed"
+          clearsPracticalCheck(latest?.outcome)
             ? "border-green-600/50 bg-green-600/5"
             : "border-amber-500/60 bg-amber-500/10",
         )}
       >
         <p className="font-medium">{practicalCheckSummary(latest)}</p>
-        {latest?.outcome !== "passed" && (
+        {!clearsPracticalCheck(latest?.outcome) && (
           <p className="text-xs text-muted-foreground">
             Needed before an instructor shift at a retreat or other event that requires health history.
           </p>
@@ -112,27 +120,37 @@ export function PracticalChecksPanel({
                 <Input id="pc_date" type="date" value={checkedOn} onChange={(e) => setCheckedOn(e.target.value)} />
               </div>
               <div className="grid gap-1">
-                <Label htmlFor="pc_assessor" className="text-xs">Who assessed them</Label>
+                <Label htmlFor="pc_assessor" className="text-xs">
+                  {waiving ? "Who is vouching for them" : "Who assessed them"}
+                </Label>
                 <Input id="pc_assessor" value={assessor} onChange={(e) => setAssessor(e.target.value)} />
               </div>
             </div>
             <fieldset className="flex flex-wrap gap-4">
               <legend className="mb-1 text-xs font-medium">Outcome</legend>
-              {PRACTICAL_OUTCOMES.map((o) => (
+              {outcomes.map((o) => (
                 <label key={o.value} className="flex items-center gap-1.5">
                   <input type="radio" name="pc_outcome" checked={outcome === o.value} onChange={() => setOutcome(o.value)} />
                   {o.label}
                 </label>
               ))}
             </fieldset>
+            {waiving && (
+              <p className="text-xs text-muted-foreground">
+                For an instructor you know well and can vouch for, instead of the check on the water. It counts
+                as a pass for instructor shifts from this date on. A later check replaces it.
+              </p>
+            )}
             <div className="grid gap-1">
-              <Label htmlFor="pc_notes" className="text-xs">Notes</Label>
+              <Label htmlFor="pc_notes" className="text-xs">
+                {waiving ? "Why you're waiving it (required)" : "Notes"}
+              </Label>
               <Textarea id="pc_notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
             </div>
             {error && <p className="text-red-500">{error}</p>}
             <div className="flex gap-2">
               <Button type="button" size="sm" disabled={saving} onClick={save}>
-                {saving ? "Saving..." : "Save check"}
+                {saving ? "Saving..." : waiving ? "Save waiver" : "Save check"}
               </Button>
               <Button type="button" size="sm" variant="outline" disabled={saving} onClick={() => setOpen(false)}>
                 Cancel
@@ -142,7 +160,7 @@ export function PracticalChecksPanel({
         ) : (
           <div>
             <Button type="button" size="sm" variant="outline" onClick={() => setOpen(true)}>
-              Record a practical check
+              {canWaive ? "Record or waive a practical check" : "Record a practical check"}
             </Button>
           </div>
         ))}
