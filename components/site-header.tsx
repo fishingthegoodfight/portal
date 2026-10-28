@@ -69,6 +69,7 @@ async function HeaderContent() {
   const items: NavItem[] = [
     { href: "/protected/events", label: "Events" },
     { href: "/protected/profile", label: "Profile" },
+    { href: "/protected/support", label: "Support" },
     ...(volunteer ? [{ href: "/protected/volunteer", label: "Volunteer" }] : []),
     ...(profile?.role === "admin" || ((memberChapters as string[] | null) ?? []).length > 0
       ? [{ href: "/protected/members", label: "Members" }]

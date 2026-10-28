@@ -2227,3 +2227,69 @@ export function chapterMessageEmail({ subject, body, signature, stopUrl, test }:
   ].join("\n");
   return { subject: test ? `[Test] ${subject}` : subject, html, text };
 }
+
+export type SupportRequestEmailStatus = "submitted" | "approved" | "declined" | "waitlisted" | "complete";
+
+/** The one subject every support-request email uses. */
+export const SUPPORT_REQUEST_SUBJECT = "Your FTGF support request";
+
+/**
+ * To a participant, on every status change of their support request
+ * (Therapy Support). Discreet on purpose: the subject is always the same,
+ * and nothing in it (or anywhere in the body, so never in an inbox preview)
+ * says what kind of support it is. No program, therapist, amount or
+ * session count: the details are on their Support page, behind sign-in.
+ */
+export function supportRequestStatusEmail({
+  recipientName,
+  status,
+  statusUrl,
+}: {
+  recipientName: string | null;
+  status: SupportRequestEmailStatus;
+  statusUrl: string;
+}): RenderedEmail {
+  const greeting = recipientName ? `Hi ${escapeHtml(recipientName)},` : "Hi,";
+  const greetingText = recipientName ? `Hi ${recipientName},` : "Hi,";
+  const lines: Record<SupportRequestEmailStatus, string[]> = {
+    submitted: [
+      "Thank you for reaching out. We've received your request and someone from our team will review it soon.",
+      "We'll email you again when there's an update.",
+    ],
+    approved: [
+      "Good news: your request has been approved.",
+      "You'll find the details, and what happens next, on your Support page.",
+    ],
+    declined: [
+      "Thank you for reaching out. We weren't able to approve your request this time.",
+      "If you'd like to talk about it, or about other ways we might help, just reply to this email.",
+    ],
+    waitlisted: [
+      "Thank you for your patience. We can't take your request forward just yet, so we've added it to our waiting list.",
+      "We'll email you as soon as there's an update.",
+    ],
+    complete: [
+      "Your request is now complete. Thank you for letting us be part of it.",
+      "If you'd like to continue, you can ask for more from your Support page.",
+    ],
+  };
+  const buttonLabel = "See your Support page";
+
+  const html = wrapHtml(
+    [
+      `<p style="margin:0 0 16px;">${greeting}</p>`,
+      ...lines[status].map((line) => `<p style="margin:0 0 16px;">${escapeHtml(line)}</p>`),
+      `<p style="margin:16px 0 8px;"><a href="${escapeHtml(statusUrl)}" style="display:inline-block;background:#166534;color:#ffffff;text-decoration:none;padding:10px 16px;border-radius:6px;font-weight:600;">${buttonLabel}</a></p>`,
+      `<p style="margin:16px 0 0;font-size:13px;color:#57534e;">Questions? Just reply to this email. Replies come only to our team.</p>`,
+    ].join("\n"),
+  );
+  const text = [
+    greetingText,
+    "",
+    ...lines[status].flatMap((line) => [line, ""]),
+    `${buttonLabel}: ${statusUrl}`,
+    "",
+    "Questions? Just reply to this email. Replies come only to our team.",
+  ].join("\n");
+  return { subject: SUPPORT_REQUEST_SUBJECT, html, text };
+}

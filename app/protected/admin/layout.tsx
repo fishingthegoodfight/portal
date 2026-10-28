@@ -3,6 +3,7 @@ import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
 import { loadEventAdminAccess } from "@/lib/admin/require-admin";
+import { canManageTherapySupport } from "@/lib/therapy-access";
 import { AdminNav, type AdminNavItem } from "@/components/admin/admin-nav";
 
 async function AdminGate({ children }: { children: React.ReactNode }) {
@@ -12,6 +13,8 @@ async function AdminGate({ children }: { children: React.ReactNode }) {
   if (!access.hasAccess) redirect("/protected/events");
 
   const leads = access.isAdmin || access.role === "chapter_lead";
+  // Only an admin with the Therapy Support flag sees the item at all.
+  const therapy = access.isAdmin && (await canManageTherapySupport(supabase));
   const items: AdminNavItem[] = [
     { href: "/protected/admin", label: "Events", also: ["/protected/admin/events"] },
     ...(leads ? [{ href: "/protected/admin/applications", label: "Applications" }] : []),
@@ -22,6 +25,7 @@ async function AdminGate({ children }: { children: React.ReactNode }) {
           { href: "/protected/admin/marketing", label: "Marketing" },
         ]
       : []),
+    ...(therapy ? [{ href: "/protected/admin/therapy", label: "Therapy Support" }] : []),
     ...(leads ? [{ href: "/bulletin", label: "Weekly bulletin" }] : []),
     ...(access.isAdmin
       ? [

@@ -15967,3 +15967,1156 @@ commit;
 --    where conrelid = 'public.practical_instruction_checks'::regclass and contype = 'c';
 --   select with_check from pg_policies
 --    where tablename = 'practical_instruction_checks' and policyname = 'practical_instruction_checks_insert';
+
+-- =============================================================================
+-- 2026-10-28 — Therapy Support, part 1: requests and review
+-- =============================================================================
+-- Run 2026-10-28.
+--
+-- Two programs, one system:
+--   - Scholarship: a participant who already has a therapist asks FTGF to
+--     help pay; FTGF pays the therapist a flat rate per session.
+--   - Partner office: for someone without a therapist; a partner office
+--     gives FTGF a number of free sessions a month and FTGF refers people.
+-- Both cap at 12 sessions per approval; after that, a renewal (linked to
+-- the approval it follows) goes through the same review.
+--
+-- PRIVACY FIRST. Only an ADMIN who ALSO has profiles.can_manage_therapy_support
+-- can see anything here. Being an admin isn't enough. The rule lives in ONE
+-- place, can_manage_therapy_support(), and everything reads and writes
+-- through SECURITY DEFINER functions that call it. No API role has any
+-- grant on any table below: not anon, not authenticated, and not
+-- service_role either (the stricter health_histories precedent in
+-- CLAUDE.md, taken one step further: even a participant's own submission
+-- goes through submit_support_request(), not a table insert). So Members,
+-- rosters, the digests (service role) and every existing admin view can't
+-- reach this data even by mistake; a query from any of them fails with
+-- "permission denied" instead of returning rows.
+--
+-- No clinical information is stored: names, dates, counts, dollar amounts,
+-- and one optional "anything you'd like us to know" note.
+--
+-- 1. profiles.can_manage_therapy_support. Default false. Only honoured for
+--    an admin, and cleared automatically whenever someone stops being an
+--    admin (demoted, access removed). It's changed ONLY through
+--    therapy_admin_set_manager(), which only someone who already has it can
+--    call, or from the SQL editor. An admin without the flag can't give it
+--    to themselves: profiles_therapy_flag_guard refuses every other route,
+--    admin_set_data_access included. The merge's 'access' group doesn't
+--    include it, so merging profiles never grants it.
+--    BOOTSTRAP: after running this, turn it on for yourself in the SQL
+--    editor (last statement of this script, commented out).
+--
+-- 2. therapy_settings (one row): the scholarship flat rate per session and
+--    the partner office's free sessions per month. Managed from Therapy
+--    Support → Settings, not the shared Setup page: app_settings is
+--    readable by every signed-in person.
+--
+-- 3. therapy_therapists: reusable therapist records (several participants
+--    may share one).
+--
+-- 4. therapy_requests: one row per request or renewal (renewal_of → the
+--    approval it follows; one renewal per approval). The participant's
+--    chapter and its region are copied in at submission, so reports don't
+--    move when someone changes chapter. user_id is a nullable foreign key
+--    with ON DELETE SET NULL, so:
+--      - deleting a person keeps their requests as anonymous counts; a
+--        trigger then clears the free-text note and their availability;
+--      - merging two profiles moves the requests to the kept one (the
+--        merge's generic loop over set-null references), with no change to
+--        admin_merge_people or admin_delete_person.
+--    No unique index on user_id (one open request at a time is enforced in
+--    submit_support_request instead), so a merge can never fail on a
+--    therapy constraint and name it to an admin without the flag.
+--
+-- 5. therapy_sessions: one row per session against an approved request. No
+--    screen records them yet (part 2), but sessions used out of 12 and the
+--    partner office's monthly count read from it already.
+--
+-- 6. therapy_access_log: append-only, following health_access_log. Every
+--    view of one participant's record ('view') and every load of the
+--    request list ('list', which shows names) is logged by the function that
+--    reads it, in the same call. Nobody can update, delete or truncate it,
+--    the table owner included. Only flag holders can read it (through
+--    therapy_admin_access_log()); plain admins can't, unlike
+--    health_access_log, since knowing whose record was opened would show
+--    who is in the program. No foreign keys.
+--
+-- 7. person_removal_counts (the Remove person preview) no longer counts
+--    therapy_* rows among "records that name them", which would otherwise
+--    hint at a request to an admin without access. Deleting still keeps the
+--    requests as anonymous counts (point 4).
+
+-- Eligibility: check-ins ever = distinct events checked in at as a
+-- participant or on a volunteer shift, plus attendance credits (events
+-- before the portal). Zero → flagged; an approval then needs an override
+-- reason (enforced here, not just on the page).
+--
+-- Partner office slots: "this month" = partner-office sessions logged with
+-- a date in the current month (America/Denver). Referring someone when
+-- that's at or over the monthly number waitlists them for next month
+-- instead.
+--
+-- New tables ship with their grants: RLS on with no policies, and all
+-- privileges revoked from anon, authenticated and service_role (none is
+-- needed: only the SECURITY DEFINER functions below, owned by postgres,
+-- touch the tables). Sequences likewise.
+--
+-- Safe to re-run. One transaction.
+
+begin;
+
+-- ---- 1. The flag ----------------------------------------------------------------------
+alter table public.profiles
+  add column if not exists can_manage_therapy_support boolean not null default false;
+
+-- THE rule: an admin with the flag. Nothing else ever decides access.
+create or replace function public.can_manage_therapy_support()
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select auth.uid() is not null
+     and coalesce(
+       (select role = 'admin' and can_manage_therapy_support from public.profiles where id = auth.uid()),
+       false
+     );
+$function$;
+
+-- Refuses unless the caller passes the rule. Every function below starts
+-- with it.
+create or replace function public.therapy_require_manager()
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+begin
+  if not public.can_manage_therapy_support() then
+    raise exception 'Not allowed' using errcode = '42501';
+  end if;
+end $function$;
+
+-- Runs after profiles_role_guard (name order), so it sees the final role.
+-- Clearing is always allowed (and forced for a non-admin); setting or
+-- clearing it by any API route other than therapy_admin_set_manager is
+-- refused. auth.uid() null = SQL editor or another trusted context.
+create or replace function public.profiles_therapy_flag_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_was boolean := case when tg_op = 'UPDATE' then old.can_manage_therapy_support else false end;
+begin
+  if new.role is distinct from 'admin' then
+    new.can_manage_therapy_support := false;
+    return new;
+  end if;
+  if new.can_manage_therapy_support is distinct from v_was
+     and auth.uid() is not null
+     and coalesce(current_setting('ftgf.setting_therapy_access', true), '') <> 'on' then
+    raise exception 'This access is changed only from its own settings page' using errcode = '42501';
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists profiles_therapy_flag_guard on public.profiles;
+create trigger profiles_therapy_flag_guard
+  before insert or update on public.profiles
+  for each row execute function public.profiles_therapy_flag_guard();
+
+revoke all on function public.profiles_therapy_flag_guard() from public, anon, authenticated;
+
+-- ---- 2. Settings ------------------------------------------------------------------------
+create table if not exists public.therapy_settings (
+  id boolean primary key default true check (id),
+  -- What FTGF pays a therapist per scholarship session. Null = not set yet
+  -- (scholarship approvals are refused until it is).
+  scholarship_rate_cents integer check (scholarship_rate_cents is null or scholarship_rate_cents > 0),
+  -- Free sessions the partner office gives FTGF each month.
+  partner_monthly_sessions integer not null default 10 check (partner_monthly_sessions >= 0),
+  updated_by uuid references public.profiles(id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+
+insert into public.therapy_settings (id) values (true) on conflict (id) do nothing;
+
+alter table public.therapy_settings enable row level security;
+-- No policies: no API role has a grant.
+revoke all on public.therapy_settings from anon, authenticated, service_role;
+
+-- ---- 3. Therapists ----------------------------------------------------------------------
+create table if not exists public.therapy_therapists (
+  id bigserial primary key,
+  name text not null check (btrim(name) <> '' and char_length(name) <= 200),
+  practice text check (char_length(practice) <= 200),
+  email text check (char_length(email) <= 200),
+  phone text check (char_length(phone) <= 50),
+  license_type text check (char_length(license_type) <= 100),
+  license_state text check (license_state is null or license_state ~ '^[A-Z]{2}$'),
+  created_by uuid references public.profiles(id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.therapy_therapists enable row level security;
+revoke all on public.therapy_therapists from anon, authenticated, service_role;
+revoke all on sequence public.therapy_therapists_id_seq from anon, authenticated, service_role;
+
+-- ---- 4. Requests --------------------------------------------------------------------------
+create table if not exists public.therapy_requests (
+  id bigserial primary key,
+  -- Null once the person is deleted: the row stays as an anonymous count.
+  user_id uuid references public.profiles(id) on delete set null,
+  program text not null check (program in ('scholarship', 'partner')),
+  status text not null default 'submitted'
+    check (status in ('submitted', 'approved', 'declined', 'waitlisted', 'complete')),
+  renewal_of bigint references public.therapy_requests(id) on delete restrict,
+  -- Copied from the profile at submission.
+  chapter text,
+  region text,
+  submitted_at timestamptz not null default now(),
+
+  -- Scholarship: their therapist, as they gave it.
+  therapist_name text check (char_length(therapist_name) <= 200),
+  therapist_practice text check (char_length(therapist_practice) <= 200),
+  therapist_email text check (char_length(therapist_email) <= 200),
+  therapist_phone text check (char_length(therapist_phone) <= 50),
+  therapist_license_type text check (char_length(therapist_license_type) <= 100),
+  therapist_license_state text check (therapist_license_state is null or therapist_license_state ~ '^[A-Z]{2}$'),
+  has_insurance text check (has_insurance in ('yes', 'no', 'not_sure')),
+
+  -- Partner office.
+  contact_preference text check (contact_preference in ('email', 'phone', 'text')),
+  availability text check (char_length(availability) <= 500),
+
+  -- "Anything you'd like us to know" (optional).
+  note text check (char_length(note) <= 2000),
+
+  -- Review.
+  therapist_id bigint references public.therapy_therapists(id) on delete restrict,
+  rate_cents integer check (rate_cents is null or rate_cents > 0),
+  rate_agreed_at timestamptz,
+  sessions_approved integer check (sessions_approved is null or sessions_approved > 0),
+  approved_at timestamptz,
+  approved_by uuid references public.profiles(id) on delete set null,
+  referred_at timestamptz,
+  waitlist_month date,
+  eligibility_override_reason text check (char_length(eligibility_override_reason) <= 1000),
+  status_changed_at timestamptz not null default now(),
+  status_changed_by uuid references public.profiles(id) on delete set null,
+
+  constraint therapy_requests_program_fields check (
+    (program = 'scholarship' and therapist_name is not null and has_insurance is not null)
+    -- A deleted person's partner request loses its contact preference.
+    or (program = 'partner' and (contact_preference is not null or user_id is null))
+  ),
+  constraint therapy_requests_approved_fields check (
+    status not in ('approved', 'complete')
+    or (approved_at is not null
+        and sessions_approved is not null
+        and (program = 'partner' or (therapist_id is not null and rate_cents is not null and rate_agreed_at is not null)))
+  )
+);
+
+create index if not exists therapy_requests_user_idx on public.therapy_requests (user_id);
+create unique index if not exists therapy_requests_one_renewal on public.therapy_requests (renewal_of)
+  where renewal_of is not null;
+
+alter table public.therapy_requests enable row level security;
+revoke all on public.therapy_requests from anon, authenticated, service_role;
+revoke all on sequence public.therapy_requests_id_seq from anon, authenticated, service_role;
+
+-- Deleting the person (user_id → null via the foreign key) also clears
+-- what they wrote about themselves.
+create or replace function public.therapy_requests_anonymize()
+returns trigger
+language plpgsql
+as $function$
+begin
+  if old.user_id is not null and new.user_id is null then
+    new.note := null;
+    new.availability := null;
+    new.contact_preference := null;
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists therapy_requests_anonymize on public.therapy_requests;
+create trigger therapy_requests_anonymize
+  before update on public.therapy_requests
+  for each row execute function public.therapy_requests_anonymize();
+
+revoke all on function public.therapy_requests_anonymize() from public, anon, authenticated;
+
+-- ---- 5. Sessions --------------------------------------------------------------------------
+create table if not exists public.therapy_sessions (
+  id bigserial primary key,
+  request_id bigint not null references public.therapy_requests(id) on delete restrict,
+  session_date date not null,
+  recorded_by uuid references public.profiles(id) on delete set null,
+  recorded_at timestamptz not null default now()
+);
+
+create index if not exists therapy_sessions_request_idx on public.therapy_sessions (request_id);
+create index if not exists therapy_sessions_date_idx on public.therapy_sessions (session_date);
+
+alter table public.therapy_sessions enable row level security;
+revoke all on public.therapy_sessions from anon, authenticated, service_role;
+revoke all on sequence public.therapy_sessions_id_seq from anon, authenticated, service_role;
+
+-- ---- 6. Access log ------------------------------------------------------------------------
+create table if not exists public.therapy_access_log (
+  id bigserial primary key,
+  accessed_by uuid not null,
+  -- Null for a 'list' (many people at once).
+  subject_user_id uuid,
+  request_id bigint,
+  action text not null check (action in ('view', 'list')),
+  accessed_at timestamptz not null default now(),
+  constraint therapy_access_log_subject check (action = 'list' or request_id is not null)
+);
+
+create index if not exists therapy_access_log_subject_idx
+  on public.therapy_access_log (subject_user_id, accessed_at desc);
+create index if not exists therapy_access_log_time_idx
+  on public.therapy_access_log (accessed_at desc);
+
+alter table public.therapy_access_log enable row level security;
+revoke all on public.therapy_access_log from anon, authenticated, service_role;
+revoke all on sequence public.therapy_access_log_id_seq from anon, authenticated, service_role;
+
+create or replace function public.therapy_access_log_immutable()
+returns trigger
+language plpgsql
+as $function$
+begin
+  raise exception 'The access log is append-only — entries can''t be changed or removed'
+    using errcode = '42501';
+end $function$;
+
+drop trigger if exists therapy_access_log_no_update_delete on public.therapy_access_log;
+create trigger therapy_access_log_no_update_delete
+  before update or delete on public.therapy_access_log
+  for each row execute function public.therapy_access_log_immutable();
+
+drop trigger if exists therapy_access_log_no_truncate on public.therapy_access_log;
+create trigger therapy_access_log_no_truncate
+  before truncate on public.therapy_access_log
+  for each statement execute function public.therapy_access_log_immutable();
+
+revoke all on function public.therapy_access_log_immutable() from public, anon, authenticated;
+
+-- Internal: re-checks the rule, stamps who/when itself.
+create or replace function public.therapy_log_access(p_subject_user_id uuid, p_request_id bigint, p_action text)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  perform public.therapy_require_manager();
+  insert into public.therapy_access_log (accessed_by, subject_user_id, request_id, action)
+  values (auth.uid(), p_subject_user_id, p_request_id, p_action);
+end $function$;
+
+-- ---- 7. Helpers ---------------------------------------------------------------------------
+-- Check-ins ever: distinct events checked in at (attending or on a shift),
+-- plus attendance credits. The last date is from the portal only (a credit
+-- has no event date).
+create or replace function public.therapy_checkin_history(p_user_id uuid)
+returns table (checkins integer, last_checkin timestamptz)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  with ev as (
+    select r.event_id, r.checked_in_at
+      from public.rsvps r
+     where r.user_id = p_user_id and r.checked_in_at is not null
+    union all
+    select vo.event_id, s.checked_in_at
+      from public.volunteer_signups s
+      join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+     where s.user_id = p_user_id and s.checked_in_at is not null
+  )
+  select (select count(distinct event_id) from ev)::integer
+         + coalesce((select c.events from public.attendance_credits c where c.user_id = p_user_id), 0),
+         (select max(checked_in_at) from ev);
+$function$;
+
+create or replace function public.therapy_sessions_used(p_request_id bigint)
+returns integer
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select count(*)::integer from public.therapy_sessions where request_id = p_request_id;
+$function$;
+
+create or replace function public.therapy_current_month()
+returns date
+language sql
+stable
+as $function$
+  select date_trunc('month', now() at time zone 'America/Denver')::date;
+$function$;
+
+-- The partner office this month: sessions logged, the monthly number, and
+-- who's waitlisted for next month.
+create or replace function public.therapy_partner_usage()
+returns table (month date, used integer, slots integer, waitlisted_next_month integer)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+declare
+  v_month date := public.therapy_current_month();
+begin
+  perform public.therapy_require_manager();
+  return query
+  select v_month,
+         (select count(*)::integer
+            from public.therapy_sessions s
+            join public.therapy_requests q on q.id = s.request_id
+           where q.program = 'partner'
+             and s.session_date >= v_month
+             and s.session_date < (v_month + interval '1 month')::date),
+         (select partner_monthly_sessions from public.therapy_settings where id),
+         (select count(*)::integer
+            from public.therapy_requests q
+           where q.program = 'partner' and q.status = 'waitlisted'
+             and q.waitlist_month <= (v_month + interval '1 month')::date);
+end $function$;
+
+-- ---- 8. Participant ------------------------------------------------------------------------
+create or replace function public.submit_support_request(
+  p_program text,
+  p_therapist_name text default null,
+  p_therapist_practice text default null,
+  p_therapist_email text default null,
+  p_therapist_phone text default null,
+  p_therapist_license_type text default null,
+  p_therapist_license_state text default null,
+  p_has_insurance text default null,
+  p_contact_preference text default null,
+  p_availability text default null,
+  p_note text default null
+)
+returns bigint
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  v_chapter text;
+  v_region text;
+  v_id bigint;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated' using errcode = '42501';
+  end if;
+  if p_program not in ('scholarship', 'partner') then
+    raise exception 'Choose whether you currently have a therapist' using errcode = '22023';
+  end if;
+  if exists (
+    select 1 from public.therapy_requests
+     where user_id = v_uid and status in ('submitted', 'approved', 'waitlisted')
+  ) then
+    raise exception 'You already have a request open. We''ll be in touch about it.' using errcode = '22023';
+  end if;
+  if p_program = 'scholarship' then
+    if nullif(btrim(p_therapist_name), '') is null then
+      raise exception 'Add your therapist''s name' using errcode = '22023';
+    end if;
+    if p_has_insurance is null or p_has_insurance not in ('yes', 'no', 'not_sure') then
+      raise exception 'Let us know whether you have insurance that could help' using errcode = '22023';
+    end if;
+  else
+    if p_contact_preference is null or p_contact_preference not in ('email', 'phone', 'text') then
+      raise exception 'Choose how you''d like to be contacted' using errcode = '22023';
+    end if;
+  end if;
+
+  select p.chapter, rg.name into v_chapter, v_region
+    from public.profiles p
+    left join public.chapters c on c.name = p.chapter
+    left join public.regions rg on rg.id = c.region_id
+   where p.id = v_uid;
+
+  insert into public.therapy_requests (
+    user_id, program, chapter, region,
+    therapist_name, therapist_practice, therapist_email, therapist_phone,
+    therapist_license_type, therapist_license_state, has_insurance,
+    contact_preference, availability, note
+  ) values (
+    v_uid, p_program, v_chapter, v_region,
+    case when p_program = 'scholarship' then btrim(p_therapist_name) end,
+    case when p_program = 'scholarship' then nullif(btrim(p_therapist_practice), '') end,
+    case when p_program = 'scholarship' then nullif(btrim(p_therapist_email), '') end,
+    case when p_program = 'scholarship' then nullif(btrim(p_therapist_phone), '') end,
+    case when p_program = 'scholarship' then nullif(btrim(p_therapist_license_type), '') end,
+    case when p_program = 'scholarship' then nullif(upper(btrim(p_therapist_license_state)), '') end,
+    case when p_program = 'scholarship' then p_has_insurance end,
+    case when p_program = 'partner' then p_contact_preference end,
+    case when p_program = 'partner' then nullif(btrim(p_availability), '') end,
+    nullif(btrim(p_note), '')
+  )
+  returning id into v_id;
+  return v_id;
+end $function$;
+
+-- A renewal of one of the caller's approvals that has used all its
+-- sessions: same program and details, linked to it, back to 'submitted'.
+create or replace function public.request_support_renewal(p_previous_id bigint, p_note text default null)
+returns bigint
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  v_prev public.therapy_requests%rowtype;
+  v_chapter text;
+  v_region text;
+  v_id bigint;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated' using errcode = '42501';
+  end if;
+  select * into v_prev from public.therapy_requests where id = p_previous_id and user_id = v_uid for update;
+  if not found then
+    raise exception 'Request not found' using errcode = '22023';
+  end if;
+  if v_prev.sessions_approved is null
+     or public.therapy_sessions_used(v_prev.id) < v_prev.sessions_approved
+     or v_prev.status not in ('approved', 'complete') then
+    raise exception 'A renewal can be requested once all approved sessions are used' using errcode = '22023';
+  end if;
+  if exists (select 1 from public.therapy_requests where renewal_of = v_prev.id) then
+    raise exception 'A renewal has already been requested' using errcode = '22023';
+  end if;
+  if exists (
+    select 1 from public.therapy_requests
+     where user_id = v_uid and status in ('submitted', 'waitlisted') and id <> v_prev.id
+  ) then
+    raise exception 'You already have a request open. We''ll be in touch about it.' using errcode = '22023';
+  end if;
+
+  -- The approval it renews is finished.
+  update public.therapy_requests
+     set status = 'complete', status_changed_at = now(), status_changed_by = v_uid
+   where id = v_prev.id and status <> 'complete';
+
+  select p.chapter, rg.name into v_chapter, v_region
+    from public.profiles p
+    left join public.chapters c on c.name = p.chapter
+    left join public.regions rg on rg.id = c.region_id
+   where p.id = v_uid;
+
+  insert into public.therapy_requests (
+    user_id, program, renewal_of, chapter, region,
+    therapist_name, therapist_practice, therapist_email, therapist_phone,
+    therapist_license_type, therapist_license_state, has_insurance,
+    contact_preference, availability, note, therapist_id
+  ) values (
+    v_uid, v_prev.program, v_prev.id, v_chapter, v_region,
+    v_prev.therapist_name, v_prev.therapist_practice, v_prev.therapist_email, v_prev.therapist_phone,
+    v_prev.therapist_license_type, v_prev.therapist_license_state, v_prev.has_insurance,
+    v_prev.contact_preference, v_prev.availability, nullif(btrim(p_note), ''), v_prev.therapist_id
+  )
+  returning id into v_id;
+  return v_id;
+end $function$;
+
+-- The caller's own requests: status and sessions only. Nothing else.
+create or replace function public.my_support_requests()
+returns table (
+  id bigint,
+  program text,
+  status text,
+  submitted_at timestamptz,
+  is_renewal boolean,
+  sessions_approved integer,
+  sessions_used integer,
+  can_renew boolean
+)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select q.id, q.program, q.status, q.submitted_at, q.renewal_of is not null,
+         q.sessions_approved, public.therapy_sessions_used(q.id),
+         q.status in ('approved', 'complete')
+           and q.sessions_approved is not null
+           and public.therapy_sessions_used(q.id) >= q.sessions_approved
+           and not exists (select 1 from public.therapy_requests r where r.renewal_of = q.id)
+    from public.therapy_requests q
+   where auth.uid() is not null and q.user_id = auth.uid()
+   order by q.submitted_at desc;
+$function$;
+
+-- ---- 9. Review ----------------------------------------------------------------------------
+-- Every request, with eligibility, prior approvals and sessions used.
+-- Logs one 'list'.
+create or replace function public.therapy_admin_requests()
+returns table (
+  id bigint,
+  user_id uuid,
+  full_name text,
+  chapter text,
+  region text,
+  program text,
+  status text,
+  submitted_at timestamptz,
+  renewal_of bigint,
+  sessions_approved integer,
+  sessions_used integer,
+  checkins integer,
+  last_checkin timestamptz,
+  prior_approvals integer,
+  waitlist_month date
+)
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  perform public.therapy_require_manager();
+  perform public.therapy_log_access(null, null, 'list');
+  return query
+  select q.id, q.user_id,
+         coalesce(nullif(btrim(concat_ws(' ', p.first_name, p.last_name)), ''), p.email, '(deleted person)'),
+         q.chapter, q.region, q.program, q.status, q.submitted_at, q.renewal_of,
+         q.sessions_approved, public.therapy_sessions_used(q.id),
+         coalesce(h.checkins, 0), h.last_checkin,
+         (select count(*)::integer from public.therapy_requests o
+           where o.user_id = q.user_id and o.id <> q.id and o.approved_at is not null),
+         q.waitlist_month
+    from public.therapy_requests q
+    left join public.profiles p on p.id = q.user_id
+    left join lateral public.therapy_checkin_history(q.user_id) h on q.user_id is not null
+   order by q.submitted_at desc;
+end $function$;
+
+-- One request in full, with the person's contact details, eligibility,
+-- the therapist record, and every other request of theirs. Logs 'view'.
+create or replace function public.therapy_admin_request(p_id bigint)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_q public.therapy_requests%rowtype;
+  v_result jsonb;
+begin
+  perform public.therapy_require_manager();
+  select * into v_q from public.therapy_requests where id = p_id;
+  if not found then
+    return null;
+  end if;
+  perform public.therapy_log_access(v_q.user_id, v_q.id, 'view');
+
+  select to_jsonb(v_q) || jsonb_build_object(
+    'sessions_used', public.therapy_sessions_used(v_q.id),
+    'person', (
+      select jsonb_build_object(
+        'first_name', p.first_name, 'last_name', p.last_name,
+        'email', p.email, 'phone', p.phone, 'chapter', p.chapter)
+        from public.profiles p where p.id = v_q.user_id),
+    'checkins', coalesce((select h.checkins from public.therapy_checkin_history(v_q.user_id) h), 0),
+    'last_checkin', (select h.last_checkin from public.therapy_checkin_history(v_q.user_id) h),
+    'therapist', (select to_jsonb(t) from public.therapy_therapists t where t.id = v_q.therapist_id),
+    'approved_by_name', (
+      select nullif(btrim(concat_ws(' ', p.first_name, p.last_name)), '')
+        from public.profiles p where p.id = v_q.approved_by),
+    'history', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', o.id, 'program', o.program, 'status', o.status,
+               'submitted_at', o.submitted_at, 'approved_at', o.approved_at,
+               'renewal_of', o.renewal_of, 'sessions_approved', o.sessions_approved,
+               'sessions_used', public.therapy_sessions_used(o.id),
+               'therapist_name', (select t.name from public.therapy_therapists t where t.id = o.therapist_id))
+             order by o.submitted_at)
+        from public.therapy_requests o
+       where o.id <> v_q.id and o.user_id = v_q.user_id and v_q.user_id is not null), '[]'::jsonb)
+  ) into v_result;
+  return v_result;
+end $function$;
+
+create or replace function public.therapy_admin_therapists()
+returns setof public.therapy_therapists
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+begin
+  perform public.therapy_require_manager();
+  return query select * from public.therapy_therapists order by lower(name), id;
+end $function$;
+
+-- Create (p_id null) or update a therapist record.
+create or replace function public.therapy_admin_save_therapist(
+  p_id bigint,
+  p_name text,
+  p_practice text,
+  p_email text,
+  p_phone text,
+  p_license_type text,
+  p_license_state text
+)
+returns bigint
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_id bigint;
+begin
+  perform public.therapy_require_manager();
+  if nullif(btrim(p_name), '') is null then
+    raise exception 'Add the therapist''s name' using errcode = '22023';
+  end if;
+  if p_id is null then
+    insert into public.therapy_therapists (name, practice, email, phone, license_type, license_state, created_by)
+    values (btrim(p_name), nullif(btrim(p_practice), ''), nullif(btrim(p_email), ''), nullif(btrim(p_phone), ''),
+            nullif(btrim(p_license_type), ''), nullif(upper(btrim(p_license_state)), ''), auth.uid())
+    returning id into v_id;
+  else
+    update public.therapy_therapists
+       set name = btrim(p_name),
+           practice = nullif(btrim(p_practice), ''),
+           email = nullif(btrim(p_email), ''),
+           phone = nullif(btrim(p_phone), ''),
+           license_type = nullif(btrim(p_license_type), ''),
+           license_state = nullif(upper(btrim(p_license_state)), ''),
+           updated_at = now()
+     where id = p_id
+    returning id into v_id;
+    if v_id is null then
+      raise exception 'Therapist not found' using errcode = '22023';
+    end if;
+  end if;
+  return v_id;
+end $function$;
+
+-- Internal: what a status-change function hands back for the email.
+create or replace function public.therapy_status_result(p_id bigint)
+returns jsonb
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select jsonb_build_object('status', q.status, 'email', p.email, 'first_name', p.first_name)
+    from public.therapy_requests q
+    left join public.profiles p on p.id = q.user_id
+   where q.id = p_id;
+$function$;
+
+-- Internal: locks the request, checks it can be decided, and checks
+-- eligibility (zero check-ins needs a reason). Returns the trimmed reason.
+create or replace function public.therapy_check_approvable(
+  p_q public.therapy_requests,
+  p_program text,
+  p_override_reason text
+)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+declare
+  v_reason text := nullif(btrim(p_override_reason), '');
+begin
+  if p_q.program <> p_program then
+    raise exception 'This is a % request', case p_q.program when 'partner' then 'partner office' else 'scholarship' end
+      using errcode = '22023';
+  end if;
+  if p_q.status not in ('submitted', 'waitlisted') then
+    raise exception 'Only a submitted or waitlisted request can be approved' using errcode = '22023';
+  end if;
+  if p_q.user_id is null then
+    raise exception 'This person has been deleted' using errcode = '22023';
+  end if;
+  if coalesce((select h.checkins from public.therapy_checkin_history(p_q.user_id) h), 0) = 0
+     and v_reason is null then
+    raise exception 'They haven''t checked in at any event yet. Give a reason to approve anyway.'
+      using errcode = '22023';
+  end if;
+  return coalesce(v_reason, p_q.eligibility_override_reason);
+end $function$;
+
+create or replace function public.therapy_admin_approve_scholarship(
+  p_id bigint,
+  p_therapist_id bigint,
+  p_rate_agreed boolean,
+  p_override_reason text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_q public.therapy_requests%rowtype;
+  v_reason text;
+  v_rate integer;
+begin
+  perform public.therapy_require_manager();
+  select * into v_q from public.therapy_requests where id = p_id for update;
+  if not found then
+    raise exception 'Request not found' using errcode = '22023';
+  end if;
+  v_reason := public.therapy_check_approvable(v_q, 'scholarship', p_override_reason);
+  if not exists (select 1 from public.therapy_therapists where id = p_therapist_id) then
+    raise exception 'Pick or add the therapist' using errcode = '22023';
+  end if;
+  if not coalesce(p_rate_agreed, false) then
+    raise exception 'Confirm the therapist has agreed to the flat rate' using errcode = '22023';
+  end if;
+  select scholarship_rate_cents into v_rate from public.therapy_settings where id;
+  if v_rate is null then
+    raise exception 'Set the scholarship rate in Therapy Support settings first' using errcode = '22023';
+  end if;
+
+  update public.therapy_requests
+     set status = 'approved',
+         therapist_id = p_therapist_id,
+         rate_cents = v_rate,
+         rate_agreed_at = now(),
+         sessions_approved = 12,
+         approved_at = now(),
+         approved_by = auth.uid(),
+         waitlist_month = null,
+         eligibility_override_reason = v_reason,
+         status_changed_at = now(),
+         status_changed_by = auth.uid()
+   where id = p_id;
+  return public.therapy_status_result(p_id);
+end $function$;
+
+-- Refers them to the partner office, or, if this month's sessions are used
+-- up, waitlists them for next month instead.
+create or replace function public.therapy_admin_refer_partner(p_id bigint, p_override_reason text default null)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_q public.therapy_requests%rowtype;
+  v_reason text;
+  v_usage record;
+begin
+  perform public.therapy_require_manager();
+  select * into v_q from public.therapy_requests where id = p_id for update;
+  if not found then
+    raise exception 'Request not found' using errcode = '22023';
+  end if;
+  v_reason := public.therapy_check_approvable(v_q, 'partner', p_override_reason);
+  select * into v_usage from public.therapy_partner_usage();
+
+  if v_usage.used >= v_usage.slots then
+    update public.therapy_requests
+       set status = 'waitlisted',
+           waitlist_month = (v_usage.month + interval '1 month')::date,
+           eligibility_override_reason = v_reason,
+           status_changed_at = case when status <> 'waitlisted' then now() else status_changed_at end,
+           status_changed_by = auth.uid()
+     where id = p_id;
+  else
+    update public.therapy_requests
+       set status = 'approved',
+           sessions_approved = 12,
+           approved_at = now(),
+           approved_by = auth.uid(),
+           referred_at = now(),
+           waitlist_month = null,
+           eligibility_override_reason = v_reason,
+           status_changed_at = now(),
+           status_changed_by = auth.uid()
+     where id = p_id;
+  end if;
+  return public.therapy_status_result(p_id) || jsonb_build_object('changed', v_q.status <> (
+    select status from public.therapy_requests where id = p_id));
+end $function$;
+
+-- Decline, waitlist (scholarship: e.g. no funds right now) or mark complete.
+create or replace function public.therapy_admin_set_status(p_id bigint, p_status text)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_q public.therapy_requests%rowtype;
+begin
+  perform public.therapy_require_manager();
+  select * into v_q from public.therapy_requests where id = p_id for update;
+  if not found then
+    raise exception 'Request not found' using errcode = '22023';
+  end if;
+  if p_status = 'declined' and v_q.status not in ('submitted', 'waitlisted') then
+    raise exception 'Only a submitted or waitlisted request can be declined' using errcode = '22023';
+  elsif p_status = 'waitlisted' and v_q.status <> 'submitted' then
+    raise exception 'Only a submitted request can be waitlisted' using errcode = '22023';
+  elsif p_status = 'complete' and v_q.status <> 'approved' then
+    raise exception 'Only an approved request can be marked complete' using errcode = '22023';
+  elsif p_status not in ('declined', 'waitlisted', 'complete') then
+    raise exception 'Unknown status %', p_status using errcode = '22023';
+  end if;
+
+  update public.therapy_requests
+     set status = p_status,
+         waitlist_month = case when p_status = 'waitlisted' then waitlist_month end,
+         status_changed_at = now(),
+         status_changed_by = auth.uid()
+   where id = p_id;
+  return public.therapy_status_result(p_id);
+end $function$;
+
+-- ---- 10. Settings, access, log -----------------------------------------------------------
+create or replace function public.therapy_admin_settings()
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+begin
+  perform public.therapy_require_manager();
+  return (select to_jsonb(s) - 'id' from public.therapy_settings s where s.id);
+end $function$;
+
+create or replace function public.therapy_admin_update_settings(
+  p_scholarship_rate_cents integer,
+  p_partner_monthly_sessions integer
+)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  perform public.therapy_require_manager();
+  update public.therapy_settings
+     set scholarship_rate_cents = p_scholarship_rate_cents,
+         partner_monthly_sessions = p_partner_monthly_sessions,
+         updated_by = auth.uid(),
+         updated_at = now()
+   where id;
+end $function$;
+
+-- Every admin, and whether they have access (the only screen that shows
+-- this flag).
+create or replace function public.therapy_admin_managers()
+returns table (id uuid, full_name text, email text, has_access boolean)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+begin
+  perform public.therapy_require_manager();
+  return query
+  select p.id, nullif(btrim(concat_ws(' ', p.first_name, p.last_name)), ''), p.email, p.can_manage_therapy_support
+    from public.profiles p
+   where p.role = 'admin' and p.access_removed_at is null
+   order by p.can_manage_therapy_support desc, lower(p.first_name), lower(p.last_name);
+end $function$;
+
+-- Give or take away access. Only an admin can have it, and the last
+-- person with it can't be removed (it would take the SQL editor to undo).
+create or replace function public.therapy_admin_set_manager(p_user_id uuid, p_on boolean)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  perform public.therapy_require_manager();
+  if p_on and not exists (select 1 from public.profiles where id = p_user_id and role = 'admin') then
+    raise exception 'Only an admin can be given this access' using errcode = '22023';
+  end if;
+  -- Serialise changes so two people can't remove each other at once.
+  perform 1 from public.profiles where can_manage_therapy_support for update;
+  if not p_on
+     and (select count(*) from public.profiles where can_manage_therapy_support and role = 'admin') <= 1
+     and exists (select 1 from public.profiles where id = p_user_id and can_manage_therapy_support) then
+    raise exception 'Someone else needs this access before it can be removed from the last person' using errcode = '22023';
+  end if;
+  perform set_config('ftgf.setting_therapy_access', 'on', true);
+  update public.profiles set can_manage_therapy_support = coalesce(p_on, false) where id = p_user_id;
+  perform set_config('ftgf.setting_therapy_access', '', true);
+end $function$;
+
+create or replace function public.therapy_admin_access_log(p_limit integer default 100)
+returns table (
+  id bigint,
+  accessed_at timestamptz,
+  action text,
+  accessed_by_name text,
+  subject_name text,
+  request_id bigint
+)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+begin
+  perform public.therapy_require_manager();
+  return query
+  select l.id, l.accessed_at, l.action,
+         coalesce(nullif(btrim(concat_ws(' ', a.first_name, a.last_name)), ''), a.email, '(deleted person)'),
+         case when l.subject_user_id is null then null
+              else coalesce(nullif(btrim(concat_ws(' ', s.first_name, s.last_name)), ''), s.email, '(deleted person)') end,
+         l.request_id
+    from public.therapy_access_log l
+    left join public.profiles a on a.id = l.accessed_by
+    left join public.profiles s on s.id = l.subject_user_id
+   order by l.accessed_at desc
+   limit least(greatest(coalesce(p_limit, 100), 1), 500);
+end $function$;
+
+-- ---- 11. Remove person: no therapy hint ---------------------------------------------
+-- Same as the 2026-09-29 "Fix: person_removal_counts alias clash" version,
+-- except other_references leaves out therapy_* tables.
+create or replace function public.person_removal_counts(p_user_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+declare
+  r record;
+  v_n bigint;
+  v_other bigint := 0;
+begin
+  -- therapy_* left out: a count would hint at Therapy Support to an admin
+  -- without access (it's the only "record" a participant can have here).
+  for r in select * from public.person_other_references() where src::text not like '%therapy\_%' loop
+    execute format('select count(*) from %s where %I = $1', r.src, r.col) into v_n using p_user_id;
+    v_other := v_other + v_n;
+  end loop;
+
+  return jsonb_build_object(
+    'rsvps', (select count(*) from public.rsvps where user_id = p_user_id),
+    'rsvps_checked_in', (select count(*) from public.rsvps where user_id = p_user_id and checked_in_at is not null),
+    'rsvps_upcoming', (
+      -- Aliased rs, not r: inside PL/pgSQL, r.event_id would read the loop
+      -- variable r above instead of this table.
+      select count(*) from public.rsvps rs join public.events e on e.id = rs.event_id
+       where rs.user_id = p_user_id and rs.status in ('confirmed', 'waitlisted', 'offered') and e.starts_at > now()
+    ),
+    'volunteer_signups', (select count(*) from public.volunteer_signups where user_id = p_user_id),
+    'volunteer_signups_upcoming', (
+      select count(*) from public.volunteer_signups s
+        join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+        join public.events e on e.id = vo.event_id
+       where s.user_id = p_user_id and s.status = 'confirmed' and e.starts_at > now()
+    ),
+    'waiver_signatures', (select count(*) from public.waiver_signatures where user_id = p_user_id),
+    'health_histories', (select count(*) from public.health_histories where user_id = p_user_id),
+    'health_checkin_answers', (select count(*) from public.health_checkin_answers where user_id = p_user_id),
+    'volunteer_applications', (select count(*) from public.volunteer_applications where user_id = p_user_id),
+    'volunteer_applications_open', (
+      select count(*) from public.volunteer_applications
+       where user_id = p_user_id and status not in ('approved', 'declined', 'withdrawn')
+    ),
+    'volunteer_record', (select count(*) from public.volunteers where user_id = p_user_id),
+    'certification_files', (
+      select count(*) from storage.objects o
+       where o.bucket_id = 'volunteer-certifications'
+         and (storage.foldername(o.name))[1] = p_user_id::text
+    ),
+    'attendance_credits', (select count(*) from public.attendance_credits where user_id = p_user_id),
+    'practical_checks', (select count(*) from public.practical_instruction_checks where user_id = p_user_id),
+    'events_led', (select count(*) from public.events where lead_user_id = p_user_id),
+    'events_led_upcoming', (
+      select count(*) from public.events
+       where lead_user_id = p_user_id and starts_at > now() and coalesce(status, 'scheduled') <> 'cancelled'
+    ),
+    'other_references', v_other,
+    'health_access_log', (
+      select count(*) from public.health_access_log
+       where subject_user_id = p_user_id or accessed_by = p_user_id
+    )
+  );
+end $function$;
+
+-- ---- Grants -------------------------------------------------------------------------------
+-- Internal helpers: nobody calls these directly.
+revoke all on function public.therapy_require_manager() from public, anon, authenticated;
+revoke all on function public.therapy_log_access(uuid, bigint, text) from public, anon, authenticated;
+revoke all on function public.therapy_checkin_history(uuid) from public, anon, authenticated;
+revoke all on function public.therapy_sessions_used(bigint) from public, anon, authenticated;
+revoke all on function public.therapy_status_result(bigint) from public, anon, authenticated;
+revoke all on function public.therapy_check_approvable(public.therapy_requests, text, text) from public, anon, authenticated;
+
+-- Callable by any signed-in person (each checks its own rule).
+revoke all on function public.therapy_current_month() from public, anon;
+grant execute on function public.therapy_current_month() to authenticated;
+revoke all on function public.can_manage_therapy_support() from public, anon;
+grant execute on function public.can_manage_therapy_support() to authenticated;
+revoke all on function public.submit_support_request(text, text, text, text, text, text, text, text, text, text, text) from public, anon;
+grant execute on function public.submit_support_request(text, text, text, text, text, text, text, text, text, text, text) to authenticated;
+revoke all on function public.request_support_renewal(bigint, text) from public, anon;
+grant execute on function public.request_support_renewal(bigint, text) to authenticated;
+revoke all on function public.my_support_requests() from public, anon;
+grant execute on function public.my_support_requests() to authenticated;
+
+-- Flag holders only (each re-checks therapy_require_manager()).
+revoke all on function public.therapy_partner_usage() from public, anon;
+grant execute on function public.therapy_partner_usage() to authenticated;
+revoke all on function public.therapy_admin_requests() from public, anon;
+grant execute on function public.therapy_admin_requests() to authenticated;
+revoke all on function public.therapy_admin_request(bigint) from public, anon;
+grant execute on function public.therapy_admin_request(bigint) to authenticated;
+revoke all on function public.therapy_admin_therapists() from public, anon;
+grant execute on function public.therapy_admin_therapists() to authenticated;
+revoke all on function public.therapy_admin_save_therapist(bigint, text, text, text, text, text, text) from public, anon;
+grant execute on function public.therapy_admin_save_therapist(bigint, text, text, text, text, text, text) to authenticated;
+revoke all on function public.therapy_admin_approve_scholarship(bigint, bigint, boolean, text) from public, anon;
+grant execute on function public.therapy_admin_approve_scholarship(bigint, bigint, boolean, text) to authenticated;
+revoke all on function public.therapy_admin_refer_partner(bigint, text) from public, anon;
+grant execute on function public.therapy_admin_refer_partner(bigint, text) to authenticated;
+revoke all on function public.therapy_admin_set_status(bigint, text) from public, anon;
+grant execute on function public.therapy_admin_set_status(bigint, text) to authenticated;
+revoke all on function public.therapy_admin_settings() from public, anon;
+grant execute on function public.therapy_admin_settings() to authenticated;
+revoke all on function public.therapy_admin_update_settings(integer, integer) from public, anon;
+grant execute on function public.therapy_admin_update_settings(integer, integer) to authenticated;
+revoke all on function public.therapy_admin_managers() from public, anon;
+grant execute on function public.therapy_admin_managers() to authenticated;
+revoke all on function public.therapy_admin_set_manager(uuid, boolean) from public, anon;
+grant execute on function public.therapy_admin_set_manager(uuid, boolean) to authenticated;
+revoke all on function public.therapy_admin_access_log(integer) from public, anon;
+grant execute on function public.therapy_admin_access_log(integer) to authenticated;
+
+commit;
+
+-- ---- Bootstrap: give yourself access (run once, in the SQL editor) -------------------------
+-- update public.profiles set can_manage_therapy_support = true
+--  where email = 'tcramer@fishingthegoodfight.org';
+
+-- ---- Check it (read-only) -------------------------------------------------------------------
+-- Expect no rows: no API role has any privilege on the five tables.
+--   select grantee, table_name, privilege_type from information_schema.role_table_grants
+--    where table_schema = 'public' and table_name like 'therapy\_%'
+--      and grantee in ('anon', 'authenticated', 'service_role');

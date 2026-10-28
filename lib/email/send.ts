@@ -51,6 +51,8 @@ import {
   type BulletinEmailContent,
   chapterMessageEmail,
   type ChapterMessageContent,
+  supportRequestStatusEmail,
+  type SupportRequestEmailStatus,
 } from "@/lib/email/templates";
 import { CONTACT_EMAIL } from "@/lib/contact";
 
@@ -1003,6 +1005,21 @@ export async function sendVolunteerApprovedEmail(params: {
     recipientName: params.recipientName,
     roleNames: params.roleNames,
     registerUrl: `${getSiteUrl()}/protected/volunteer/register`,
+  });
+  await deliverEmail({ to: params.toEmail, subject, html, text });
+}
+
+/** A participant's support request changed status (Therapy Support).
+ * Discreet: see supportRequestStatusEmail. */
+export async function sendSupportRequestStatusEmail(params: {
+  toEmail: string;
+  recipientName: string | null;
+  status: SupportRequestEmailStatus;
+}): Promise<void> {
+  const { subject, html, text } = supportRequestStatusEmail({
+    recipientName: params.recipientName,
+    status: params.status,
+    statusUrl: `${getSiteUrl()}/protected/support`,
   });
   await deliverEmail({ to: params.toEmail, subject, html, text });
 }
