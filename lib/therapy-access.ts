@@ -2,9 +2,17 @@ import type { createClient } from "@/lib/supabase/server";
 import type {
   AdminSupportRequest,
   AdminSupportRequestRow,
+  BudgetSummary,
   OwnSupportRequest,
+  PartnerOverview,
   PartnerUsage,
+  ReportGrain,
+  ReportPersonRow,
+  ReportRow,
+  SessionRow,
   Therapist,
+  TherapistDetail,
+  TherapistSummaryRow,
   TherapySettings,
 } from "@/lib/therapy-support";
 
@@ -20,9 +28,11 @@ type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>;
  * No API role has any grant on the therapy_* tables, the service role
  * included, so nothing else in the app can read them even by mistake. Every
  * function below is a database function that checks the rule; the ones
- * that show a participant's record write therapy_access_log in the same call:
- *   - the request list: one "list" per load
+ * that show participants write therapy_access_log in the same call:
+ *   - the request list, a therapist's page, the partner office: "list"
  *   - one request opened: "view"
+ *   - the report export with names: "export"
+ * Counts-only reads (budget, therapist totals, the report) aren't logged.
  *
  * Never call these from Members, rosters, the digests, exports outside
  * Therapy Support, or any screen a chapter lead or event lead can open.
@@ -180,7 +190,7 @@ export async function loadTherapyManagers(supabase: SupabaseServerClient): Promi
 export type TherapyAccessLogEntry = {
   id: number;
   accessedAt: string;
-  action: "view" | "list";
+  action: "view" | "list" | "export";
   accessedByName: string;
   subjectName: string | null;
   requestId: number | null;
@@ -196,7 +206,7 @@ export async function loadTherapyAccessLog(supabase: SupabaseServerClient): Prom
     (data ?? []) as {
       id: number;
       accessed_at: string;
-      action: "view" | "list";
+      action: "view" | "list" | "export";
       accessed_by_name: string;
       subject_name: string | null;
       request_id: number | null;
@@ -209,4 +219,79 @@ export async function loadTherapyAccessLog(supabase: SupabaseServerClient): Prom
     subjectName: r.subject_name,
     requestId: r.request_id,
   }));
+}
+
+/** One request's sessions, oldest first. Shown on the request page, which
+ * has already logged its "view". */
+export async function loadRequestSessions(supabase: SupabaseServerClient, requestId: number): Promise<SessionRow[]> {
+  const { data, error } = await supabase.rpc("therapy_admin_request_sessions", { p_request_id: requestId });
+  if (error) {
+    console.error(`[therapy access] sessions of ${requestId}: ${error.message}`);
+    return [];
+  }
+  return (data ?? []) as SessionRow[];
+}
+
+/** The scholarship budget for a calendar year. */
+export async function loadBudget(supabase: SupabaseServerClient, year: number): Promise<BudgetSummary | null> {
+  const { data, error } = await supabase.rpc("therapy_admin_budget", { p_year: year });
+  if (error) {
+    console.error(`[therapy access] budget ${year}: ${error.message}`);
+    return null;
+  }
+  return data as BudgetSummary;
+}
+
+/** Every therapist with the year's payments, what's owed, and the W-9 flag.
+ * No participant names; not logged. */
+export async function loadTherapistSummary(
+  supabase: SupabaseServerClient,
+  year: number,
+): Promise<TherapyRead<TherapistSummaryRow[]>> {
+  const { data, error } = await supabase.rpc("therapy_admin_therapist_summary", { p_year: year });
+  if (error) return failed(error, `therapist summary ${year}`);
+  return { ok: true, data: (data ?? []) as TherapistSummaryRow[] };
+}
+
+/** One therapist, with unpaid sessions (participants named) and payments.
+ * Logs "list". */
+export async function loadTherapist(
+  supabase: SupabaseServerClient,
+  id: number,
+): Promise<TherapyRead<TherapistDetail | null>> {
+  const { data, error } = await supabase.rpc("therapy_admin_therapist", { p_id: id });
+  if (error) return failed(error, `therapist ${id}`);
+  return { ok: true, data: (data as TherapistDetail | null) ?? null };
+}
+
+/** The partner office's waitlist and active referrals. Logs "list". */
+export async function loadPartnerOverview(supabase: SupabaseServerClient): Promise<TherapyRead<PartnerOverview>> {
+  const { data, error } = await supabase.rpc("therapy_admin_partner_overview");
+  if (error) return failed(error, "partner overview");
+  return { ok: true, data: data as PartnerOverview };
+}
+
+/** Counts by period, program, region and chapter for [from, to). No names;
+ * not logged. */
+export async function loadReport(
+  supabase: SupabaseServerClient,
+  from: string,
+  to: string,
+  grain: ReportGrain,
+): Promise<TherapyRead<ReportRow[]>> {
+  const { data, error } = await supabase.rpc("therapy_admin_report", { p_from: from, p_to: to, p_grain: grain });
+  if (error) return failed(error, "report");
+  return { ok: true, data: (data ?? []) as ReportRow[] };
+}
+
+/** The same per person, with names: only for the opt-in export. Logs
+ * "export". */
+export async function loadReportPeople(
+  supabase: SupabaseServerClient,
+  from: string,
+  to: string,
+): Promise<TherapyRead<ReportPersonRow[]>> {
+  const { data, error } = await supabase.rpc("therapy_admin_report_people", { p_from: from, p_to: to });
+  if (error) return failed(error, "report with names");
+  return { ok: true, data: (data ?? []) as ReportPersonRow[] };
 }

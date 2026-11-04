@@ -3,8 +3,15 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
-import { loadPartnerUsage, loadSupportRequest, loadTherapists, loadTherapySettings } from "@/lib/therapy-access";
-import { formatDateInZone } from "@/lib/format-date";
+import {
+  loadBudget,
+  loadPartnerUsage,
+  loadRequestSessions,
+  loadSupportRequest,
+  loadTherapists,
+  loadTherapySettings,
+} from "@/lib/therapy-access";
+import { formatDateInZone, todayInZone } from "@/lib/format-date";
 import {
   CONTACT_LABELS,
   formatCents,
@@ -14,6 +21,7 @@ import {
   STATUS_LABELS,
 } from "@/lib/therapy-support";
 import { TherapyReviewPanel } from "@/components/admin/therapy-review-panel";
+import { TherapySessionsPanel } from "@/components/admin/therapy-sessions-panel";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -43,10 +51,15 @@ async function RequestLoader({ params }: { params: Promise<{ id: string }> }) {
   const q = result.data;
   if (!q) notFound();
 
-  const [therapists, settings, usage] = await Promise.all([
+  const today = todayInZone(ZONE);
+  const deciding = q.status === "submitted" || q.status === "waitlisted";
+  const [therapists, settings, usage, sessions, budget] = await Promise.all([
     q.program === "scholarship" ? loadTherapists(supabase) : Promise.resolve([]),
     loadTherapySettings(supabase),
     q.program === "partner" ? loadPartnerUsage(supabase) : Promise.resolve(null),
+    q.approved_at ? loadRequestSessions(supabase, q.id) : Promise.resolve([]),
+    // An approval counts against this year's budget.
+    q.program === "scholarship" && deciding ? loadBudget(supabase, Number(today.slice(0, 4))) : Promise.resolve(null),
   ]);
 
   const name = q.person
@@ -175,6 +188,23 @@ async function RequestLoader({ params }: { params: Promise<{ id: string }> }) {
         </Card>
       )}
 
+      {q.approved_at && q.sessions_approved !== null && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Sessions</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <TherapySessionsPanel
+              requestId={q.id}
+              canAdd={q.status === "approved"}
+              sessions={sessions}
+              sessionsApproved={q.sessions_approved}
+              today={today}
+            />
+          </CardContent>
+        </Card>
+      )}
+
       {q.status === "waitlisted" && q.waitlist_month && (
         <p className="text-sm">Waitlisted for {formatMonth(q.waitlist_month)}.</p>
       )}
@@ -203,6 +233,7 @@ async function RequestLoader({ params }: { params: Promise<{ id: string }> }) {
               }}
               rateCents={settings?.scholarship_rate_cents ?? null}
               usage={usage}
+              budget={budget}
             />
           </CardContent>
         </Card>

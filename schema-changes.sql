@@ -17120,3 +17120,705 @@ commit;
 --   select grantee, table_name, privilege_type from information_schema.role_table_grants
 --    where table_schema = 'public' and table_name like 'therapy\_%'
 --      and grantee in ('anon', 'authenticated', 'service_role');
+
+-- =============================================================================
+-- 2026-10-28 — Therapy Support, part 2: sessions, payments, budget, reporting
+-- =============================================================================
+-- Run 2026-11-04.
+--
+-- Builds on part 1 (the entry above). Same privacy rules: every table has RLS
+-- on, no policies and no grants for any API role (service_role included);
+-- every read and write is a SECURITY DEFINER function that starts with
+-- therapy_require_manager() (an admin AND can_manage_therapy_support).
+-- Functions that return participants' names write therapy_access_log.
+--
+-- 1. Sessions. therapy_admin_add_sessions(request, dates[], invoice ref)
+--    records one date or a batch from one therapist invoice against an
+--    APPROVED request. Refused if it would go past the approval's sessions
+--    (12): more needs a renewal. Refused for a future date. Reaching the
+--    last session marks the request complete (the app emails them; from
+--    there they can ask for a renewal). therapy_admin_delete_session
+--    removes an unpaid session; if that un-fills an approval that had
+--    completed by filling up, it's approved again (refused if a renewal
+--    already follows it).
+--    New on therapy_sessions: invoice_ref, payment_id.
+--
+-- 2. Payments. therapy_payments: one row per payment to a therapist, with
+--    the date paid, method and check/reference number. The amount is never
+--    typed: therapy_admin_record_payment works it out as the sum of each
+--    chosen session's agreed rate (sessions × flat rate), and links the
+--    sessions to it. Only unpaid scholarship sessions of that therapist's
+--    approvals can be paid. therapy_admin_delete_payment voids a payment
+--    entered by mistake (its sessions become unpaid again).
+--
+-- 3. Therapists: w9_received (+ when it was ticked). Settings gain
+--    w9_threshold_cents (default $600): a therapist paid that much or more
+--    in a calendar year with no W-9 on file is flagged.
+--
+-- 4. Budget. therapy_budgets: one scholarship budget per calendar year. An
+--    approval counts against the year it was approved in (America/Denver):
+--      committed = sessions still to come on approvals that are still open
+--                  × their rate
+--      owed      = sessions logged but not yet paid × rate
+--      spent     = sessions paid × rate
+--      remaining = budget − committed − owed − spent
+--    The approval screen warns when an approval would commit more than
+--    remains (a warning, not a refusal).
+--
+-- 5. Partner office: therapy_admin_partner_overview(): the waitlist and
+--    every active referral with its sessions. Logs 'list'.
+--
+-- 6. Reporting. therapy_admin_report(from, to, grain): counts only, by
+--    month, quarter or year, for each program, overall and by region and
+--    chapter (the chapter copied in at submission):
+--      participants = distinct people with a session in the period
+--      sessions     = sessions dated in the period
+--      dollars      = sessions PAID in the period (by date paid) × rate
+--      renewals     = renewals approved in the period
+--    A deleted person still counts (once per request). No names, not
+--    logged. therapy_admin_report_people(from, to) is the same per person,
+--    with names, for the "include names" export; it logs 'export' (a new
+--    access-log action).
+--
+-- New tables (therapy_payments, therapy_budgets) ship with their grants:
+-- RLS on, everything revoked from anon, authenticated and service_role.
+--
+-- Safe to re-run. One transaction.
+
+begin;
+
+-- ---- 1. Columns and tables --------------------------------------------------------------
+alter table public.therapy_settings
+  add column if not exists w9_threshold_cents integer not null default 60000 check (w9_threshold_cents > 0);
+
+alter table public.therapy_therapists
+  add column if not exists w9_received boolean not null default false,
+  add column if not exists w9_received_at timestamptz;
+
+create table if not exists public.therapy_payments (
+  id bigserial primary key,
+  therapist_id bigint not null references public.therapy_therapists(id) on delete restrict,
+  amount_cents integer not null check (amount_cents > 0),
+  paid_on date not null,
+  method text not null check (method in ('check', 'ach', 'zelle', 'card', 'other')),
+  reference text check (char_length(reference) <= 100),
+  recorded_by uuid references public.profiles(id) on delete set null,
+  recorded_at timestamptz not null default now()
+);
+
+create index if not exists therapy_payments_therapist_idx on public.therapy_payments (therapist_id, paid_on desc);
+create index if not exists therapy_payments_paid_on_idx on public.therapy_payments (paid_on);
+
+alter table public.therapy_payments enable row level security;
+revoke all on public.therapy_payments from anon, authenticated, service_role;
+revoke all on sequence public.therapy_payments_id_seq from anon, authenticated, service_role;
+
+alter table public.therapy_sessions
+  add column if not exists invoice_ref text check (char_length(invoice_ref) <= 100),
+  add column if not exists payment_id bigint references public.therapy_payments(id) on delete restrict;
+
+create index if not exists therapy_sessions_payment_idx on public.therapy_sessions (payment_id);
+
+create table if not exists public.therapy_budgets (
+  year integer primary key check (year between 2000 and 2100),
+  amount_cents bigint not null check (amount_cents >= 0),
+  updated_by uuid references public.profiles(id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+
+alter table public.therapy_budgets enable row level security;
+revoke all on public.therapy_budgets from anon, authenticated, service_role;
+
+alter table public.therapy_access_log drop constraint if exists therapy_access_log_action_check;
+alter table public.therapy_access_log
+  add constraint therapy_access_log_action_check check (action in ('view', 'list', 'export'));
+alter table public.therapy_access_log drop constraint if exists therapy_access_log_subject;
+alter table public.therapy_access_log
+  add constraint therapy_access_log_subject check (action in ('list', 'export') or request_id is not null);
+
+-- ---- 2. Helpers ---------------------------------------------------------------------------
+create or replace function public.therapy_today()
+returns date
+language sql
+stable
+as $function$
+  select (now() at time zone 'America/Denver')::date;
+$function$;
+
+-- "First Last", or the email, or a stand-in once they're deleted.
+create or replace function public.therapy_person_name(p_user_id uuid)
+returns text
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce(
+    (select coalesce(nullif(btrim(concat_ws(' ', p.first_name, p.last_name)), ''), p.email)
+       from public.profiles p where p.id = p_user_id),
+    '(deleted person)');
+$function$;
+
+-- ---- 3. Settings (adds the W-9 threshold) ------------------------------------------------
+drop function if exists public.therapy_admin_update_settings(integer, integer);
+create or replace function public.therapy_admin_update_settings(
+  p_scholarship_rate_cents integer,
+  p_partner_monthly_sessions integer,
+  p_w9_threshold_cents integer
+)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  perform public.therapy_require_manager();
+  update public.therapy_settings
+     set scholarship_rate_cents = p_scholarship_rate_cents,
+         partner_monthly_sessions = p_partner_monthly_sessions,
+         w9_threshold_cents = p_w9_threshold_cents,
+         updated_by = auth.uid(),
+         updated_at = now()
+   where id;
+end $function$;
+
+-- ---- 4. Sessions --------------------------------------------------------------------------
+create or replace function public.therapy_admin_add_sessions(
+  p_request_id bigint,
+  p_dates date[],
+  p_invoice_ref text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_q public.therapy_requests%rowtype;
+  v_used integer;
+  v_n integer := coalesce(cardinality(p_dates), 0);
+  v_completed boolean := false;
+begin
+  perform public.therapy_require_manager();
+  select * into v_q from public.therapy_requests where id = p_request_id for update;
+  if not found then
+    raise exception 'Request not found' using errcode = '22023';
+  end if;
+  if v_q.status <> 'approved' then
+    raise exception 'Sessions can only be added to an approved request' using errcode = '22023';
+  end if;
+  if v_n = 0 or array_position(p_dates, null) is not null then
+    raise exception 'Add at least one session date' using errcode = '22023';
+  end if;
+  if exists (select 1 from unnest(p_dates) d where d > public.therapy_today()) then
+    raise exception 'A session date can''t be in the future' using errcode = '22023';
+  end if;
+  v_used := public.therapy_sessions_used(v_q.id);
+  if v_used + v_n > v_q.sessions_approved then
+    raise exception 'That would take them past % sessions (% used, % to add). More needs a renewal.',
+      v_q.sessions_approved, v_used, v_n using errcode = '22023';
+  end if;
+
+  insert into public.therapy_sessions (request_id, session_date, invoice_ref, recorded_by)
+  select v_q.id, d, nullif(btrim(p_invoice_ref), ''), auth.uid() from unnest(p_dates) d;
+
+  if v_used + v_n = v_q.sessions_approved then
+    update public.therapy_requests
+       set status = 'complete', status_changed_at = now(), status_changed_by = auth.uid()
+     where id = v_q.id;
+    v_completed := true;
+  end if;
+
+  return public.therapy_status_result(v_q.id)
+    || jsonb_build_object('added', v_n, 'sessions_used', v_used + v_n, 'changed', v_completed);
+end $function$;
+
+create or replace function public.therapy_admin_delete_session(p_session_id bigint)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_s public.therapy_sessions%rowtype;
+  v_q public.therapy_requests%rowtype;
+  v_was_full boolean;
+begin
+  perform public.therapy_require_manager();
+  select * into v_s from public.therapy_sessions where id = p_session_id;
+  if not found then
+    raise exception 'Session not found' using errcode = '22023';
+  end if;
+  if v_s.payment_id is not null then
+    raise exception 'This session has been paid. Void its payment first.' using errcode = '22023';
+  end if;
+  select * into v_q from public.therapy_requests where id = v_s.request_id for update;
+  v_was_full := public.therapy_sessions_used(v_q.id) >= v_q.sessions_approved;
+  if v_was_full and v_q.status = 'complete'
+     and exists (select 1 from public.therapy_requests where renewal_of = v_q.id) then
+    raise exception 'A renewal already follows this approval, so its sessions can''t be reduced' using errcode = '22023';
+  end if;
+
+  delete from public.therapy_sessions where id = p_session_id;
+
+  -- It completed by filling up; with room again, it's open again.
+  if v_was_full and v_q.status = 'complete' then
+    update public.therapy_requests
+       set status = 'approved', status_changed_at = now(), status_changed_by = auth.uid()
+     where id = v_q.id;
+  end if;
+end $function$;
+
+-- One request's sessions (shown on its page, already logged as a 'view').
+create or replace function public.therapy_admin_request_sessions(p_request_id bigint)
+returns table (id bigint, session_date date, invoice_ref text, payment_id bigint, paid_on date)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+begin
+  perform public.therapy_require_manager();
+  return query
+  select s.id, s.session_date, s.invoice_ref, s.payment_id, p.paid_on
+    from public.therapy_sessions s
+    left join public.therapy_payments p on p.id = s.payment_id
+   where s.request_id = p_request_id
+   order by s.session_date, s.id;
+end $function$;
+
+-- ---- 5. Therapists and payments ---------------------------------------------------------
+-- Every therapist with what's been paid them in the year, what's owed (all
+-- unpaid sessions), and the W-9 flag. No participant names; not logged.
+create or replace function public.therapy_admin_therapist_summary(p_year integer)
+returns table (
+  therapist_id bigint,
+  name text,
+  practice text,
+  email text,
+  phone text,
+  license_type text,
+  license_state text,
+  w9_received boolean,
+  paid_cents bigint,
+  unpaid_sessions integer,
+  unpaid_cents bigint,
+  needs_w9 boolean
+)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+declare
+  v_threshold integer := (select s.w9_threshold_cents from public.therapy_settings s where s.id);
+begin
+  perform public.therapy_require_manager();
+  return query
+  with paid as (
+    select p.therapist_id as tid, sum(p.amount_cents)::bigint as cents
+      from public.therapy_payments p
+     where extract(year from p.paid_on) = p_year
+     group by p.therapist_id
+  ), owed as (
+    select q.therapist_id as tid, count(*)::integer as n, sum(q.rate_cents)::bigint as cents
+      from public.therapy_sessions s
+      join public.therapy_requests q on q.id = s.request_id
+     where s.payment_id is null and q.program = 'scholarship'
+     group by q.therapist_id
+  )
+  select t.id, t.name, t.practice, t.email, t.phone, t.license_type, t.license_state, t.w9_received,
+         coalesce(paid.cents, 0)::bigint, coalesce(owed.n, 0)::integer, coalesce(owed.cents, 0)::bigint,
+         coalesce(paid.cents, 0) >= v_threshold and not t.w9_received
+    from public.therapy_therapists t
+    left join paid on paid.tid = t.id
+    left join owed on owed.tid = t.id
+   order by lower(t.name), t.id;
+end $function$;
+
+-- One therapist: the record, unpaid sessions (with names, to match the
+-- invoice), payments and yearly totals. Logs 'list'.
+create or replace function public.therapy_admin_therapist(p_id bigint)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_t public.therapy_therapists%rowtype;
+begin
+  perform public.therapy_require_manager();
+  select * into v_t from public.therapy_therapists where id = p_id;
+  if not found then
+    return null;
+  end if;
+  perform public.therapy_log_access(null, null, 'list');
+  return to_jsonb(v_t) || jsonb_build_object(
+    'w9_threshold_cents', (select s.w9_threshold_cents from public.therapy_settings s where s.id),
+    'unpaid', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', s.id, 'session_date', s.session_date, 'invoice_ref', s.invoice_ref,
+               'request_id', q.id, 'person', public.therapy_person_name(q.user_id),
+               'rate_cents', q.rate_cents)
+             order by s.session_date, s.id)
+        from public.therapy_sessions s
+        join public.therapy_requests q on q.id = s.request_id
+       where q.therapist_id = v_t.id and q.program = 'scholarship' and s.payment_id is null), '[]'::jsonb),
+    'payments', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', p.id, 'amount_cents', p.amount_cents, 'paid_on', p.paid_on,
+               'method', p.method, 'reference', p.reference,
+               'sessions', (select count(*) from public.therapy_sessions s where s.payment_id = p.id))
+             order by p.paid_on desc, p.id desc)
+        from public.therapy_payments p where p.therapist_id = v_t.id), '[]'::jsonb),
+    'years', coalesce((
+      select jsonb_agg(jsonb_build_object('year', y.year, 'paid_cents', y.cents) order by y.year desc)
+        from (select extract(year from p.paid_on)::integer as year, sum(p.amount_cents)::bigint as cents
+                from public.therapy_payments p where p.therapist_id = v_t.id
+               group by 1) y), '[]'::jsonb),
+    'participants', (
+      select count(distinct coalesce(q.user_id::text, 'request-' || q.id))
+        from public.therapy_requests q where q.therapist_id = v_t.id and q.approved_at is not null)
+  );
+end $function$;
+
+create or replace function public.therapy_admin_set_w9(p_id bigint, p_received boolean)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  perform public.therapy_require_manager();
+  update public.therapy_therapists
+     set w9_received = coalesce(p_received, false),
+         w9_received_at = case when coalesce(p_received, false) then coalesce(w9_received_at, now()) end,
+         updated_at = now()
+   where id = p_id;
+  if not found then
+    raise exception 'Therapist not found' using errcode = '22023';
+  end if;
+end $function$;
+
+-- Pays the chosen sessions: amount = the sum of their agreed rates.
+create or replace function public.therapy_admin_record_payment(
+  p_therapist_id bigint,
+  p_session_ids bigint[],
+  p_paid_on date,
+  p_method text,
+  p_reference text default null
+)
+returns bigint
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_ids bigint[] := array(select distinct unnest(p_session_ids));
+  v_ok integer;
+  v_amount bigint;
+  v_id bigint;
+begin
+  perform public.therapy_require_manager();
+  if cardinality(v_ids) = 0 or array_position(v_ids, null) is not null then
+    raise exception 'Choose the sessions this payment covers' using errcode = '22023';
+  end if;
+  if p_paid_on is null then
+    raise exception 'Add the date paid' using errcode = '22023';
+  end if;
+  if p_method is null or p_method not in ('check', 'ach', 'zelle', 'card', 'other') then
+    raise exception 'Choose how it was paid' using errcode = '22023';
+  end if;
+
+  -- Lock them, and check every one is this therapist's, unpaid, scholarship.
+  perform 1 from public.therapy_sessions where id = any(v_ids) for update;
+  select count(*), sum(q.rate_cents) into v_ok, v_amount
+    from public.therapy_sessions s
+    join public.therapy_requests q on q.id = s.request_id
+   where s.id = any(v_ids)
+     and s.payment_id is null
+     and q.program = 'scholarship'
+     and q.therapist_id = p_therapist_id
+     and q.rate_cents is not null;
+  if v_ok <> cardinality(v_ids) then
+    raise exception 'Some of those sessions are already paid or aren''t this therapist''s — reload and try again'
+      using errcode = '22023';
+  end if;
+
+  insert into public.therapy_payments (therapist_id, amount_cents, paid_on, method, reference, recorded_by)
+  values (p_therapist_id, v_amount, p_paid_on, p_method, nullif(btrim(p_reference), ''), auth.uid())
+  returning id into v_id;
+  update public.therapy_sessions set payment_id = v_id where id = any(v_ids);
+  return v_id;
+end $function$;
+
+-- Voids a payment entered by mistake: its sessions are unpaid again.
+create or replace function public.therapy_admin_delete_payment(p_id bigint)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  perform public.therapy_require_manager();
+  update public.therapy_sessions set payment_id = null where payment_id = p_id;
+  delete from public.therapy_payments where id = p_id;
+  if not found then
+    raise exception 'Payment not found' using errcode = '22023';
+  end if;
+end $function$;
+
+-- ---- 6. Budget ----------------------------------------------------------------------------
+create or replace function public.therapy_admin_budget(p_year integer)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+declare
+  v_result jsonb;
+begin
+  perform public.therapy_require_manager();
+  with q as (
+    select r.*, public.therapy_sessions_used(r.id) as used
+      from public.therapy_requests r
+     where r.program = 'scholarship'
+       and r.approved_at is not null
+       and extract(year from r.approved_at at time zone 'America/Denver') = p_year
+  ), s as (
+    select q.rate_cents, ts.payment_id
+      from public.therapy_sessions ts join q on q.id = ts.request_id
+  ), sums as (
+    select
+      (select coalesce(sum(greatest(q.sessions_approved - q.used, 0) * q.rate_cents), 0)
+         from q where q.status = 'approved')::bigint as committed,
+      (select coalesce(sum(s.rate_cents) filter (where s.payment_id is null), 0) from s)::bigint as owed,
+      (select coalesce(sum(s.rate_cents) filter (where s.payment_id is not null), 0) from s)::bigint as spent,
+      (select count(*) from q)::integer as approvals
+  )
+  select jsonb_build_object(
+           'year', p_year,
+           'budget_cents', b.amount_cents,
+           'committed_cents', sums.committed,
+           'owed_cents', sums.owed,
+           'spent_cents', sums.spent,
+           'remaining_cents', b.amount_cents - sums.committed - sums.owed - sums.spent,
+           'approvals', sums.approvals)
+    into v_result
+    from sums
+    left join public.therapy_budgets b on b.year = p_year;
+  return v_result;
+end $function$;
+
+-- Null amount = no budget for that year.
+create or replace function public.therapy_admin_set_budget(p_year integer, p_amount_cents bigint)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  perform public.therapy_require_manager();
+  if p_amount_cents is null then
+    delete from public.therapy_budgets where year = p_year;
+    return;
+  end if;
+  insert into public.therapy_budgets (year, amount_cents, updated_by)
+  values (p_year, p_amount_cents, auth.uid())
+  on conflict (year) do update
+    set amount_cents = excluded.amount_cents, updated_by = excluded.updated_by, updated_at = now();
+end $function$;
+
+-- ---- 7. Partner office ----------------------------------------------------------------------
+create or replace function public.therapy_admin_partner_overview()
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_month date := public.therapy_current_month();
+begin
+  perform public.therapy_require_manager();
+  perform public.therapy_log_access(null, null, 'list');
+  return jsonb_build_object(
+    'waitlist', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', q.id, 'person', public.therapy_person_name(q.user_id),
+               'chapter', q.chapter, 'submitted_at', q.submitted_at, 'waitlist_month', q.waitlist_month)
+             order by q.waitlist_month nulls last, q.submitted_at)
+        from public.therapy_requests q
+       where q.program = 'partner' and q.status = 'waitlisted'), '[]'::jsonb),
+    'referrals', coalesce((
+      select jsonb_agg(jsonb_build_object(
+               'id', q.id, 'person', public.therapy_person_name(q.user_id),
+               'chapter', q.chapter, 'referred_at', q.referred_at,
+               'sessions_used', public.therapy_sessions_used(q.id),
+               'sessions_approved', q.sessions_approved,
+               'this_month', (select count(*) from public.therapy_sessions s
+                               where s.request_id = q.id and s.session_date >= v_month
+                                 and s.session_date < (v_month + interval '1 month')::date),
+               'last_session', (select max(s.session_date) from public.therapy_sessions s where s.request_id = q.id))
+             order by q.referred_at)
+        from public.therapy_requests q
+       where q.program = 'partner' and q.status = 'approved'), '[]'::jsonb)
+  );
+end $function$;
+
+-- ---- 8. Reporting ---------------------------------------------------------------------------
+-- What happened in [from, to), as items: a session (participant, count), a
+-- paid session (dollars, by date paid), an approved renewal.
+create or replace function public.therapy_report_items(p_from date, p_to date)
+returns table (
+  item_date date,
+  request_id bigint,
+  person text,
+  program text,
+  region text,
+  chapter text,
+  sessions integer,
+  dollars_cents bigint,
+  renewals integer
+)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select s.session_date, q.id, coalesce(q.user_id::text, 'request-' || q.id), q.program,
+         coalesce(q.region, '(no region)'), coalesce(q.chapter, '(no chapter)'), 1, 0::bigint, 0
+    from public.therapy_sessions s
+    join public.therapy_requests q on q.id = s.request_id
+   where s.session_date >= p_from and s.session_date < p_to
+  union all
+  select p.paid_on, q.id, coalesce(q.user_id::text, 'request-' || q.id), q.program,
+         coalesce(q.region, '(no region)'), coalesce(q.chapter, '(no chapter)'), 0, q.rate_cents::bigint, 0
+    from public.therapy_sessions s
+    join public.therapy_payments p on p.id = s.payment_id
+    join public.therapy_requests q on q.id = s.request_id
+   where p.paid_on >= p_from and p.paid_on < p_to
+  union all
+  select (q.approved_at at time zone 'America/Denver')::date, q.id, coalesce(q.user_id::text, 'request-' || q.id),
+         q.program, coalesce(q.region, '(no region)'), coalesce(q.chapter, '(no chapter)'), 0, 0::bigint, 1
+    from public.therapy_requests q
+   where q.renewal_of is not null and q.approved_at is not null
+     and (q.approved_at at time zone 'America/Denver')::date >= p_from
+     and (q.approved_at at time zone 'America/Denver')::date < p_to;
+$function$;
+
+-- Counts only. level: 'total' (both programs), 'program', 'region', 'chapter'.
+create or replace function public.therapy_admin_report(p_from date, p_to date, p_grain text)
+returns table (
+  level text,
+  period date,
+  program text,
+  region text,
+  chapter text,
+  participants integer,
+  sessions integer,
+  dollars_cents bigint,
+  renewals integer
+)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+begin
+  perform public.therapy_require_manager();
+  if p_grain is null or p_grain not in ('month', 'quarter', 'year') then
+    raise exception 'Choose month, quarter or year' using errcode = '22023';
+  end if;
+  return query
+  with i as (
+    select date_trunc(p_grain, r.item_date)::date as pd, r.program as prg, r.region as rgn, r.chapter as chp,
+           r.person as who, r.sessions as n, r.dollars_cents as cents, r.renewals as ren
+      from public.therapy_report_items(p_from, p_to) r
+  )
+  select case
+           when grouping(i.prg) = 1 then 'total'
+           when grouping(i.rgn) = 1 then 'program'
+           when grouping(i.chp) = 1 then 'region'
+           else 'chapter'
+         end,
+         i.pd, i.prg, i.rgn, i.chp,
+         (count(distinct i.who) filter (where i.n > 0))::integer,
+         sum(i.n)::integer,
+         sum(i.cents)::bigint,
+         sum(i.ren)::integer
+    from i
+   group by grouping sets ((i.pd), (i.pd, i.prg), (i.pd, i.prg, i.rgn), (i.pd, i.prg, i.rgn, i.chp))
+   order by 2, 3 nulls first, 4 nulls first, 5 nulls first;
+end $function$;
+
+-- The same per person, WITH names: only for the "include names" export.
+-- Logs 'export'.
+create or replace function public.therapy_admin_report_people(p_from date, p_to date)
+returns table (
+  name text,
+  program text,
+  region text,
+  chapter text,
+  sessions integer,
+  dollars_cents bigint,
+  renewals integer
+)
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  perform public.therapy_require_manager();
+  perform public.therapy_log_access(null, null, 'export');
+  return query
+  select public.therapy_person_name(q.user_id), r.program, r.region, r.chapter,
+         sum(r.sessions)::integer, sum(r.dollars_cents)::bigint, sum(r.renewals)::integer
+    from public.therapy_report_items(p_from, p_to) r
+    join public.therapy_requests q on q.id = r.request_id
+   group by r.person, q.user_id, r.program, r.region, r.chapter
+   order by 1, 2;
+end $function$;
+
+-- ---- Grants -------------------------------------------------------------------------------
+revoke all on function public.therapy_person_name(uuid) from public, anon, authenticated;
+revoke all on function public.therapy_report_items(date, date) from public, anon, authenticated;
+revoke all on function public.therapy_today() from public, anon;
+grant execute on function public.therapy_today() to authenticated;
+
+revoke all on function public.therapy_admin_update_settings(integer, integer, integer) from public, anon;
+grant execute on function public.therapy_admin_update_settings(integer, integer, integer) to authenticated;
+revoke all on function public.therapy_admin_add_sessions(bigint, date[], text) from public, anon;
+grant execute on function public.therapy_admin_add_sessions(bigint, date[], text) to authenticated;
+revoke all on function public.therapy_admin_delete_session(bigint) from public, anon;
+grant execute on function public.therapy_admin_delete_session(bigint) to authenticated;
+revoke all on function public.therapy_admin_request_sessions(bigint) from public, anon;
+grant execute on function public.therapy_admin_request_sessions(bigint) to authenticated;
+revoke all on function public.therapy_admin_therapist_summary(integer) from public, anon;
+grant execute on function public.therapy_admin_therapist_summary(integer) to authenticated;
+revoke all on function public.therapy_admin_therapist(bigint) from public, anon;
+grant execute on function public.therapy_admin_therapist(bigint) to authenticated;
+revoke all on function public.therapy_admin_set_w9(bigint, boolean) from public, anon;
+grant execute on function public.therapy_admin_set_w9(bigint, boolean) to authenticated;
+revoke all on function public.therapy_admin_record_payment(bigint, bigint[], date, text, text) from public, anon;
+grant execute on function public.therapy_admin_record_payment(bigint, bigint[], date, text, text) to authenticated;
+revoke all on function public.therapy_admin_delete_payment(bigint) from public, anon;
+grant execute on function public.therapy_admin_delete_payment(bigint) to authenticated;
+revoke all on function public.therapy_admin_budget(integer) from public, anon;
+grant execute on function public.therapy_admin_budget(integer) to authenticated;
+revoke all on function public.therapy_admin_set_budget(integer, bigint) from public, anon;
+grant execute on function public.therapy_admin_set_budget(integer, bigint) to authenticated;
+revoke all on function public.therapy_admin_partner_overview() from public, anon;
+grant execute on function public.therapy_admin_partner_overview() to authenticated;
+revoke all on function public.therapy_admin_report(date, date, text) from public, anon;
+grant execute on function public.therapy_admin_report(date, date, text) to authenticated;
+revoke all on function public.therapy_admin_report_people(date, date) from public, anon;
+grant execute on function public.therapy_admin_report_people(date, date) to authenticated;
+
+commit;
+
+-- ---- Check it (read-only) -------------------------------------------------------------------
+-- Expect no rows: no API role has any privilege on the therapy tables.
+--   select grantee, table_name, privilege_type from information_schema.role_table_grants
+--    where table_schema = 'public' and table_name like 'therapy\_%'
+--      and grantee in ('anon', 'authenticated', 'service_role');

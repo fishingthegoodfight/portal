@@ -3,13 +3,31 @@ import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
 import { canManageTherapySupport } from "@/lib/therapy-access";
+import { AdminNav } from "@/components/admin/admin-nav";
+
+const BASE = "/protected/admin/therapy";
 
 async function Gate({ children }: { children: React.ReactNode }) {
   const supabase = await createClient();
   // Not found, not "not allowed": someone without access shouldn't learn
   // there's anything here.
   if (!(await canManageTherapySupport(supabase))) notFound();
-  return <>{children}</>;
+  return (
+    <div className="flex w-full flex-col gap-6">
+      <AdminNav
+        label="Therapy Support"
+        items={[
+          { href: BASE, label: "Requests" },
+          { href: `${BASE}/therapists`, label: "Therapists & payments" },
+          { href: `${BASE}/partner`, label: "Partner office" },
+          { href: `${BASE}/budget`, label: "Budget" },
+          { href: `${BASE}/reports`, label: "Reports" },
+          { href: `${BASE}/settings`, label: "Settings & access" },
+        ]}
+      />
+      {children}
+    </div>
+  );
 }
 
 /**

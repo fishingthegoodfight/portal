@@ -5,7 +5,6 @@ import { createClient } from "@/lib/supabase/server";
 import { loadPartnerUsage, loadSupportRequests } from "@/lib/therapy-access";
 import { FilterPill, filterHref } from "@/components/filter-pills";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { formatDateInZone } from "@/lib/format-date";
 import {
   formatMonth,
@@ -151,16 +150,11 @@ async function RequestsLoader({ searchParams }: { searchParams: Promise<SearchPa
 export default function TherapySupportPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   return (
     <div className="flex w-full flex-col gap-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">Therapy Support</h1>
-          <p className="text-sm text-muted-foreground">
-            Visible only to admins with Therapy Support access. Every view of someone&apos;s request is logged.
-          </p>
-        </div>
-        <Button asChild variant="outline" size="sm">
-          <Link href={`${BASE_PATH}/settings`}>Settings &amp; access</Link>
-        </Button>
+      <div>
+        <h1 className="text-2xl font-bold">Therapy Support</h1>
+        <p className="text-sm text-muted-foreground">
+          Visible only to admins with Therapy Support access. Every view of someone&apos;s request is logged.
+        </p>
       </div>
       <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>
         <RequestsLoader searchParams={searchParams} />

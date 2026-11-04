@@ -166,6 +166,7 @@ export type AdminSupportRequest = {
 export type TherapySettings = {
   scholarship_rate_cents: number | null;
   partner_monthly_sessions: number;
+  w9_threshold_cents: number;
   updated_at: string;
 };
 
@@ -193,3 +194,142 @@ export function parseDollarsToCents(value: string): number | null {
   if (!/^\d+(\.\d{1,2})?$/.test(cleaned)) return null;
   return Math.round(Number(cleaned) * 100);
 }
+
+export const PAYMENT_METHODS = ["check", "ach", "zelle", "card", "other"] as const;
+export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
+export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
+  check: "Check",
+  ach: "Bank transfer (ACH)",
+  zelle: "Zelle",
+  card: "Card",
+  other: "Other",
+};
+
+/** One logged session (therapy_admin_request_sessions). */
+export type SessionRow = {
+  id: number;
+  session_date: string;
+  invoice_ref: string | null;
+  payment_id: number | null;
+  paid_on: string | null;
+};
+
+/** therapy_admin_budget(year): an approval counts against the year it was
+ * approved in. remaining is null when no budget is set for the year. */
+export type BudgetSummary = {
+  year: number;
+  budget_cents: number | null;
+  committed_cents: number;
+  owed_cents: number;
+  spent_cents: number;
+  remaining_cents: number | null;
+  approvals: number;
+};
+
+/** therapy_admin_therapist_summary(year): one row per therapist. */
+export type TherapistSummaryRow = {
+  therapist_id: number;
+  name: string;
+  practice: string | null;
+  email: string | null;
+  phone: string | null;
+  license_type: string | null;
+  license_state: string | null;
+  w9_received: boolean;
+  paid_cents: number;
+  unpaid_sessions: number;
+  unpaid_cents: number;
+  needs_w9: boolean;
+};
+
+/** therapy_admin_therapist(id). */
+export type TherapistDetail = Therapist & {
+  w9_received: boolean;
+  w9_received_at: string | null;
+  w9_threshold_cents: number;
+  participants: number;
+  unpaid: {
+    id: number;
+    session_date: string;
+    invoice_ref: string | null;
+    request_id: number;
+    person: string;
+    rate_cents: number;
+  }[];
+  payments: {
+    id: number;
+    amount_cents: number;
+    paid_on: string;
+    method: PaymentMethod;
+    reference: string | null;
+    sessions: number;
+  }[];
+  years: { year: number; paid_cents: number }[];
+};
+
+/** therapy_admin_partner_overview(). */
+export type PartnerOverview = {
+  waitlist: { id: number; person: string; chapter: string | null; submitted_at: string; waitlist_month: string | null }[];
+  referrals: {
+    id: number;
+    person: string;
+    chapter: string | null;
+    referred_at: string | null;
+    sessions_used: number;
+    sessions_approved: number;
+    this_month: number;
+    last_session: string | null;
+  }[];
+};
+
+export const REPORT_GRAINS = ["month", "quarter", "year"] as const;
+export type ReportGrain = (typeof REPORT_GRAINS)[number];
+
+/** therapy_admin_report(): counts only. "total" is both programs together. */
+export type ReportRow = {
+  level: "total" | "program" | "region" | "chapter";
+  period: string;
+  program: SupportProgram | null;
+  region: string | null;
+  chapter: string | null;
+  participants: number;
+  sessions: number;
+  dollars_cents: number;
+  renewals: number;
+};
+
+/** therapy_admin_report_people(): with names, for the opt-in export. */
+export type ReportPersonRow = {
+  name: string;
+  program: SupportProgram;
+  region: string;
+  chapter: string;
+  sessions: number;
+  dollars_cents: number;
+  renewals: number;
+};
+
+/** The first day of a reporting period, as its label: "October 2026",
+ * "Q4 2026", "2026". */
+export function periodLabel(period: string, grain: ReportGrain): string {
+  const [y, m] = period.split("-").map(Number);
+  if (grain === "year") return String(y);
+  if (grain === "quarter") return `Q${Math.floor((m - 1) / 3) + 1} ${y}`;
+  return formatMonth(period);
+}
+
+/** "2026-10-28" → "Oct 28, 2026" (a plain date, no time zone shift). */
+export function formatPlainDate(date: string): string {
+  const [y, m, d] = date.split("-").map(Number);
+  return new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }).format(
+    new Date(Date.UTC(y, m - 1, d)),
+  );
+}
+
+/** [from, to) for a report: the whole calendar year. */
+export function reportRange(year: number): { from: string; to: string } {
+  return { from: `${year}-01-01`, to: `${year + 1}-01-01` };
+}
+
+export const isReportGrain = (v: unknown): v is ReportGrain =>
+  typeof v === "string" && (REPORT_GRAINS as readonly string[]).includes(v);

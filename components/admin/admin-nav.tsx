@@ -16,18 +16,22 @@ export type AdminNavItem = {
 const startsWithPath = (pathname: string, prefix: string) =>
   pathname === prefix || pathname.startsWith(`${prefix}/`);
 
-/** Which item a path belongs to: its own path or one of `also`. The admin
- * root ("Events") matches only exactly, so a page no item claims (someone's
- * person page) highlights nothing. */
+/** Which item a path belongs to: its own path or one of `also`, the
+ * longest match winning (so a section's root doesn't claim its sub-pages).
+ * The admin root ("Events") matches only exactly, so a page no item claims
+ * (someone's person page) highlights nothing. */
 function activeHref(pathname: string, items: AdminNavItem[]): string | null {
-  const match = items.find(
-    (item) =>
-      pathname === item.href ||
-      [...(item.href === "/protected/admin" ? [] : [item.href]), ...(item.also ?? [])].some((prefix) =>
-        startsWithPath(pathname, prefix),
-      ),
-  );
-  return match?.href ?? null;
+  let best: { href: string; length: number } | null = null;
+  for (const item of items) {
+    const prefixes = [...(item.href === "/protected/admin" ? [] : [item.href]), ...(item.also ?? [])];
+    const lengths = [
+      ...(pathname === item.href ? [item.href.length] : []),
+      ...prefixes.filter((prefix) => startsWithPath(pathname, prefix)).map((prefix) => prefix.length),
+    ];
+    const length = Math.max(-1, ...lengths);
+    if (length >= 0 && (!best || length > best.length)) best = { href: item.href, length };
+  }
+  return best?.href ?? null;
 }
 
 /**
@@ -35,11 +39,11 @@ function activeHref(pathname: string, items: AdminNavItem[]): string | null {
  * limited to what this person can reach. On a narrow screen it wraps onto a
  * second line rather than scrolling.
  */
-export function AdminNav({ items }: { items: AdminNavItem[] }) {
+export function AdminNav({ items, label = "Admin" }: { items: AdminNavItem[]; label?: string }) {
   const pathname = usePathname();
   const active = activeHref(pathname, items);
   return (
-    <nav aria-label="Admin" className="w-full border-b print:hidden">
+    <nav aria-label={label} className="w-full border-b print:hidden">
       <ul className="flex flex-wrap gap-x-5 text-sm">
         {items.map((item) => {
           const isActive = item.href === active;

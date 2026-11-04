@@ -10,17 +10,21 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
-/** The scholarship flat rate and the partner office's monthly sessions. */
+/** The scholarship flat rate, the partner office's monthly sessions and
+ * the W-9 threshold. */
 export function TherapySettingsForm({
   rateCents,
   partnerMonthlySessions,
+  w9ThresholdCents,
 }: {
   rateCents: number | null;
   partnerMonthlySessions: number;
+  w9ThresholdCents: number;
 }) {
   const router = useRouter();
   const [rate, setRate] = useState(rateCents === null ? "" : (rateCents / 100).toFixed(2).replace(/\.00$/, ""));
   const [slots, setSlots] = useState(String(partnerMonthlySessions));
+  const [w9, setW9] = useState((w9ThresholdCents / 100).toFixed(2).replace(/\.00$/, ""));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -30,7 +34,11 @@ export function TherapySettingsForm({
     setSaving(true);
     setError(null);
     setSaved(false);
-    const result = await saveTherapySettingsAction({ scholarshipRate: rate, partnerMonthlySessions: slots });
+    const result = await saveTherapySettingsAction({
+      scholarshipRate: rate,
+      partnerMonthlySessions: slots,
+      w9Threshold: w9,
+    });
     setSaving(false);
     if (!result.ok) {
       setError(result.error);
@@ -55,6 +63,14 @@ export function TherapySettingsForm({
           <Input id="partner_slots" inputMode="numeric" value={slots} onChange={(e) => setSlots(e.target.value)} />
           <p className="text-xs text-muted-foreground">
             Once this month&apos;s logged sessions reach it, new referrals are waitlisted for next month.
+          </p>
+        </div>
+        <div className="grid gap-2">
+          <Label htmlFor="w9_threshold">W-9 needed once a therapist is paid ($ in a year)</Label>
+          <Input id="w9_threshold" inputMode="decimal" value={w9} onChange={(e) => setW9(e.target.value)} />
+          <p className="text-xs text-muted-foreground">
+            Therapists paid this much or more in a calendar year with no W-9 on file are flagged. Check the
+            current 1099 threshold with your accountant.
           </p>
         </div>
       </div>

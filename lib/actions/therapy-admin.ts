@@ -125,6 +125,7 @@ export async function setSupportStatusAction(
 export async function saveTherapySettingsAction(input: {
   scholarshipRate: string;
   partnerMonthlySessions: string;
+  w9Threshold: string;
 }): Promise<TherapyActionResult> {
   const g = await gate();
   if ("error" in g) return { ok: false, error: g.error };
@@ -134,10 +135,13 @@ export async function saveTherapySettingsAction(input: {
   }
   const slots = Number(input.partnerMonthlySessions);
   if (!Number.isInteger(slots) || slots < 0) return { ok: false, error: "Enter the partner office's sessions as a whole number" };
+  const w9 = parseDollarsToCents(input.w9Threshold);
+  if (w9 === null || w9 <= 0) return { ok: false, error: "Enter the W-9 threshold as a dollar amount, like 600" };
 
   const { error } = await g.supabase.rpc("therapy_admin_update_settings", {
     p_scholarship_rate_cents: rate,
     p_partner_monthly_sessions: slots,
+    p_w9_threshold_cents: w9,
   });
   if (error) return { ok: false, error: error.message };
   return { ok: true, data: null };
@@ -148,6 +152,93 @@ export async function setTherapyManagerAction(userId: string, on: boolean): Prom
   const g = await gate();
   if ("error" in g) return { ok: false, error: g.error };
   const { error } = await g.supabase.rpc("therapy_admin_set_manager", { p_user_id: userId, p_on: on });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, data: null };
+}
+
+export type AddSessionsResult = TherapyActionResult<{ added: number; completed: boolean; emailed: boolean }>;
+
+/**
+ * Sessions against an approved request: one date, or a batch from one
+ * therapist invoice. The database refuses going past the approval's
+ * sessions (more needs a renewal); reaching the last one completes the
+ * request, and they're emailed about it.
+ */
+export async function addSessionsAction(requestId: number, dates: string[], invoiceRef: string): Promise<AddSessionsResult> {
+  const g = await gate();
+  if ("error" in g) return { ok: false, error: g.error };
+  const clean = dates.map((d) => d.trim()).filter(Boolean);
+  if (clean.length === 0) return { ok: false, error: "Add at least one session date" };
+  if (clean.some((d) => !/^\d{4}-\d{2}-\d{2}$/.test(d))) return { ok: false, error: "One of the dates isn't a date" };
+
+  const { data, error } = await g.supabase.rpc("therapy_admin_add_sessions", {
+    p_request_id: requestId,
+    p_dates: clean,
+    p_invoice_ref: invoiceRef,
+  });
+  if (error) return { ok: false, error: error.message };
+  const result = data as StatusResult & { added: number };
+  const emailed = await emailStatus(result);
+  return { ok: true, data: { added: result.added, completed: result.changed === true, emailed } };
+}
+
+/** An unpaid session recorded by mistake. */
+export async function deleteSessionAction(sessionId: number): Promise<TherapyActionResult> {
+  const g = await gate();
+  if ("error" in g) return { ok: false, error: g.error };
+  const { error } = await g.supabase.rpc("therapy_admin_delete_session", { p_session_id: sessionId });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, data: null };
+}
+
+export async function setTherapistW9Action(therapistId: number, received: boolean): Promise<TherapyActionResult> {
+  const g = await gate();
+  if ("error" in g) return { ok: false, error: g.error };
+  const { error } = await g.supabase.rpc("therapy_admin_set_w9", { p_id: therapistId, p_received: received });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, data: null };
+}
+
+/** A payment to a therapist for the chosen sessions. The amount is worked
+ * out by the database (each session's agreed rate), never typed. */
+export async function recordPaymentAction(input: {
+  therapistId: number;
+  sessionIds: number[];
+  paidOn: string;
+  method: string;
+  reference: string;
+}): Promise<TherapyActionResult<{ id: number }>> {
+  const g = await gate();
+  if ("error" in g) return { ok: false, error: g.error };
+  if (input.sessionIds.length === 0) return { ok: false, error: "Choose the sessions this payment covers" };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.paidOn)) return { ok: false, error: "Add the date paid" };
+  const { data, error } = await g.supabase.rpc("therapy_admin_record_payment", {
+    p_therapist_id: input.therapistId,
+    p_session_ids: input.sessionIds,
+    p_paid_on: input.paidOn,
+    p_method: input.method,
+    p_reference: input.reference,
+  });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, data: { id: data as number } };
+}
+
+/** Voids a payment entered by mistake; its sessions are unpaid again. */
+export async function deletePaymentAction(paymentId: number): Promise<TherapyActionResult> {
+  const g = await gate();
+  if ("error" in g) return { ok: false, error: g.error };
+  const { error } = await g.supabase.rpc("therapy_admin_delete_payment", { p_id: paymentId });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, data: null };
+}
+
+/** A calendar year's scholarship budget; blank clears it. */
+export async function setBudgetAction(year: number, amount: string): Promise<TherapyActionResult> {
+  const g = await gate();
+  if ("error" in g) return { ok: false, error: g.error };
+  const cents = amount.trim() ? parseDollarsToCents(amount) : null;
+  if (amount.trim() && cents === null) return { ok: false, error: "Enter the budget as a dollar amount, like 15000" };
+  const { error } = await g.supabase.rpc("therapy_admin_set_budget", { p_year: year, p_amount_cents: cents });
   if (error) return { ok: false, error: error.message };
   return { ok: true, data: null };
 }

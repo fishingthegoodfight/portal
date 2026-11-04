@@ -16,6 +16,7 @@ import {
   formatMonth,
   SESSIONS_PER_APPROVAL,
   STATUS_LABELS,
+  type BudgetSummary,
   type PartnerUsage,
   type SupportProgram,
   type SupportStatus,
@@ -59,6 +60,7 @@ export function TherapyReviewPanel({
   given,
   rateCents,
   usage,
+  budget,
 }: {
   requestId: number;
   program: SupportProgram;
@@ -73,6 +75,8 @@ export function TherapyReviewPanel({
   /** therapy_settings.scholarship_rate_cents; null = not set. */
   rateCents: number | null;
   usage: PartnerUsage | null;
+  /** This year's scholarship budget (an approval counts against it). */
+  budget: BudgetSummary | null;
 }) {
   const router = useRouter();
   const suggestion = therapistId ? therapists.find((t) => t.id === therapistId) : suggestedTherapist(therapists, given);
@@ -81,12 +85,17 @@ export function TherapyReviewPanel({
   const [rateAgreed, setRateAgreed] = useState(false);
   const [overrideReason, setOverrideReason] = useState(savedOverrideReason ?? "");
   const [confirmingDecline, setConfirmingDecline] = useState(false);
+  const [overBudgetOk, setOverBudgetOk] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const deciding = status === "submitted" || status === "waitlisted";
   const needsOverride = checkins === 0;
+  // What approving would commit, against what's left of this year's budget.
+  const commits = rateCents === null ? 0 : rateCents * SESSIONS_PER_APPROVAL;
+  const remaining = budget?.remaining_cents ?? null;
+  const overBudget = program === "scholarship" && (remaining === null || commits > remaining);
 
   const done = (result: DecisionResult) => {
     setBusy(false);
@@ -214,6 +223,30 @@ export function TherapyReviewPanel({
               </span>
             </label>
           )}
+          {rateCents !== null && budget && (
+            <div
+              className={
+                overBudget
+                  ? "flex flex-col gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-300"
+                  : "text-sm text-muted-foreground"
+              }
+            >
+              <p>
+                Approving commits {formatCents(commits)} ({SESSIONS_PER_APPROVAL} × {formatCents(rateCents)}).{" "}
+                {remaining === null
+                  ? `There's no ${budget.year} budget set yet.`
+                  : `${formatCents(Math.max(remaining, 0))} of the ${budget.year} budget is left${
+                      remaining < 0 ? ` (it's already ${formatCents(-remaining)} over)` : ""
+                    }.`}
+              </p>
+              {overBudget && (
+                <label className="flex items-start gap-2">
+                  <Checkbox className="mt-0.5" checked={overBudgetOk} onCheckedChange={(c) => setOverBudgetOk(c === true)} />
+                  <span>Approve anyway</span>
+                </label>
+              )}
+            </div>
+          )}
         </>
       ) : (
         usage && (
@@ -254,7 +287,13 @@ export function TherapyReviewPanel({
             <Button
               type="button"
               size="sm"
-              disabled={busy || rateCents === null || !rateAgreed || (needsOverride && !overrideReason.trim())}
+              disabled={
+                busy ||
+                rateCents === null ||
+                !rateAgreed ||
+                (needsOverride && !overrideReason.trim()) ||
+                (overBudget && !overBudgetOk)
+              }
               onClick={() => void approveScholarship()}
             >
               {busy ? "Saving..." : `Approve ${SESSIONS_PER_APPROVAL} sessions`}
