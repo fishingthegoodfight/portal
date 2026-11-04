@@ -56,7 +56,7 @@ export function HealthHistoryView({
         <header className="flex flex-wrap items-baseline justify-between gap-2 border-b pb-2">
           <h2 className={cn("font-bold", print ? "text-3xl" : "text-xl")}>{personName}</h2>
           <span className={cn(print ? "text-base" : "text-sm text-muted-foreground")}>
-            DOB {dob} · {record.year} form, signed {signed}
+            DOB {dob} · signed {signed}
           </span>
         </header>
       )}

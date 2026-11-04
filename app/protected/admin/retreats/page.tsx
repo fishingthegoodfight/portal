@@ -10,6 +10,7 @@ import { RegionTag } from "@/components/region-tag";
 import { loadRegionsAndChapters } from "@/lib/chapters";
 import { formatEventDateRange } from "@/lib/format-date";
 import { regionName } from "@/lib/retreats";
+import { RetreatSettingsForm } from "@/components/admin/retreat-registrations";
 
 const BASE_PATH = "/protected/admin/retreats";
 
@@ -31,13 +32,14 @@ type Row = {
 async function RetreatsLoader({ searchParams }: { searchParams: Promise<{ region?: string }> }) {
   const { region: regionParam } = await searchParams;
   const supabase = await createClient();
-  const [{ regions }, { data, error }] = await Promise.all([
+  const [{ regions }, { data, error }, { data: settings }] = await Promise.all([
     loadRegionsAndChapters(supabase),
     supabase
       .from("events")
       .select("id, name, region_id, starts_at, ends_at, timezone, capacity, spots_taken, status, is_published")
       .eq("kind", "retreat")
       .order("starts_at", { ascending: true }),
+    supabase.from("retreat_settings").select("offer_hours").maybeSingle(),
   ]);
   if (error) return <p className="text-sm text-red-500">Couldn&apos;t load retreats: {error.message}</p>;
 
@@ -65,13 +67,16 @@ async function RetreatsLoader({ searchParams }: { searchParams: Promise<{ region
           <span>{formatEventDateRange(r.starts_at, r.ends_at, r.timezone)}</span>
           <span>
             · {r.spots_taken ?? 0}
-            {r.capacity != null ? ` / ${r.capacity}` : ""} registered
+            {r.capacity != null ? ` / ${r.capacity}` : ""} confirmed
           </span>
         </div>
       </div>
       <div className="flex shrink-0 gap-2">
         <Button asChild variant="outline" size="sm">
           <Link href={`${BASE_PATH}/${r.id}`}>Setup</Link>
+        </Button>
+        <Button asChild variant="outline" size="sm">
+          <Link href={`${BASE_PATH}/${r.id}/registrations`}>Registrations</Link>
         </Button>
         <Button asChild variant="outline" size="sm">
           <Link href={`/protected/admin/events/${r.id}`}>Roster</Link>
@@ -108,6 +113,14 @@ async function RetreatsLoader({ searchParams }: { searchParams: Promise<{ region
           <ul className="flex flex-col gap-2 opacity-80">{past.map(renderRow)}</ul>
         </section>
       )}
+      <section className="flex flex-col gap-2 border-t pt-4">
+        <h2 className="text-lg font-semibold">Waitlist offers</h2>
+        <p className="text-sm text-muted-foreground">
+          When you offer someone on a waitlist a spot, they have this long to take it (for every retreat). After that the
+          offer lapses, you&apos;re emailed, and you choose who to offer it to next.
+        </p>
+        <RetreatSettingsForm offerHours={(settings?.offer_hours as number | undefined) ?? 72} />
+      </section>
     </div>
   );
 }

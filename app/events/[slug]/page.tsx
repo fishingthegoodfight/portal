@@ -71,7 +71,7 @@ async function PublicEventLoader({ params }: { params: Params }) {
   await connection(); // "has it happened yet" is about now, not build time
   const cancelled = event.status === "cancelled";
   const past = !cancelled && hasHappened(event, new Date());
-  if (event.kind === "retreat") return <PublicRetreat event={event} spotsLeft={spotsLeft} past={past} />;
+  if (event.kind === "retreat") return <PublicRetreat event={event} past={past} />;
 
   // Only to pick the RSVP button's destination — the event itself was read
   // as anon above, whoever is signed in.

@@ -1181,3 +1181,17 @@ export async function sendChapterMessageEmail(params: {
     logKind: "bulk",
   });
 }
+
+/** A retreat registration email (lib/email/retreat-templates.ts, built by
+ * lib/retreat-emails.ts). Throws on failure. */
+export async function sendRetreatEmail(to: string | string[], email: { subject: string; html: string; text: string }): Promise<void> {
+  await deliverEmail({ to, subject: email.subject, html: email.html, text: email.text });
+}
+
+/** Who hears about admin-side retreat events: ADMIN_NOTIFICATION_EMAILS. */
+export function adminNotificationRecipients(): string[] {
+  return (process.env.ADMIN_NOTIFICATION_EMAILS ?? "")
+    .split(",")
+    .map((address) => address.trim())
+    .filter(Boolean);
+}

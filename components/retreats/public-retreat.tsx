@@ -8,6 +8,7 @@ import { RegionTag } from "@/components/region-tag";
 import { formatEventDateRange } from "@/lib/format-date";
 import { loadPublicRegionsAndChapters, type PublicEvent } from "@/lib/public-events";
 import { formatPrice, loadPriceOptions, loadViewerAudiences, regionName } from "@/lib/retreats";
+import { withNext } from "@/lib/safe-next";
 
 /** "8 spots left", "1 spot left", "Full", or null with no limit. */
 export function retreatSpotsLabel(spotsLeft: number | null): string | null {
@@ -22,19 +23,15 @@ export function retreatSpotsLabel(spotsLeft: number | null): string | null {
  * anything more (the lodging, fishing location and links live in tables
  * anon can't read at all).
  */
-export async function PublicRetreat({
-  event,
-  spotsLeft,
-  past,
-}: {
-  event: PublicEvent;
-  spotsLeft: number | null;
-  past: boolean;
-}) {
-  const [prices, { regions }] = await Promise.all([
-    loadPriceOptions(createAnonClient(), event.id),
+export async function PublicRetreat({ event, past }: { event: PublicEvent; past: boolean }) {
+  const anon = createAnonClient();
+  // Spots left counts open waitlist offers and checkouts in progress too.
+  const [prices, { regions }, { data: spotsData }] = await Promise.all([
+    loadPriceOptions(anon, event.id),
     loadPublicRegionsAndChapters(),
+    anon.rpc("retreat_spots_left", { p_event_id: event.id }),
   ]);
+  const spotsLeft = typeof spotsData === "number" ? spotsData : null;
   const cancelled = event.status === "cancelled";
   const spots = retreatSpotsLabel(spotsLeft);
 
@@ -49,6 +46,20 @@ export async function PublicRetreat({
       ])
     : [[], false];
   const onRetreat = audiences.length > 0 || manages;
+  const registered = signedIn
+    ? Boolean(
+        (
+          await supabase
+            .from("retreat_registrations")
+            .select("id")
+            .eq("event_id", event.id)
+            .eq("user_id", auth!.claims.sub as string)
+            .maybeSingle()
+        ).data,
+      )
+    : false;
+  const registerPath = `/protected/retreats/${event.id}/register`;
+  const full = spotsLeft === 0;
 
   return (
     <Card>
@@ -111,15 +122,28 @@ export async function PublicRetreat({
           </section>
         )}
 
-        {onRetreat ? (
+        {onRetreat || registered ? (
           <Button asChild className="w-fit">
-            <Link href={`/protected/retreats/${event.id}`}>Your retreat details</Link>
+            <Link href={`/protected/retreats/${event.id}`}>{onRetreat ? "Your retreat details" : "Your registration"}</Link>
+          </Button>
+        ) : cancelled || past ? null : prices.length === 0 ? (
+          <p className="rounded-md border bg-muted/50 p-3 text-sm">Registration opens soon.</p>
+        ) : signedIn ? (
+          <Button asChild className="w-fit">
+            <Link href={registerPath}>{full ? "Join the waitlist" : "Register"}</Link>
           </Button>
         ) : (
-          !cancelled &&
-          !past && (
-            <p className="rounded-md border bg-muted/50 p-3 text-sm">Registration opens soon.</p>
-          )
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap gap-2">
+              <Button asChild>
+                <Link href={withNext("/auth/login", registerPath)}>Sign in to register</Link>
+              </Button>
+              <Button asChild variant="outline">
+                <Link href={withNext("/auth/sign-up", registerPath)}>Create an account</Link>
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">You&apos;ll come straight back to the registration form.</p>
+          </div>
         )}
       </CardContent>
     </Card>

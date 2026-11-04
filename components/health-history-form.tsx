@@ -40,18 +40,15 @@ type ContactPrefill = Pick<
 >;
 
 /**
- * This year's health form. Starts blank every year — last year's answers
- * are viewable but never copied in, so each year's is consciously
- * re-entered. The one exception is the emergency contacts, which are the
+ * A new health form. Starts blank every time — earlier answers are
+ * viewable but never copied in, so each form is consciously re-entered. The one exception is the emergency contacts, which are the
  * profile's own (live, roster-visible) contacts, shown here to confirm or
  * update.
  */
 export function HealthHistoryForm({
-  year,
   contacts,
   returnTo,
 }: {
-  year: number;
   contacts: ContactPrefill;
   /** Where to go once it's submitted. */
   returnTo: string;
@@ -416,7 +413,7 @@ export function HealthHistoryForm({
             <Label htmlFor="hh_signature">Type your full name to sign</Label>
             <Input id="hh_signature" value={form.signedName} onChange={onText("signedName")} autoComplete="name" />
             <p className="text-xs text-muted-foreground">
-              Signed today, for {year}. It covers events through December 31, {year}.
+              Signed today. It covers events starting in the next 12 months.
             </p>
           </div>
         </CardContent>
@@ -433,7 +430,7 @@ export function HealthHistoryForm({
       )}
       <div className="flex gap-2">
         <Button type="submit" disabled={saving}>
-          {saving ? "Submitting..." : `Submit ${year} health form`}
+          {saving ? "Submitting..." : "Submit health form"}
         </Button>
         <Button type="button" variant="outline" disabled={saving} onClick={() => router.back()}>
           Cancel

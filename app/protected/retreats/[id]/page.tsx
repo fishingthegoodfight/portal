@@ -5,12 +5,22 @@ import { ExternalLink, MapPin } from "lucide-react";
 
 import { createClient } from "@/lib/supabase/server";
 import { loadRegionsAndChapters } from "@/lib/chapters";
-import { formatEventDateRange, formatEventInstant } from "@/lib/format-date";
+import { formatEventDateRange, formatEventInstant, todayInZone } from "@/lib/format-date";
+import { formatHealthDate } from "@/lib/health-requirements";
+import {
+  formatDueDate,
+  REGISTRATION_COLUMNS,
+  type MyPrecheck,
+  type RegistrationRow,
+} from "@/lib/retreat-registration";
+import { MyRetreatRegistration } from "@/components/retreats/my-registration";
+import { PrecheckCard } from "@/components/retreats/precheck-card";
 import { publicEventPath } from "@/lib/event-slug";
 import {
   AUDIENCE_LABELS,
   fishingMapUrl,
   lodgingMapUrl,
+  loadPriceOptions,
   loadViewerAudiences,
   regionName,
   RETREAT_DETAILS_COLUMNS,
@@ -43,34 +53,71 @@ function ExternalLinkText({ href, children }: { href: string; children: React.Re
  * volunteers here, the leadership team for leadership sessions, the
  * retreat lead and admins), so this page has no rule of its own.
  */
-async function RetreatLoader({ params }: { params: Promise<{ id: string }> }) {
+async function RetreatLoader({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ registered?: string }>;
+}) {
   const { id } = await params;
+  const { registered } = await searchParams;
   const eventId = Number(id);
   if (!Number.isInteger(eventId)) notFound();
 
   const supabase = await createClient();
   const { data: auth } = await supabase.auth.getClaims();
   if (!auth?.claims) redirect("/auth/login");
+  const userId = auth.claims.sub as string;
 
   const { data: retreat } = await supabase
     .from("events")
-    .select("id, slug, name, region_id, starts_at, ends_at, timezone, description, status")
+    .select("id, slug, name, region_id, starts_at, ends_at, timezone, description, status, is_published")
     .eq("id", eventId)
     .eq("kind", "retreat")
     .maybeSingle();
   if (!retreat) notFound();
 
-  const [{ data: details }, { data: sessions }, audiences, { data: manages }, { regions }] = await Promise.all([
+  const [
+    { data: details },
+    { data: sessions },
+    audiences,
+    { data: manages },
+    { regions },
+    { data: registration },
+    prices,
+    { data: spotsLeft },
+  ] = await Promise.all([
     supabase.from("retreat_details").select(RETREAT_DETAILS_COLUMNS).eq("event_id", eventId).maybeSingle(),
     supabase.from("retreat_sessions").select(RETREAT_SESSION_COLUMNS).eq("event_id", eventId).order("starts_at"),
     loadViewerAudiences(supabase, eventId),
     supabase.rpc("can_manage_event", { p_event_id: eventId }),
     loadRegionsAndChapters(supabase),
+    supabase.from("retreat_registrations").select(REGISTRATION_COLUMNS).eq("event_id", eventId).eq("user_id", userId).maybeSingle(),
+    loadPriceOptions(supabase, eventId),
+    supabase.rpc("retreat_spots_left", { p_event_id: eventId }),
+  ]);
+  const reg = (registration as RegistrationRow | null) ?? null;
+  const [{ data: position }, { data: precheck }] = await Promise.all([
+    reg?.status === "waitlisted"
+      ? supabase.rpc("retreat_waitlist_position", { p_event_id: eventId })
+      : Promise.resolve({ data: null }),
+    reg?.status === "confirmed"
+      ? supabase.rpc("my_retreat_precheck", { p_event_id: eventId })
+      : Promise.resolve({ data: null }),
   ]);
   const d = details as RetreatDetails | null;
   const sessionRows = (sessions ?? []) as RetreatSession[];
   const timezone = retreat.timezone as string;
   const onRetreat = audiences.length > 0 || Boolean(manages);
+  const registrationOpen =
+    retreat.status === "scheduled" &&
+    Boolean(retreat.is_published) &&
+    // eslint-disable-next-line react-hooks/purity -- Server Component: renders once per request.
+    new Date(retreat.starts_at as string).getTime() > Date.now();
+  const check = precheck as MyPrecheck | null;
+  const today = todayInZone(timezone);
+  const here = `/protected/retreats/${eventId}`;
   const fishingMap = d ? fishingMapUrl(d) : null;
   const lodgingMap = d ? lodgingMapUrl(d) : null;
 
@@ -105,6 +152,62 @@ async function RetreatLoader({ params }: { params: Promise<{ id: string }> }) {
           )}
         </div>
       </div>
+
+      {registered && reg && (
+        <p role="status" className="rounded-md bg-accent p-3 text-sm">
+          {registered === "confirmed"
+            ? "You're registered and confirmed. We've emailed you the details."
+            : registered === "waitlisted"
+              ? "You're on the waitlist. We've emailed you to say so."
+              : "Your registration is in. We've emailed you a copy."}
+        </p>
+      )}
+
+      {reg ? (
+        <MyRetreatRegistration
+          eventId={eventId}
+          registration={reg}
+          waitlistPosition={typeof position === "number" ? position : null}
+          offerExpiresLabel={reg.offer_expires_at ? formatEventInstant(reg.offer_expires_at, timezone) : null}
+          priceOptions={prices}
+          canRegisterAgain={registrationOpen}
+        />
+      ) : (
+        registrationOpen &&
+        audiences.length === 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Register</CardTitle>
+              <CardDescription>
+                {typeof spotsLeft === "number"
+                  ? spotsLeft > 0
+                    ? `${spotsLeft} spot${spotsLeft === 1 ? "" : "s"} left.`
+                    : "Full right now: you can join the waitlist without paying anything."
+                  : "Spots go to whoever pays first."}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Button asChild>
+                <Link href={`${here}/register`}>
+                  {typeof spotsLeft === "number" && spotsLeft <= 0 ? "Join the waitlist" : "Register"}
+                </Link>
+              </Button>
+            </CardContent>
+          </Card>
+        )
+      )}
+
+      {check && (
+        <PrecheckCard
+          eventId={eventId}
+          phase={today < check.opens_on ? "not_open" : today > check.due_on ? "overdue" : "open"}
+          state={check.state}
+          opensLabel={formatDueDate(check.opens_on)}
+          dueLabel={formatDueDate(check.due_on)}
+          formSignedLabel={check.form_signed_at ? formatHealthDate(check.form_signed_at) : null}
+          newFormHref={`/protected/profile/medical/new?next=${encodeURIComponent(here)}`}
+        />
+      )}
 
       {!onRetreat ? (
         <Card>
@@ -207,11 +310,17 @@ async function RetreatLoader({ params }: { params: Promise<{ id: string }> }) {
   );
 }
 
-export default function RetreatPage({ params }: { params: Promise<{ id: string }> }) {
+export default function RetreatPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ registered?: string }>;
+}) {
   return (
     <div className="flex w-full max-w-2xl flex-1 flex-col gap-6">
       <Suspense fallback={<p className="text-sm text-muted-foreground">Loading...</p>}>
-        <RetreatLoader params={params} />
+        <RetreatLoader params={params} searchParams={searchParams} />
       </Suspense>
     </div>
   );

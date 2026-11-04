@@ -39,7 +39,7 @@ export type RenderedEmail = {
   text: string;
 };
 
-function escapeHtml(value: string): string {
+export function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -51,7 +51,7 @@ function htmlWithLineBreaks(value: string): string {
   return escapeHtml(value).replace(/\n/g, "<br>");
 }
 
-function wrapHtml(bodyHtml: string): string {
+export function wrapHtml(bodyHtml: string): string {
   return `<!doctype html>
 <html>
   <body style="margin:0;padding:0;background:#f5f5f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#1c1917;">

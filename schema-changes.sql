@@ -18189,3 +18189,1176 @@ commit;
 --   select label, amount_cents from public.retreat_price_options limit 1;  -- works
 --   select * from public.retreat_details limit 1;                         -- permission denied
 --   reset role;
+
+
+-- =============================================================================
+-- 2026-11-04 — Retreats, part 2: registration, waitlist, room requests,
+--              rolling health forms, pre-retreat check
+-- =============================================================================
+-- 1. Health forms cover a rolling 12 months (every event, not just
+--    retreats). A form covers any event that starts within 12 months after
+--    it was signed: health_history_covering() now picks the newest form
+--    signed in (start − 12 months, end]. Before, a form covered the
+--    calendar year it was signed in, so a 2027 event's form couldn't be
+--    signed until 1 Jan 2027. health_histories.year is kept (still the
+--    year signed in) but no longer decides anything. Existing forms count
+--    from their own signing date.
+--
+-- 2. retreat_registrations: one row per person per retreat. Status:
+--      pending_payment  form done, spot not yet theirs (no payments until
+--                       part 3; a checkout will hold a spot 30 minutes)
+--      confirmed        the spot is theirs. Also an ordinary confirmed
+--                       RSVP, so the roster, check-in, waiver and health
+--                       history all work as for any event
+--      waitlisted       full when they registered (no payment)
+--      offered          an admin offered them a spot; it's held until
+--                       offer_expires_at (retreat_settings.offer_hours,
+--                       default 72)
+--      expired          the offer lapsed; the spot is free again. Nothing
+--                       moves on automatically: an admin offers the next
+--      cancelled
+--    First come, first served: a spot is taken when the first payment
+--    succeeds (part 3), or straight away when nothing is owed (a $0
+--    custom price with no donation). retreat_spots_left = capacity −
+--    confirmed − open offers − live checkout holds.
+--    Each registration keeps the price option (or custom price) chosen, its
+--    amount, the true cost at the time, an optional extra donation, and the
+--    room request (checkbox + required explanation, status pending /
+--    approved / declined).
+--    Nobody writes the table directly: everything goes through the
+--    functions below, which check who's asking. Readable by the person
+--    themself and by whoever manages the retreat (admins, its lead).
+--    user_id is ON DELETE SET NULL: removing a person keeps the
+--    registration (payments will hang off it).
+--
+-- 3. retreat_custom_prices: a private link with its own price (any amount,
+--    $0 included) for one person, single-use, revocable. Managers only.
+--
+-- 4. retreat_settings: how long a waitlist offer is held (hours, default
+--    72). Admins change it.
+--
+-- 5. Pre-retreat check (participants, confirmed): opens 21 days before the
+--    retreat starts, due 14 days before (local dates). Done when the health
+--    form covering the retreat was signed on or after the opening day, or
+--    the person has confirmed that form is still right
+--    (retreat_health_confirmations: who, which form, when; no health
+--    content). The wellness form will be the second step of the same check.
+--    Reminder bookkeeping lives on the registration (precheck_* columns).
+--
+-- 6. Retreat registrants (not only confirmed RSVPs) count as "on the
+--    event" for health history: the roster's status, the staff view and
+--    the review markers — same rule, same access checks, same logging.
+--
+-- 7. An RSVP to a retreat removed some other way (the ordinary roster's
+--    Remove) cancels the registration with it, so the two never disagree.
+--
+-- New tables ship with their grants (CLAUDE.md). The registrations,
+-- custom prices and confirmations are read-only to authenticated (writes go
+-- through SECURITY DEFINER functions), so authenticated gets SELECT only
+-- and a select policy only; no sequence grants to authenticated (it never
+-- inserts). anon gets nothing on any of them.
+--
+-- Safe to re-run. One transaction.
+
+begin;
+
+-- ---- 1. Rolling 12-month health forms -------------------------------------------------
+create or replace function public.health_history_covering(p_user_id uuid, p_event_id bigint)
+returns bigint
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select h.id
+    from public.health_histories h
+    join public.events e on e.id = p_event_id
+   where h.user_id = p_user_id
+     and h.signed_at > e.starts_at - interval '12 months'
+     and h.signed_at <= coalesce(e.ends_at, e.starts_at)
+   order by h.signed_at desc
+   limit 1;
+$function$;
+
+-- ---- 4. Settings ---------------------------------------------------------------------------
+create table if not exists public.retreat_settings (
+  id boolean primary key default true check (id),
+  offer_hours integer not null default 72 check (offer_hours between 1 and 336),
+  updated_by uuid references public.profiles(id) on delete set null,
+  updated_at timestamptz not null default now()
+);
+insert into public.retreat_settings (id) values (true) on conflict (id) do nothing;
+
+alter table public.retreat_settings enable row level security;
+drop policy if exists retreat_settings_select on public.retreat_settings;
+create policy retreat_settings_select on public.retreat_settings
+  for select to authenticated using (true);
+drop policy if exists retreat_settings_update on public.retreat_settings;
+create policy retreat_settings_update on public.retreat_settings
+  for update to authenticated using (public.is_admin()) with check (public.is_admin());
+
+revoke all on public.retreat_settings from anon;
+revoke all on public.retreat_settings from authenticated;
+grant select, update on public.retreat_settings to authenticated;
+grant all on public.retreat_settings to service_role;
+
+-- ---- 3. Custom prices ----------------------------------------------------------------------
+create table if not exists public.retreat_custom_prices (
+  id bigserial primary key,
+  event_id bigint not null references public.events(id) on delete cascade,
+  token text not null unique default (replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '')),
+  amount_cents integer not null check (amount_cents >= 0),
+  -- Who it's for, for the admins' own reference.
+  note text not null check (btrim(note) <> '' and char_length(note) <= 200),
+  created_by uuid references public.profiles(id) on delete set null,
+  created_at timestamptz not null default now(),
+  revoked_at timestamptz,
+  used_by_registration_id bigint,
+  used_at timestamptz
+);
+create index if not exists retreat_custom_prices_event_idx on public.retreat_custom_prices (event_id);
+
+alter table public.retreat_custom_prices enable row level security;
+drop policy if exists retreat_custom_prices_select on public.retreat_custom_prices;
+create policy retreat_custom_prices_select on public.retreat_custom_prices
+  for select to authenticated using (public.can_manage_event(event_id));
+
+revoke all on public.retreat_custom_prices from anon;
+revoke all on public.retreat_custom_prices from authenticated;
+grant select on public.retreat_custom_prices to authenticated;
+grant all on public.retreat_custom_prices to service_role;
+revoke all on sequence public.retreat_custom_prices_id_seq from anon, authenticated;
+grant usage, select on sequence public.retreat_custom_prices_id_seq to service_role;
+
+-- ---- 2. Registrations ----------------------------------------------------------------------
+create table if not exists public.retreat_registrations (
+  id bigserial primary key,
+  event_id bigint not null references public.events(id) on delete cascade,
+  user_id uuid references public.profiles(id) on delete set null,
+  status text not null check (status in ('pending_payment', 'confirmed', 'waitlisted', 'offered', 'expired', 'cancelled')),
+  -- What they chose: a price option, or a custom price link.
+  price_option_id bigint references public.retreat_price_options(id) on delete set null,
+  custom_price_id bigint references public.retreat_custom_prices(id) on delete set null,
+  price_label text not null,
+  price_cents integer not null check (price_cents >= 0),
+  -- The retreat's true cost when they registered (null if none was set):
+  -- anything paid above it is a donation (part 3's receipts).
+  true_cost_cents integer check (true_cost_cents >= 0),
+  donation_cents integer not null default 0 check (donation_cents between 0 and 10000000),
+  room_request boolean not null default false,
+  room_request_reason text check (char_length(room_request_reason) <= 2000),
+  room_request_status text check (room_request_status in ('pending', 'approved', 'declined')),
+  room_decided_by uuid references public.profiles(id) on delete set null,
+  room_decided_at timestamptz,
+  registered_at timestamptz not null default now(),
+  joined_waitlist_at timestamptz,
+  offered_at timestamptz,
+  offer_expires_at timestamptz,
+  offered_by uuid references public.profiles(id) on delete set null,
+  -- A live checkout (part 3) holds a spot until this.
+  hold_expires_at timestamptz,
+  confirmed_at timestamptz,
+  cancelled_at timestamptz,
+  cancelled_by uuid references public.profiles(id) on delete set null,
+  cancel_note text check (char_length(cancel_note) <= 1000),
+  -- Pre-retreat check emails (sent by the daily job).
+  precheck_opened_email_at timestamptz,
+  precheck_reminded_on date,
+  precheck_due_tomorrow_email_at timestamptz,
+  precheck_overdue_email_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint retreat_registrations_one_per_person unique (event_id, user_id),
+  constraint retreat_registrations_room check (
+    (room_request and room_request_status is not null and btrim(coalesce(room_request_reason, '')) <> '')
+    or (not room_request and room_request_status is null)
+  ),
+  constraint retreat_registrations_offer check (status <> 'offered' or offer_expires_at is not null)
+);
+
+create index if not exists retreat_registrations_event_idx on public.retreat_registrations (event_id, status);
+create index if not exists retreat_registrations_offers_idx on public.retreat_registrations (offer_expires_at) where status = 'offered';
+
+alter table public.retreat_custom_prices drop constraint if exists retreat_custom_prices_used_by_fkey;
+alter table public.retreat_custom_prices add constraint retreat_custom_prices_used_by_fkey
+  foreign key (used_by_registration_id) references public.retreat_registrations(id) on delete set null;
+
+alter table public.retreat_registrations enable row level security;
+drop policy if exists retreat_registrations_select on public.retreat_registrations;
+create policy retreat_registrations_select on public.retreat_registrations
+  for select to authenticated
+  using (user_id = auth.uid() or public.can_manage_event(event_id));
+
+revoke all on public.retreat_registrations from anon;
+revoke all on public.retreat_registrations from authenticated;
+grant select on public.retreat_registrations to authenticated;
+grant all on public.retreat_registrations to service_role;
+revoke all on sequence public.retreat_registrations_id_seq from anon, authenticated;
+grant usage, select on sequence public.retreat_registrations_id_seq to service_role;
+
+-- ---- 5. Health form confirmations (pre-retreat check) ----------------------------------------
+create table if not exists public.retreat_health_confirmations (
+  id bigserial primary key,
+  event_id bigint not null references public.events(id) on delete cascade,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  health_history_id bigint not null,
+  confirmed_at timestamptz not null default now(),
+  constraint retreat_health_confirmations_one unique (event_id, user_id)
+);
+
+alter table public.retreat_health_confirmations enable row level security;
+drop policy if exists retreat_health_confirmations_select on public.retreat_health_confirmations;
+create policy retreat_health_confirmations_select on public.retreat_health_confirmations
+  for select to authenticated
+  using (user_id = auth.uid() or public.can_manage_event(event_id));
+
+revoke all on public.retreat_health_confirmations from anon;
+revoke all on public.retreat_health_confirmations from authenticated;
+grant select on public.retreat_health_confirmations to authenticated;
+grant all on public.retreat_health_confirmations to service_role;
+revoke all on sequence public.retreat_health_confirmations_id_seq from anon, authenticated;
+grant usage, select on sequence public.retreat_health_confirmations_id_seq to service_role;
+
+-- ---- Capacity --------------------------------------------------------------------------------
+-- Free spots: capacity − confirmed − open offers − live checkout holds,
+-- leaving out `p_except` (the registration asking). Null = no limit.
+create or replace function public.retreat_free_spots(p_event_id bigint, p_except bigint default null)
+returns integer
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select case when e.capacity is null then null else
+    e.capacity - coalesce(e.spots_taken, 0) - (
+      select count(*)::int from public.retreat_registrations r
+       where r.event_id = e.id
+         and r.id is distinct from p_except
+         and ((r.status = 'offered' and r.offer_expires_at > now())
+              or (r.status = 'pending_payment' and r.hold_expires_at > now()))
+    ) end
+    from public.events e
+   where e.id = p_event_id;
+$function$;
+
+-- Spots left, for the public pages: published retreats only, never below 0.
+create or replace function public.retreat_spots_left(p_event_id bigint)
+returns integer
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select greatest(public.retreat_free_spots(e.id), 0)
+    from public.events e
+   where e.id = p_event_id and e.kind = 'retreat'
+     and (coalesce(e.is_published, false) or public.can_manage_event(e.id));
+$function$;
+
+-- Makes a registration confirmed: takes the spot (unless p_force, refuses
+-- when there's none), and adds the matching confirmed RSVP. Internal.
+create or replace function public.retreat_take_spot(p_registration_id bigint, p_force boolean default false)
+returns boolean
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  r public.retreat_registrations%rowtype;
+  v_free integer;
+begin
+  select * into r from public.retreat_registrations where id = p_registration_id for update;
+  if not found or r.user_id is null then
+    return false;
+  end if;
+  if r.status = 'confirmed' then
+    return true;
+  end if;
+  perform 1 from public.events where id = r.event_id for update;
+  v_free := public.retreat_free_spots(r.event_id, r.id);
+  if not p_force and v_free is not null and v_free <= 0 then
+    return false;
+  end if;
+
+  update public.retreat_registrations
+     set status = 'confirmed', confirmed_at = now(), hold_expires_at = null,
+         offer_expires_at = null, updated_at = now()
+   where id = r.id;
+
+  perform set_config('ftgf.retreat_registration', 'on', true);
+  insert into public.rsvps (event_id, user_id, status)
+  values (r.event_id, r.user_id, 'confirmed')
+  on conflict (event_id, user_id)
+  do update set status = 'confirmed', joined_at = null, offer_expires_at = null, updated_at = now();
+  perform set_config('ftgf.retreat_registration', '', true);
+
+  update public.events
+     set spots_taken = coalesce(spots_taken, 0) + 1, updated_at = now()
+   where id = r.event_id;
+  return true;
+end $function$;
+
+-- Undoes retreat_take_spot: removes the RSVP and frees the spot. Internal.
+create or replace function public.retreat_release_spot(p_event_id bigint, p_user_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_status text;
+begin
+  perform set_config('ftgf.retreat_registration', 'on', true);
+  delete from public.rsvps
+   where event_id = p_event_id and user_id = p_user_id
+  returning status into v_status;
+  perform set_config('ftgf.retreat_registration', '', true);
+  if v_status = 'confirmed' then
+    update public.events
+       set spots_taken = greatest(coalesce(spots_taken, 0) - 1, 0), updated_at = now()
+     where id = p_event_id;
+  end if;
+end $function$;
+
+-- ---- Registering -------------------------------------------------------------------------------
+-- What the person can still be asked to fix before registering (null = ok).
+create or replace function public.retreat_registration_blocker(p_user_id uuid, p_event_id bigint)
+returns text
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select case
+    when not exists (
+      select 1 from public.events e
+       where e.id = p_event_id and e.kind = 'retreat'
+         and coalesce(e.is_published, false)
+         and coalesce(e.status, 'scheduled') = 'scheduled'
+         and e.starts_at > now()
+    ) then 'unavailable'
+    when not public.has_signed_event_waiver(p_user_id, p_event_id, 'participant') then 'waiver_unsigned'
+    when public.registration_incomplete_section(p_user_id, p_event_id) is not null then 'registration_incomplete'
+    when not exists (
+      select 1 from public.health_histories h
+       where h.user_id = p_user_id and h.signed_at > now() - interval '12 months'
+    ) then 'health_form_missing'
+    when exists (
+      select 1 from public.volunteer_signups s
+        join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+       where vo.event_id = p_event_id and s.user_id = p_user_id and s.status = 'confirmed'
+    ) then 'is_volunteer'
+  end;
+$function$;
+
+-- Registers the caller. Returns {status, registration_id}.
+create or replace function public.retreat_register(
+  p_event_id bigint,
+  p_price_option_id bigint,
+  p_custom_token text,
+  p_donation_cents integer,
+  p_room_request boolean,
+  p_room_reason text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  v_blocker text;
+  v_existing public.retreat_registrations%rowtype;
+  v_custom public.retreat_custom_prices%rowtype;
+  v_option public.retreat_price_options%rowtype;
+  v_label text;
+  v_price integer;
+  v_true_cost integer;
+  v_free integer;
+  v_status text;
+  v_id bigint;
+  v_reason text := nullif(btrim(coalesce(p_room_reason, '')), '');
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated' using errcode = '42501';
+  end if;
+  perform 1 from public.events where id = p_event_id for update;
+
+  select * into v_existing from public.retreat_registrations
+   where event_id = p_event_id and user_id = v_uid for update;
+  if found and v_existing.status in ('pending_payment', 'confirmed', 'waitlisted', 'offered') then
+    raise exception 'You''re already registered for this retreat' using errcode = 'P0001';
+  end if;
+
+  v_blocker := public.retreat_registration_blocker(v_uid, p_event_id);
+  if v_blocker is not null then
+    raise exception '%', case v_blocker
+      when 'unavailable' then 'Registration isn''t open for this retreat'
+      when 'waiver_unsigned' then 'Please sign the waiver first'
+      when 'registration_incomplete' then 'Please finish the registration questions first'
+      when 'health_form_missing' then 'Please complete your health form first'
+      when 'is_volunteer' then 'You''re volunteering at this retreat, so you can''t also register as a participant'
+    end using errcode = 'P0001', hint = v_blocker;
+  end if;
+
+  if nullif(btrim(coalesce(p_custom_token, '')), '') is not null then
+    select * into v_custom from public.retreat_custom_prices
+     where token = btrim(p_custom_token) and event_id = p_event_id for update;
+    if not found or v_custom.revoked_at is not null then
+      raise exception 'That price link isn''t valid any more' using errcode = 'P0001';
+    end if;
+    if v_custom.used_by_registration_id is not null
+       and v_custom.used_by_registration_id is distinct from v_existing.id then
+      raise exception 'That price link has already been used' using errcode = 'P0001';
+    end if;
+    v_label := 'Custom price';
+    v_price := v_custom.amount_cents;
+  else
+    select * into v_option from public.retreat_price_options
+     where id = p_price_option_id and event_id = p_event_id;
+    if not found then
+      raise exception 'Choose a price option' using errcode = 'P0001';
+    end if;
+    v_label := v_option.label;
+    v_price := v_option.amount_cents;
+  end if;
+  select amount_cents into v_true_cost from public.retreat_price_options
+   where event_id = p_event_id and is_true_cost;
+
+  if coalesce(p_donation_cents, 0) < 0 or coalesce(p_donation_cents, 0) > 10000000 then
+    raise exception 'The donation isn''t a valid amount' using errcode = 'P0001';
+  end if;
+  if coalesce(p_room_request, false) and v_reason is null then
+    raise exception 'Tell us why you need your own room' using errcode = 'P0001';
+  end if;
+
+  v_free := public.retreat_free_spots(p_event_id);
+  v_status := case
+    when v_free is not null and v_free <= 0 then 'waitlisted'
+    else 'pending_payment' end;
+
+  insert into public.retreat_registrations as rr (
+    event_id, user_id, status, price_option_id, custom_price_id, price_label, price_cents,
+    true_cost_cents, donation_cents, room_request, room_request_reason, room_request_status,
+    registered_at, joined_waitlist_at
+  ) values (
+    p_event_id, v_uid, v_status, v_option.id, v_custom.id, v_label, v_price,
+    v_true_cost, coalesce(p_donation_cents, 0), coalesce(p_room_request, false),
+    case when coalesce(p_room_request, false) then v_reason end,
+    case when coalesce(p_room_request, false) then 'pending' end,
+    now(), case when v_status = 'waitlisted' then now() end
+  )
+  on conflict (event_id, user_id) do update set
+    status = excluded.status, price_option_id = excluded.price_option_id,
+    custom_price_id = excluded.custom_price_id, price_label = excluded.price_label,
+    price_cents = excluded.price_cents, true_cost_cents = excluded.true_cost_cents,
+    donation_cents = excluded.donation_cents, room_request = excluded.room_request,
+    room_request_reason = excluded.room_request_reason,
+    room_request_status = excluded.room_request_status,
+    room_decided_by = null, room_decided_at = null,
+    registered_at = excluded.registered_at, joined_waitlist_at = excluded.joined_waitlist_at,
+    offered_at = null, offer_expires_at = null, offered_by = null, hold_expires_at = null,
+    confirmed_at = null, cancelled_at = null, cancelled_by = null, cancel_note = null,
+    precheck_opened_email_at = null, precheck_reminded_on = null,
+    precheck_due_tomorrow_email_at = null, precheck_overdue_email_at = null,
+    updated_at = now()
+  returning rr.id into v_id;
+
+  if v_custom.id is not null then
+    update public.retreat_custom_prices
+       set used_by_registration_id = v_id, used_at = coalesce(used_at, now())
+     where id = v_custom.id;
+  end if;
+
+  -- Nothing owed: the spot is theirs now.
+  if v_status = 'pending_payment' and v_price + coalesce(p_donation_cents, 0) = 0 then
+    if public.retreat_take_spot(v_id) then
+      v_status := 'confirmed';
+    else
+      update public.retreat_registrations
+         set status = 'waitlisted', joined_waitlist_at = now(), updated_at = now()
+       where id = v_id;
+      v_status := 'waitlisted';
+    end if;
+  end if;
+
+  return jsonb_build_object('status', v_status, 'registration_id', v_id);
+end $function$;
+
+-- Changes the caller's own answers: price option and donation while
+-- nothing is paid (pending, waitlisted, offered), the room request any
+-- time before the retreat (a changed request goes back to pending).
+create or replace function public.retreat_update_registration(
+  p_event_id bigint,
+  p_price_option_id bigint,
+  p_donation_cents integer,
+  p_room_request boolean,
+  p_room_reason text
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  r public.retreat_registrations%rowtype;
+  v_option public.retreat_price_options%rowtype;
+  v_reason text := nullif(btrim(coalesce(p_room_reason, '')), '');
+  v_room_changed boolean;
+  v_status text;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated' using errcode = '42501';
+  end if;
+  perform 1 from public.events where id = p_event_id for update;
+  select * into r from public.retreat_registrations
+   where event_id = p_event_id and user_id = v_uid for update;
+  if not found or r.status not in ('pending_payment', 'confirmed', 'waitlisted', 'offered') then
+    raise exception 'You''re not registered for this retreat' using errcode = 'P0001';
+  end if;
+  if coalesce(p_room_request, false) and v_reason is null then
+    raise exception 'Tell us why you need your own room' using errcode = 'P0001';
+  end if;
+  if coalesce(p_donation_cents, 0) < 0 or coalesce(p_donation_cents, 0) > 10000000 then
+    raise exception 'The donation isn''t a valid amount' using errcode = 'P0001';
+  end if;
+
+  if r.status <> 'confirmed' then
+    if r.custom_price_id is null then
+      select * into v_option from public.retreat_price_options
+       where id = p_price_option_id and event_id = p_event_id;
+      if not found then
+        raise exception 'Choose a price option' using errcode = 'P0001';
+      end if;
+      r.price_option_id := v_option.id;
+      r.price_label := v_option.label;
+      r.price_cents := v_option.amount_cents;
+    end if;
+    r.donation_cents := coalesce(p_donation_cents, 0);
+  end if;
+
+  v_room_changed := coalesce(p_room_request, false) <> r.room_request
+                    or (coalesce(p_room_request, false) and v_reason is distinct from r.room_request_reason);
+
+  update public.retreat_registrations
+     set price_option_id = r.price_option_id, price_label = r.price_label,
+         price_cents = r.price_cents, donation_cents = r.donation_cents,
+         room_request = coalesce(p_room_request, false),
+         room_request_reason = case when coalesce(p_room_request, false) then v_reason end,
+         room_request_status = case
+           when not coalesce(p_room_request, false) then null
+           when v_room_changed then 'pending'
+           else room_request_status end,
+         room_decided_by = case when v_room_changed then null else room_decided_by end,
+         room_decided_at = case when v_room_changed then null else room_decided_at end,
+         updated_at = now()
+   where id = r.id;
+
+  v_status := r.status;
+  -- Down to nothing owed with a spot to hand (or already offered one).
+  if r.status in ('pending_payment', 'offered') and r.price_cents + r.donation_cents = 0 then
+    if public.retreat_take_spot(r.id) then
+      v_status := 'confirmed';
+    end if;
+  end if;
+  return jsonb_build_object('status', v_status, 'registration_id', r.id);
+end $function$;
+
+-- Leaves the waitlist, declines an offer, or withdraws a registration that
+-- isn't paid for. (Cancelling a confirmed spot is a request to the team:
+-- part 3, with refunds.)
+create or replace function public.retreat_withdraw(p_event_id bigint)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  r public.retreat_registrations%rowtype;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated' using errcode = '42501';
+  end if;
+  perform 1 from public.events where id = p_event_id for update;
+  select * into r from public.retreat_registrations
+   where event_id = p_event_id and user_id = v_uid for update;
+  if not found or r.status not in ('pending_payment', 'waitlisted', 'offered') then
+    raise exception 'There''s nothing to withdraw' using errcode = 'P0001';
+  end if;
+  update public.retreat_registrations
+     set status = 'cancelled', cancelled_at = now(), cancelled_by = v_uid,
+         cancel_note = case r.status when 'offered' then 'Declined the offer'
+                                     when 'waitlisted' then 'Left the waitlist'
+                                     else 'Withdrew' end,
+         hold_expires_at = null, offer_expires_at = null, updated_at = now()
+   where id = r.id;
+  return r.status;
+end $function$;
+
+-- The caller's place on the waitlist (1-based), or null.
+create or replace function public.retreat_waitlist_position(p_event_id bigint)
+returns integer
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select pos::int from (
+    select r.user_id, row_number() over (order by r.joined_waitlist_at, r.id) as pos
+      from public.retreat_registrations r
+     where r.event_id = p_event_id and r.status = 'waitlisted'
+  ) q where q.user_id = auth.uid();
+$function$;
+
+-- What a custom price link offers, for the registration form (any signed-in
+-- person holding the link). Null when it's not valid for them.
+create or replace function public.retreat_custom_price_lookup(p_event_id bigint, p_token text)
+returns jsonb
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select jsonb_build_object('amount_cents', c.amount_cents)
+    from public.retreat_custom_prices c
+   where c.event_id = p_event_id and c.token = btrim(p_token)
+     and c.revoked_at is null
+     and auth.uid() is not null
+     and (c.used_by_registration_id is null
+          or exists (select 1 from public.retreat_registrations r
+                      where r.id = c.used_by_registration_id and r.user_id = auth.uid()));
+$function$;
+
+-- Starts a checkout (part 3 calls this): holds a spot for 30 minutes, or
+-- uses the open offer's. 'held', 'offer', or 'full' (they're moved to the
+-- waitlist).
+create or replace function public.retreat_start_checkout(p_event_id bigint)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  r public.retreat_registrations%rowtype;
+  v_free integer;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated' using errcode = '42501';
+  end if;
+  perform 1 from public.events where id = p_event_id for update;
+  select * into r from public.retreat_registrations
+   where event_id = p_event_id and user_id = v_uid for update;
+  if not found then
+    raise exception 'You''re not registered for this retreat' using errcode = 'P0001';
+  end if;
+  if r.status = 'offered' then
+    if r.offer_expires_at <= now() then
+      raise exception 'Your offer has expired' using errcode = 'P0001';
+    end if;
+    return 'offer';
+  end if;
+  if r.status <> 'pending_payment' then
+    raise exception 'There''s nothing to pay for right now' using errcode = 'P0001';
+  end if;
+  v_free := public.retreat_free_spots(p_event_id, r.id);
+  if v_free is not null and v_free <= 0 then
+    update public.retreat_registrations
+       set status = 'waitlisted', joined_waitlist_at = now(), hold_expires_at = null, updated_at = now()
+     where id = r.id;
+    return 'full';
+  end if;
+  update public.retreat_registrations
+     set hold_expires_at = now() + interval '30 minutes', updated_at = now()
+   where id = r.id;
+  return 'held';
+end $function$;
+
+-- ---- Admin actions (whoever manages the retreat) ------------------------------------------------
+create or replace function public.retreat_admin_offer(p_registration_id bigint)
+returns timestamptz
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  r public.retreat_registrations%rowtype;
+  v_free integer;
+  v_hours integer;
+  v_expires timestamptz;
+begin
+  select * into r from public.retreat_registrations where id = p_registration_id;
+  if not found or not public.can_manage_event(r.event_id) then
+    raise exception 'You don''t manage this retreat' using errcode = '42501';
+  end if;
+  perform 1 from public.events where id = r.event_id for update;
+  select * into r from public.retreat_registrations where id = p_registration_id for update;
+  if r.status not in ('waitlisted', 'expired') or r.user_id is null then
+    raise exception 'Only someone on the waitlist can be offered a spot' using errcode = 'P0001';
+  end if;
+  v_free := public.retreat_free_spots(r.event_id, r.id);
+  if v_free is not null and v_free <= 0 then
+    raise exception 'There''s no free spot to offer: every spot is confirmed, offered or in a checkout. Raise the capacity first, or wait for an offer to expire.' using errcode = 'P0001';
+  end if;
+  select offer_hours into v_hours from public.retreat_settings where id;
+  v_expires := now() + make_interval(hours => coalesce(v_hours, 72));
+  update public.retreat_registrations
+     set status = 'offered', offered_at = now(), offer_expires_at = v_expires,
+         offered_by = auth.uid(), updated_at = now()
+   where id = r.id;
+  return v_expires;
+end $function$;
+
+-- Back onto the waitlist: an expired or withdrawn offer, or a cancelled
+-- registration. Keeps their original place.
+create or replace function public.retreat_admin_return_to_waitlist(p_registration_id bigint)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  r public.retreat_registrations%rowtype;
+begin
+  select * into r from public.retreat_registrations where id = p_registration_id for update;
+  if not found or not public.can_manage_event(r.event_id) then
+    raise exception 'You don''t manage this retreat' using errcode = '42501';
+  end if;
+  if r.status not in ('offered', 'expired', 'cancelled') or r.user_id is null then
+    raise exception 'Only an offer, an expired offer or a cancelled registration can go back on the waitlist' using errcode = 'P0001';
+  end if;
+  update public.retreat_registrations
+     set status = 'waitlisted', joined_waitlist_at = coalesce(joined_waitlist_at, registered_at),
+         offer_expires_at = null, hold_expires_at = null,
+         cancelled_at = null, cancelled_by = null, cancel_note = null, updated_at = now()
+   where id = r.id;
+end $function$;
+
+create or replace function public.retreat_admin_cancel(p_registration_id bigint, p_note text)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  r public.retreat_registrations%rowtype;
+begin
+  select * into r from public.retreat_registrations where id = p_registration_id;
+  if not found or not public.can_manage_event(r.event_id) then
+    raise exception 'You don''t manage this retreat' using errcode = '42501';
+  end if;
+  perform 1 from public.events where id = r.event_id for update;
+  select * into r from public.retreat_registrations where id = p_registration_id for update;
+  if r.status not in ('pending_payment', 'confirmed', 'waitlisted', 'offered', 'expired') then
+    raise exception 'This registration is already cancelled' using errcode = 'P0001';
+  end if;
+  update public.retreat_registrations
+     set status = 'cancelled', cancelled_at = now(), cancelled_by = auth.uid(),
+         cancel_note = nullif(btrim(coalesce(p_note, '')), ''),
+         hold_expires_at = null, offer_expires_at = null, updated_at = now()
+   where id = r.id;
+  if r.status = 'confirmed' and r.user_id is not null then
+    perform public.retreat_release_spot(r.event_id, r.user_id);
+  end if;
+  return r.status;
+end $function$;
+
+create or replace function public.retreat_admin_set_room_status(p_registration_id bigint, p_status text)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  r public.retreat_registrations%rowtype;
+begin
+  select * into r from public.retreat_registrations where id = p_registration_id for update;
+  if not found or not public.can_manage_event(r.event_id) then
+    raise exception 'You don''t manage this retreat' using errcode = '42501';
+  end if;
+  if not r.room_request then
+    raise exception 'This person didn''t ask for their own room' using errcode = 'P0001';
+  end if;
+  if p_status not in ('pending', 'approved', 'declined') then
+    raise exception 'Unknown status' using errcode = '22023';
+  end if;
+  update public.retreat_registrations
+     set room_request_status = p_status,
+         room_decided_by = case when p_status = 'pending' then null else auth.uid() end,
+         room_decided_at = case when p_status = 'pending' then null else now() end,
+         updated_at = now()
+   where id = r.id;
+end $function$;
+
+create or replace function public.retreat_admin_create_custom_price(p_event_id bigint, p_amount_cents integer, p_note text)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_token text;
+begin
+  if not public.can_manage_event(p_event_id)
+     or not exists (select 1 from public.events where id = p_event_id and kind = 'retreat') then
+    raise exception 'You don''t manage this retreat' using errcode = '42501';
+  end if;
+  insert into public.retreat_custom_prices (event_id, amount_cents, note, created_by)
+  values (p_event_id, p_amount_cents, btrim(p_note), auth.uid())
+  returning token into v_token;
+  return v_token;
+end $function$;
+
+create or replace function public.retreat_admin_revoke_custom_price(p_id bigint)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_event bigint;
+begin
+  select event_id into v_event from public.retreat_custom_prices where id = p_id;
+  if v_event is null or not public.can_manage_event(v_event) then
+    raise exception 'You don''t manage this retreat' using errcode = '42501';
+  end if;
+  update public.retreat_custom_prices set revoked_at = coalesce(revoked_at, now()) where id = p_id;
+end $function$;
+
+-- Lapsed offers become 'expired' (the spot is free again). Run hourly by
+-- /api/cron/waitlist; returns what lapsed, for the emails.
+create or replace function public.retreat_expire_offers(p_now timestamptz default now())
+returns table (registration_id bigint, event_id bigint, user_id uuid)
+language sql
+security definer
+set search_path to 'public'
+as $function$
+  update public.retreat_registrations r
+     set status = 'expired', updated_at = now()
+   where r.status = 'offered' and r.offer_expires_at <= p_now
+  returning r.id, r.event_id, r.user_id;
+$function$;
+
+-- ---- 5. Pre-retreat check ---------------------------------------------------------------------
+-- Opens 21 days before the start, due 14 days before (local dates).
+create or replace function public.retreat_precheck_dates(p_event_id bigint)
+returns table (opens_on date, due_on date, opens_at timestamptz)
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select (e.starts_at at time zone e.timezone)::date - 21,
+         (e.starts_at at time zone e.timezone)::date - 14,
+         (((e.starts_at at time zone e.timezone)::date - 21)::timestamp at time zone e.timezone)
+    from public.events e where e.id = p_event_id and e.kind = 'retreat';
+$function$;
+
+-- 'done', 'needs_confirm' (a covering form, signed before the check
+-- opened, not confirmed since) or 'missing' (no form covers the retreat).
+create or replace function public.retreat_precheck_state(p_user_id uuid, p_event_id bigint)
+returns text
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+declare
+  v_form bigint;
+  v_signed timestamptz;
+  v_opens timestamptz;
+begin
+  v_form := public.health_history_covering(p_user_id, p_event_id);
+  if v_form is null then
+    return 'missing';
+  end if;
+  select signed_at into v_signed from public.health_histories where id = v_form;
+  select opens_at into v_opens from public.retreat_precheck_dates(p_event_id);
+  if v_signed >= v_opens or exists (
+    select 1 from public.retreat_health_confirmations c
+     where c.event_id = p_event_id and c.user_id = p_user_id and c.health_history_id = v_form
+  ) then
+    return 'done';
+  end if;
+  return 'needs_confirm';
+end $function$;
+
+-- The caller's own check: dates, state, and when their form was signed.
+create or replace function public.my_retreat_precheck(p_event_id bigint)
+returns jsonb
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+declare
+  d record;
+  v_form bigint;
+begin
+  if auth.uid() is null then
+    return null;
+  end if;
+  select * into d from public.retreat_precheck_dates(p_event_id);
+  if not found then
+    return null;
+  end if;
+  v_form := public.health_history_covering(auth.uid(), p_event_id);
+  return jsonb_build_object(
+    'opens_on', d.opens_on,
+    'due_on', d.due_on,
+    'state', public.retreat_precheck_state(auth.uid(), p_event_id),
+    'form_signed_at', (select signed_at from public.health_histories where id = v_form)
+  );
+end $function$;
+
+-- "Nothing has changed": confirms the form covering the retreat. Confirmed
+-- participants, once the check has opened.
+create or replace function public.retreat_confirm_health_form(p_event_id bigint)
+returns void
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+declare
+  v_uid uuid := auth.uid();
+  v_form bigint;
+  v_opens date;
+  v_zone text;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated' using errcode = '42501';
+  end if;
+  if not exists (
+    select 1 from public.retreat_registrations
+     where event_id = p_event_id and user_id = v_uid and status = 'confirmed'
+  ) then
+    raise exception 'You''re not confirmed for this retreat' using errcode = 'P0001';
+  end if;
+  select d.opens_on, e.timezone into v_opens, v_zone
+    from public.retreat_precheck_dates(p_event_id) d, public.events e where e.id = p_event_id;
+  if (now() at time zone v_zone)::date < v_opens then
+    raise exception 'The pre-retreat check isn''t open yet' using errcode = 'P0001';
+  end if;
+  v_form := public.health_history_covering(v_uid, p_event_id);
+  if v_form is null then
+    raise exception 'Your health form doesn''t cover this retreat: please fill in a new one' using errcode = 'P0001';
+  end if;
+  insert into public.retreat_health_confirmations (event_id, user_id, health_history_id)
+  values (p_event_id, v_uid, v_form)
+  on conflict (event_id, user_id) do update
+    set health_history_id = excluded.health_history_id, confirmed_at = now();
+end $function$;
+
+-- The roster's health columns for every registrant: no health content,
+-- only whether a form covers the retreat and where the check stands.
+create or replace function public.retreat_registration_health(p_event_id bigint)
+returns table (user_id uuid, has_form boolean, precheck text)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+#variable_conflict use_column
+begin
+  if not public.can_manage_event(p_event_id) then
+    raise exception 'You don''t manage this retreat' using errcode = '42501';
+  end if;
+  return query
+  select r.user_id,
+         public.health_history_covering(r.user_id, p_event_id) is not null,
+         public.retreat_precheck_state(r.user_id, p_event_id)
+    from public.retreat_registrations r
+   where r.event_id = p_event_id and r.user_id is not null
+     and r.status in ('pending_payment', 'confirmed', 'waitlisted', 'offered');
+end $function$;
+
+-- ---- 6. Registrants count as on the event for health history ------------------------------------
+create or replace function public.can_view_health_history(p_subject_user_id uuid, p_event_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select public.can_view_event_health_history(p_event_id)
+     and (
+       exists (
+         select 1 from public.rsvps r
+          where r.event_id = p_event_id
+            and r.user_id = p_subject_user_id
+            and r.status in ('confirmed', 'waitlisted', 'offered')
+       )
+       or exists (
+         select 1 from public.retreat_registrations rr
+          where rr.event_id = p_event_id
+            and rr.user_id = p_subject_user_id
+            and rr.status in ('pending_payment', 'confirmed', 'waitlisted', 'offered')
+       )
+       or exists (
+         select 1 from public.volunteer_signups s
+           join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+          where vo.event_id = p_event_id
+            and s.user_id = p_subject_user_id
+            and s.status = 'confirmed'
+       )
+     );
+$function$;
+
+create or replace function public.event_health_history_status(p_event_id bigint)
+returns table (user_id uuid, required boolean, has_current boolean, checkin_answered boolean)
+language plpgsql
+security definer
+set search_path to 'public'
+stable
+as $function$
+#variable_conflict use_column
+declare
+  v_required boolean;
+begin
+  if not public.can_manage_event(p_event_id) then
+    raise exception 'You don''t manage this event' using errcode = '42501';
+  end if;
+  select e.requires_health_history into v_required from public.events e where e.id = p_event_id;
+  return query
+  with people as (
+    select r.user_id
+      from public.rsvps r
+     where r.event_id = p_event_id and r.status in ('confirmed', 'waitlisted', 'offered')
+    union
+    select rr.user_id
+      from public.retreat_registrations rr
+     where rr.event_id = p_event_id and rr.user_id is not null
+       and rr.status in ('pending_payment', 'confirmed', 'waitlisted', 'offered')
+    union
+    select s.user_id
+      from public.volunteer_signups s
+      join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+     where vo.event_id = p_event_id and s.status = 'confirmed'
+  )
+  select p.user_id,
+         coalesce(v_required, false),
+         public.health_history_covering(p.user_id, p_event_id) is not null,
+         exists (select 1 from public.health_checkin_answers a
+                  where a.event_id = p_event_id and a.user_id = p.user_id)
+    from people p;
+end $function$;
+
+create or replace function public.event_health_markers(p_event_id bigint)
+returns table (user_id uuid, needs_review boolean, changed_at_checkin boolean)
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+#variable_conflict use_column
+begin
+  if not public.can_view_event_health_history(p_event_id) then
+    raise exception 'You can''t see health information for this event' using errcode = '42501';
+  end if;
+  insert into public.health_access_log (accessed_by, subject_user_id, event_id, action)
+  values (auth.uid(), null, p_event_id, 'roster_view');
+  return query
+  with people as (
+    select r.user_id from public.rsvps r
+     where r.event_id = p_event_id and r.status in ('confirmed', 'waitlisted', 'offered')
+    union
+    select rr.user_id from public.retreat_registrations rr
+     where rr.event_id = p_event_id and rr.user_id is not null
+       and rr.status in ('pending_payment', 'confirmed', 'waitlisted', 'offered')
+    union
+    select s.user_id from public.volunteer_signups s
+      join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+     where vo.event_id = p_event_id and s.status = 'confirmed'
+  )
+  select p.user_id,
+         coalesce((select h.needs_review from public.health_histories h
+                    where h.id = public.health_history_covering(p.user_id, p_event_id)), false),
+         coalesce((select a.something_changed from public.health_checkin_answers a
+                    where a.event_id = p_event_id and a.user_id = p.user_id
+                    order by a.recorded_at desc limit 1), false)
+    from people p;
+end $function$;
+
+-- ---- 7. Keep the RSVP and the registration in step -----------------------------------------------
+-- A retreat's confirmed RSVP removed (or moved off confirmed) other than by
+-- the functions above cancels the registration.
+create or replace function public.rsvps_retreat_sync()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if coalesce(current_setting('ftgf.retreat_registration', true), '') = 'on' then
+    return null;
+  end if;
+  if old.status = 'confirmed'
+     and (tg_op = 'DELETE' or new.status is distinct from 'confirmed')
+     and exists (select 1 from public.events e where e.id = old.event_id and e.kind = 'retreat') then
+    update public.retreat_registrations
+       set status = 'cancelled', cancelled_at = now(), cancelled_by = auth.uid(),
+           cancel_note = coalesce(cancel_note, 'Removed from the roster'), updated_at = now()
+     where event_id = old.event_id and user_id = old.user_id and status = 'confirmed';
+  end if;
+  return null;
+end $function$;
+
+drop trigger if exists rsvps_retreat_sync on public.rsvps;
+create trigger rsvps_retreat_sync
+  after delete or update of status on public.rsvps
+  for each row execute function public.rsvps_retreat_sync();
+
+revoke all on function public.rsvps_retreat_sync() from public, anon, authenticated;
+
+-- ---- Function grants ---------------------------------------------------------------------------
+revoke all on function public.retreat_free_spots(bigint, bigint) from public, anon, authenticated;
+grant execute on function public.retreat_free_spots(bigint, bigint) to service_role;
+revoke all on function public.retreat_spots_left(bigint) from public;
+grant execute on function public.retreat_spots_left(bigint) to anon, authenticated, service_role;
+revoke all on function public.retreat_take_spot(bigint, boolean) from public, anon, authenticated;
+grant execute on function public.retreat_take_spot(bigint, boolean) to service_role;
+revoke all on function public.retreat_release_spot(bigint, uuid) from public, anon, authenticated;
+grant execute on function public.retreat_release_spot(bigint, uuid) to service_role;
+revoke all on function public.retreat_registration_blocker(uuid, bigint) from public, anon, authenticated;
+grant execute on function public.retreat_registration_blocker(uuid, bigint) to service_role;
+revoke all on function public.retreat_expire_offers(timestamptz) from public, anon, authenticated;
+grant execute on function public.retreat_expire_offers(timestamptz) to service_role;
+revoke all on function public.retreat_precheck_state(uuid, bigint) from public, anon, authenticated;
+grant execute on function public.retreat_precheck_state(uuid, bigint) to service_role;
+
+do $$
+declare
+  f text;
+begin
+  foreach f in array array[
+    'retreat_register(bigint, bigint, text, integer, boolean, text)',
+    'retreat_update_registration(bigint, bigint, integer, boolean, text)',
+    'retreat_withdraw(bigint)',
+    'retreat_waitlist_position(bigint)',
+    'retreat_custom_price_lookup(bigint, text)',
+    'retreat_start_checkout(bigint)',
+    'retreat_admin_offer(bigint)',
+    'retreat_admin_return_to_waitlist(bigint)',
+    'retreat_admin_cancel(bigint, text)',
+    'retreat_admin_set_room_status(bigint, text)',
+    'retreat_admin_create_custom_price(bigint, integer, text)',
+    'retreat_admin_revoke_custom_price(bigint)',
+    'retreat_precheck_dates(bigint)',
+    'my_retreat_precheck(bigint)',
+    'retreat_confirm_health_form(bigint)',
+    'retreat_registration_health(bigint)'
+  ] loop
+    execute format('revoke all on function public.%s from public, anon', f);
+    execute format('grant execute on function public.%s to authenticated, service_role', f);
+  end loop;
+end $$;
+
+commit;
+
+-- ---- Check it (read-only) ---------------------------------------------------------------------
+-- Expect: retreat_registrations, retreat_custom_prices,
+-- retreat_health_confirmations with SELECT for authenticated only.
+--   select table_name, grantee, string_agg(privilege_type, ', ') from information_schema.role_table_grants
+--    where table_schema = 'public' and table_name like 'retreat\_%' and grantee in ('anon', 'authenticated')
+--    group by 1, 2 order by 1, 2;

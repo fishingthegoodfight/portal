@@ -680,7 +680,7 @@ export function RsvpForm({
 
 /** The core-profile fields still missing (never the ones on file), asked
  * once. Saved to the profile, so the next RSVP doesn't show this at all. */
-function YourDetails({
+export function YourDetails({
   missing,
   values,
   onChange,

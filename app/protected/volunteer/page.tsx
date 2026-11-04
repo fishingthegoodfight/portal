@@ -131,10 +131,10 @@ async function VolunteerHomeLoader({
   const outstanding: string[] = [];
   // Only for shifts at events that require one (the same rule as for
   // participants) — not for volunteering as such.
-  const healthNeeded = (await eventsNeedingHealthForm(supabase, userId)).filter((e) => !e.opensLater);
+  const healthNeeded = (await eventsNeedingHealthForm(supabase, userId)).filter((e) => !e.opensOn);
   if (healthNeeded.length > 0) {
     outstanding.push(
-      `${healthNeeded[0].year} health form — needed for ${healthNeeded.map((e) => e.name).join(", ")}`,
+      `Health form — needed for ${healthNeeded.map((e) => e.name).join(", ")}`,
     );
   }
   if (certNeeded && !hasCurrentCert) {

@@ -12,6 +12,7 @@ import type { ReminderKind } from "@/lib/email/templates";
 import { runOpportunitiesEmail, type OpportunitiesRunSummary } from "@/lib/volunteer-opportunities-email";
 import { runWalkupWelcomeEmails, type WalkupWelcomeRunSummary } from "@/lib/walkup-welcome";
 import { runMembersOutreachEmail, type MembersEmailRunSummary } from "@/lib/members-outreach-email";
+import { runRetreatPrecheckEmails, type PrecheckRunSummary } from "@/lib/retreat-precheck-emails";
 
 // The volunteer opportunities email runs here too and, on a send day, sends
 // one email per volunteer, spaced out — give it room. 300s is Vercel
@@ -33,6 +34,9 @@ const OPPORTUNITIES_MARGIN_MS = 30_000;
  *   - 1-day:  event starts 0–1 local days out, and hasn't started yet
  * sent_1week_at / sent_1day_at on rsvps guarantee a reminder never goes
  * twice: each send first claims its row with a conditional update.
+ * Retreats get no participant reminder from here (their volunteers still
+ * do): a retreat's participants get the pre-retreat check emails instead
+ * (lib/retreat-precheck-emails.ts), right after these.
  *
  * First, the welcome email for accounts created at a walk-up
  * (lib/walkup-welcome.ts): the morning after the event — 15:00 UTC is 9am
@@ -71,7 +75,7 @@ function localDayNumber(instant: Date, timeZone: string): number {
 }
 
 const EVENT_COLUMNS =
-  "id, name, starts_at, ends_at, timezone, location, lead_name, lead_phone, lead_email, custom_email_note, occurrence_note, virtual_link, virtual_access_notes, ics_sequence";
+  "id, kind, name, starts_at, ends_at, timezone, location, lead_name, lead_phone, lead_email, custom_email_note, occurrence_note, virtual_link, virtual_access_notes, ics_sequence";
 
 export async function GET(request: NextRequest) {
   const startedAt = Date.now();
@@ -132,7 +136,7 @@ export async function GET(request: NextRequest) {
     "1day": { sent: 0, skipped: 0, failed: 0 },
   };
 
-  for (const event of (events ?? []) as RsvpEmailEvent[]) {
+  for (const event of (events ?? []) as (RsvpEmailEvent & { kind: string })[]) {
     const daysOut =
       localDayNumber(new Date(event.starts_at), event.timezone) -
       localDayNumber(now, event.timezone);
@@ -145,73 +149,78 @@ export async function GET(request: NextRequest) {
       continue;
     }
 
-    const column = kind === "1week" ? "sent_1week_at" : "sent_1day_at";
-    const { data: rsvps, error: rsvpError } = await supabase
-      .from("rsvps")
-      .select(`id, user_id, ${column}`)
-      .eq("event_id", event.id)
-      .eq("status", "confirmed")
-      .is(column, null);
-    if (rsvpError) {
-      console.error(`[reminders] event ${event.id}: failed to load RSVPs:`, rsvpError.message);
-      continue;
-    }
-    if (!rsvps?.length) {
-      console.log(`[reminders] event ${event.id} (${kind}): nobody left to remind`);
-      continue;
-    }
-
-    const { data: profiles } = await supabase
-      .from("profiles")
-      .select("id, email")
-      .in("id", rsvps.map((r) => r.user_id as string));
-    const emailById = new Map(
-      (profiles ?? []).map((p) => [p.id as string, (p.email as string | null) ?? ""]),
-    );
-
-    for (const rsvp of rsvps) {
-      const rsvpId = rsvp.id as number | string;
-      const email = emailById.get(rsvp.user_id as string);
-      if (!email) {
-        totals[kind].skipped++;
-        console.warn(`[reminders] event ${event.id} rsvp ${rsvpId}: no email on profile — skipped`);
-        continue;
+    // Participant reminders. Leaving this block early (nobody left, or a
+    // retreat) still goes on to the volunteer shift reminders below.
+    participants: {
+      if (event.kind === "retreat") break participants;
+      const column = kind === "1week" ? "sent_1week_at" : "sent_1day_at";
+      const { data: rsvps, error: rsvpError } = await supabase
+        .from("rsvps")
+        .select(`id, user_id, ${column}`)
+        .eq("event_id", event.id)
+        .eq("status", "confirmed")
+        .is(column, null);
+      if (rsvpError) {
+        console.error(`[reminders] event ${event.id}: failed to load RSVPs:`, rsvpError.message);
+        break participants;
       }
-      if (dry) {
-        totals[kind].skipped++;
-        console.log(`[reminders] DRY event ${event.id} (${kind}): would send to ${email}`);
-        continue;
+      if (!rsvps?.length) {
+        console.log(`[reminders] event ${event.id} (${kind}): nobody left to remind`);
+        break participants;
       }
 
-      try {
-        // Claim first so an overlapping run can't double-send; undo on failure
-        // so the next run retries.
-        const { data: claimed, error: claimError } = await supabase
-          .from("rsvps")
-          .update({ [column]: new Date().toISOString() })
-          .eq("id", rsvpId)
-          .is(column, null)
-          .select("id");
-        if (claimError) throw claimError;
-        if (!claimed?.length) {
+      const { data: profiles } = await supabase
+        .from("profiles")
+        .select("id, email")
+        .in("id", rsvps.map((r) => r.user_id as string));
+      const emailById = new Map(
+        (profiles ?? []).map((p) => [p.id as string, (p.email as string | null) ?? ""]),
+      );
+
+      for (const rsvp of rsvps) {
+        const rsvpId = rsvp.id as number | string;
+        const email = emailById.get(rsvp.user_id as string);
+        if (!email) {
           totals[kind].skipped++;
+          console.warn(`[reminders] event ${event.id} rsvp ${rsvpId}: no email on profile — skipped`);
+          continue;
+        }
+        if (dry) {
+          totals[kind].skipped++;
+          console.log(`[reminders] DRY event ${event.id} (${kind}): would send to ${email}`);
           continue;
         }
 
         try {
-          await sendReminderEmail({ event, toEmail: email, kind });
-        } catch (sendErr) {
-          await supabase.from("rsvps").update({ [column]: null }).eq("id", rsvpId);
-          throw sendErr;
+          // Claim first so an overlapping run can't double-send; undo on failure
+          // so the next run retries.
+          const { data: claimed, error: claimError } = await supabase
+            .from("rsvps")
+            .update({ [column]: new Date().toISOString() })
+            .eq("id", rsvpId)
+            .is(column, null)
+            .select("id");
+          if (claimError) throw claimError;
+          if (!claimed?.length) {
+            totals[kind].skipped++;
+            continue;
+          }
+
+          try {
+            await sendReminderEmail({ event, toEmail: email, kind });
+          } catch (sendErr) {
+            await supabase.from("rsvps").update({ [column]: null }).eq("id", rsvpId);
+            throw sendErr;
+          }
+          totals[kind].sent++;
+          console.log(`[reminders] event ${event.id} (${kind}): sent to ${email}`);
+        } catch (err) {
+          totals[kind].failed++;
+          console.error(
+            `[reminders] event ${event.id} (${kind}) rsvp ${rsvpId} failed:`,
+            err instanceof Error ? err.message : err,
+          );
         }
-        totals[kind].sent++;
-        console.log(`[reminders] event ${event.id} (${kind}): sent to ${email}`);
-      } catch (err) {
-        totals[kind].failed++;
-        console.error(
-          `[reminders] event ${event.id} (${kind}) rsvp ${rsvpId} failed:`,
-          err instanceof Error ? err.message : err,
-        );
       }
     }
 
@@ -323,6 +332,16 @@ export async function GET(request: NextRequest) {
 
   console.log("[reminders] done", { now: now.toISOString(), dry, totals, volunteerTotals });
 
+  let retreatPrecheck: PrecheckRunSummary | { error: string };
+  try {
+    retreatPrecheck = await runRetreatPrecheckEmails(supabase, { now, dry });
+    for (const failure of retreatPrecheck.failed) console.error("[retreat-precheck]", failure);
+    console.log("[retreat-precheck] done", retreatPrecheck);
+  } catch (err) {
+    console.error("[retreat-precheck] failed:", err);
+    retreatPrecheck = { error: err instanceof Error ? err.message : String(err) };
+  }
+
   // A handful of emails, so before the opportunities email, which can run
   // up to the time limit.
   let membersOutreach: MembersEmailRunSummary | { error: string };
@@ -367,6 +386,7 @@ export async function GET(request: NextRequest) {
     walkupWelcome,
     totals,
     volunteerTotals,
+    retreatPrecheck,
     membersOutreach,
     opportunities,
   });

@@ -2,8 +2,6 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
-import { healthFormYearFor } from "@/lib/health-requirements";
-import { loadChapters } from "@/lib/chapters";
 import { HealthHistoryForm } from "@/components/health-history-form";
 import { formatPhoneNumber } from "@/lib/phone";
 import { safeNext } from "@/lib/safe-next";
@@ -16,18 +14,17 @@ async function NewHealthFormLoader({ searchParams }: { searchParams: Promise<{ n
   const userId = data.claims.sub as string;
 
   // Only the profile's emergency contacts are pre-filled (they're the live,
-  // roster-visible ones). Nothing from an earlier year's form is.
+  // roster-visible ones). Nothing from an earlier form is.
   const { data: profile } = await supabase
     .from("profiles")
     .select(
-      "chapter, emergency_contact, emergency_phone, emergency_contact_relationship, emergency_contact_2, emergency_phone_2, emergency_contact_2_relationship",
+      "emergency_contact, emergency_phone, emergency_contact_relationship, emergency_contact_2, emergency_phone_2, emergency_contact_2_relationship",
     )
     .eq("id", userId)
     .maybeSingle();
 
   return (
     <HealthHistoryForm
-      year={healthFormYearFor(profile?.chapter as string | null | undefined, await loadChapters(supabase))}
       returnTo={safeNext(next) ?? "/protected/profile/medical"}
       contacts={{
         emergencyContactName: profile?.emergency_contact ?? "",

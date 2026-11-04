@@ -28,6 +28,7 @@ import {
   RetreatSessionsPanel,
 } from "@/components/admin/retreat-forms";
 import { RegionTag } from "@/components/region-tag";
+import { RetreatAdminNav } from "@/components/admin/retreat-admin-nav";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -102,19 +103,22 @@ async function RetreatSetupLoader({ params }: { params: Promise<{ id: string }> 
           <RegionTag region={regionName(r.region_id, regions)} />
           <span>{formatEventDateRange(r.starts_at, r.ends_at, r.timezone)}</span>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button asChild variant="outline" size="sm">
-            <Link href={`/protected/admin/events/${r.id}`}>Roster</Link>
-          </Button>
-          <Button asChild variant="outline" size="sm">
-            <Link href={`/protected/retreats/${r.id}`}>As participants see it</Link>
-          </Button>
-          {r.is_published && (
-            <Button asChild variant="outline" size="sm">
-              <Link href={publicEventPath(r.slug)}>Public page</Link>
-            </Button>
-          )}
-        </div>
+        <RetreatAdminNav
+          eventId={r.id}
+          current="setup"
+          extra={
+            <>
+              <Button asChild variant="outline" size="sm">
+                <Link href={`/protected/retreats/${r.id}`}>As participants see it</Link>
+              </Button>
+              {r.is_published && (
+                <Button asChild variant="outline" size="sm">
+                  <Link href={publicEventPath(r.slug)}>Public page</Link>
+                </Button>
+              )}
+            </>
+          }
+        />
       </div>
 
       <Section
@@ -130,8 +134,15 @@ async function RetreatSetupLoader({ params }: { params: Promise<{ id: string }> 
             <p className="text-sm text-amber-700 dark:text-amber-400">Still to add: {missing.join(", ")}.</p>
           )}
           <p className="text-sm text-muted-foreground">
-            Registration opens with the next part of this build. Until then a published retreat shows &ldquo;Registration
-            opens soon.&rdquo;
+            {r.is_published
+              ? prices.length > 0
+                ? "Registration is open: people register from the public page. "
+                : "Registration opens once it has price options. "
+              : "Once it's published and has price options, people can register from the public page. "}
+            <Link href={`/protected/admin/retreats/${r.id}/registrations`} className="underline underline-offset-4">
+              See registrations
+            </Link>
+            .
           </p>
           <RetreatPublishToggle eventId={r.id} published={r.is_published} />
         </div>

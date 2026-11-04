@@ -4,19 +4,10 @@ import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
 import { loadMyHealthHistoryList } from "@/lib/health-access";
-import { eventsNeedingHealthForm, healthFormYearFor } from "@/lib/health-requirements";
-import { loadChapters } from "@/lib/chapters";
+import { eventsNeedingHealthForm, formatHealthDate, healthFormCoversUntil } from "@/lib/health-requirements";
 import { HEALTH_FORM_INTRO } from "@/lib/health-history";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-
-const signedDate = (iso: string) =>
-  new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "America/Denver",
-  }).format(new Date(iso));
 
 async function MedicalLoader() {
   const supabase = await createClient();
@@ -24,34 +15,37 @@ async function MedicalLoader() {
   if (error || !data?.claims) redirect("/auth/login");
   const userId = data.claims.sub as string;
 
-  const [{ data: profile }, submissions, needed, chapters] = await Promise.all([
-    supabase.from("profiles").select("chapter").eq("id", userId).maybeSingle(),
+  const [submissions, needed] = await Promise.all([
     loadMyHealthHistoryList(supabase),
     eventsNeedingHealthForm(supabase, userId),
-    loadChapters(supabase),
   ]);
-  const year = healthFormYearFor(profile?.chapter as string | null | undefined, chapters);
-  const current = submissions.find((s) => s.year === year);
-  const neededNow = needed.filter((e) => !e.opensLater);
-  const neededLater = needed.filter((e) => e.opensLater);
+  // The newest submission is the one that counts (a correction is a new one).
+  const latest = submissions[0] ?? null;
+  // eslint-disable-next-line react-hooks/purity -- Server Component: renders once per request.
+  const now = Date.now();
+  const coversUntil = latest ? healthFormCoversUntil(latest.signedAt) : null;
+  const current = latest && coversUntil && coversUntil.getTime() > now ? latest : null;
+  const neededNow = needed.filter((e) => !e.opensOn);
+  const neededLater = needed.filter((e) => e.opensOn);
 
   return (
     <div className="flex flex-col gap-6">
       <Card>
         <CardHeader>
-          <CardTitle>{year} health form</CardTitle>
+          <CardTitle>Your health form</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3 text-sm">
-          {current ? (
+          {current && coversUntil ? (
             <p>
-              Submitted {signedDate(current.signedAt)}. It covers your events through December 31,{" "}
-              {year}. Spotted a mistake? Submit a corrected one — the newest counts.
+              Submitted {formatHealthDate(current.signedAt)}. It covers events starting before{" "}
+              {formatHealthDate(coversUntil)}. Spotted a mistake, or something changed? Submit a new one: the
+              newest counts.
             </p>
           ) : (
             <p>
-              You haven&apos;t completed your {year} health form yet. It&apos;s needed once a year for
-              retreats and other events that ask for it — whether you&apos;re attending or
-              volunteering.
+              {latest ? "Your last health form has run out. " : "You don't have a health form on file yet. "}
+              One is needed for retreats and other events that ask for it, whether you&apos;re attending or
+              volunteering. Each one covers events starting in the 12 months after you sign it.
             </p>
           )}
           {neededNow.length > 0 && (
@@ -60,17 +54,15 @@ async function MedicalLoader() {
               {neededNow.map((e) => `${e.name} (${e.dateRange})`).join("; ")}
             </div>
           )}
-          {neededLater.length > 0 && (
-            <p className="text-muted-foreground">
-              {neededLater.map((e) => e.name).join(", ")} {neededLater.length === 1 ? "is" : "are"} in{" "}
-              {neededLater[0].year}, so {neededLater.length === 1 ? "it needs" : "they need"} a{" "}
-              {neededLater[0].year} form — that opens on January 1.
+          {neededLater.map((e) => (
+            <p key={e.eventId} className="text-muted-foreground">
+              {e.name} is more than 12 months away, so its form can be filled in from {e.opensOn}.
             </p>
-          )}
+          ))}
           <div>
             <Button asChild variant={current ? "outline" : "default"}>
               <Link href="/protected/profile/medical/new">
-                {current ? `Submit a corrected ${year} form` : `Complete your ${year} health form`}
+                {current ? "Submit a new health form" : "Complete your health form"}
               </Link>
             </Button>
           </div>
@@ -89,7 +81,7 @@ async function MedicalLoader() {
               {submissions.map((s) => (
                 <li key={s.id} className="flex items-center justify-between gap-2 border-b py-1.5 last:border-b-0">
                   <span>
-                    {s.year} form · signed {signedDate(s.signedAt)}
+                    Signed {formatHealthDate(s.signedAt)}
                     {s.id === current?.id && <span className="text-muted-foreground"> (current)</span>}
                   </span>
                   <Link href={`/protected/profile/medical/${s.id}`} className="underline underline-offset-4">
@@ -100,8 +92,7 @@ async function MedicalLoader() {
             </ul>
           )}
           <p className="text-xs text-muted-foreground">
-            Each year&apos;s form starts blank — you can look at last year&apos;s, but this year&apos;s is
-            filled in fresh.
+            Each new form starts blank. You can look at an earlier one, but a new one is filled in fresh.
           </p>
         </CardContent>
       </Card>

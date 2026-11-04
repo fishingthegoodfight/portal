@@ -3,6 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { isCronAuthorized } from "@/lib/cron-auth";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { emailLapsedOffers, emailWaitlistOffers, type OfferedSpot } from "@/lib/waitlist";
+import { emailOfferExpired } from "@/lib/retreat-emails";
 
 /**
  * Hourly waitlist upkeep, called by pg_cron/pg_net (see the 2026-09-21 entry
@@ -13,6 +14,9 @@ import { emailLapsedOffers, emailWaitlistOffers, type OfferedSpot } from "@/lib/
  * Steps 1–2 happen inside one database function (process_waitlist_expiry) that
  * locks each event, so overlapping or repeated runs are safe: a second run
  * finds nothing lapsed and nothing free, changes nothing, and sends nothing.
+ *   4. retreats: lapsed spot offers become 'expired' (retreat_expire_offers),
+ *      and the person, the admins and the retreat lead are emailed. Nothing
+ *      is offered on: an admin chooses who gets the spot next.
  *
  * Dev only (`next dev`; the secret is skipped there too): ?now=<ISO time>
  * pretends it's that moment, e.g.
@@ -68,12 +72,29 @@ export async function GET(request: NextRequest) {
     offerEmails += await emailWaitlistOffers(eventId, offers);
   }
 
+  // Retreat offers. A failure here doesn't undo the steps above.
+  let retreatExpired = 0;
+  const { data: lapsedRetreat, error: retreatError } = await admin.rpc(
+    "retreat_expire_offers",
+    nowParam ? { p_now: now.toISOString() } : {},
+  );
+  if (retreatError) {
+    console.error("[waitlist-cron] retreat_expire_offers failed:", retreatError.message);
+  } else {
+    for (const r of (lapsedRetreat ?? []) as { event_id: number; user_id: string | null }[]) {
+      await emailOfferExpired(r.event_id, r.user_id);
+      retreatExpired += 1;
+    }
+  }
+
   const summary = {
     now: now.toISOString(),
     expired: result.expired.length,
     offered: result.offered.length,
     lapseEmailsSent: lapseEmails,
     offerEmailsSent: offerEmails,
+    retreatOffersExpired: retreatExpired,
+    ...(retreatError ? { retreatError: retreatError.message } : {}),
   };
   console.log("[waitlist-cron] done", summary);
   return NextResponse.json({ ok: true, ...summary });

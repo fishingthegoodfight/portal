@@ -7,6 +7,7 @@ import { loadEventRoster } from "@/lib/admin/roster";
 import { countSignupsCancelledWithEvent } from "@/lib/admin/event-roles";
 import { formatDateInZone, formatEventDateRange } from "@/lib/format-date";
 import { EventRoster } from "@/components/admin/event-roster";
+import { RetreatAdminNav } from "@/components/admin/retreat-admin-nav";
 import { DeleteEventSection } from "@/components/admin/delete-event-section";
 import { eventsWithRegistrations } from "@/lib/admin/event-delete";
 import { publicEventPath } from "@/lib/event-slug";
@@ -61,7 +62,7 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
   // The assigned lead is read by id with the service role — the layout has
   // already checked can_manage_event, and a chapter or event lead can't
   // otherwise read the profile of someone who isn't on the roster.
-  const [{ data: canCancel }, leadAccount, { data: autoAssigned }] = await Promise.all([
+  const [{ data: canCancel }, leadAccount, { data: autoAssigned }, { data: kindRow }] = await Promise.all([
     supabase.rpc("can_manage_chapter", { p_chapter: event.chapter }),
     loadLeadAccount(event.lead_user_id).catch(() => null),
     // Whether the current lead got here through assign_lead_events (their
@@ -72,6 +73,7 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
       .eq("event_id", eventId)
       .order("assigned_at", { ascending: false })
       .limit(1),
+    supabase.from("events").select("kind").eq("id", eventId).maybeSingle(),
   ]);
   const autoAssignment = (autoAssigned ?? []).find((a) => a.user_id === event.lead_user_id);
   const offeredCount = waitlist.filter((w) => w.status === "offered").length;
@@ -83,6 +85,11 @@ async function AdminEventLoader({ params }: { params: Promise<{ id: string }> })
 
   return (
     <>
+      {kindRow?.kind === "retreat" && (
+        <div className="mb-4">
+          <RetreatAdminNav eventId={event.id} current="roster" />
+        </div>
+      )}
       <EventRoster
         eventId={event.id}
         eventCard={{
