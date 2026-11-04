@@ -17,6 +17,7 @@ async function AdminGate({ children }: { children: React.ReactNode }) {
   const therapy = access.isAdmin && (await canManageTherapySupport(supabase));
   const items: AdminNavItem[] = [
     { href: "/protected/admin", label: "Events", also: ["/protected/admin/events"] },
+    ...(access.isAdmin ? [{ href: "/protected/admin/retreats", label: "Retreats" }] : []),
     ...(leads ? [{ href: "/protected/admin/applications", label: "Applications" }] : []),
     ...(access.isAdmin
       ? [

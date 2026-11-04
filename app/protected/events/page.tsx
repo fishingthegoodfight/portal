@@ -13,7 +13,7 @@ import {
   chapterFilterOptions,
   chapterSelectionLabel,
   chapterSelectionParam,
-  loadChapters,
+  loadRegionsAndChapters,
   matchesChapterSelection,
   memberDefaultChapterSelection,
   parseChapterSelection,
@@ -26,6 +26,7 @@ import { loadManagedEventIds } from "@/lib/admin/require-admin";
 import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
 import { eventsNeedingHealthForm } from "@/lib/health-requirements";
 import { HealthFormPrompt } from "@/components/health-form-prompt";
+import { eventFilterChapters, regionName } from "@/lib/retreats";
 
 /** Upcoming events of theirs that need a health form they don't have yet —
  * where an RSVP lands them, so the prompt follows straight on from it. */
@@ -127,9 +128,9 @@ async function EventsListLoader({
 
   const userId = data.claims.sub as string;
 
-  const [{ data: profile }, chapters] = await Promise.all([
+  const [{ data: profile }, { regions, chapters }] = await Promise.all([
     supabase.from("profiles").select("chapter").eq("id", userId).maybeSingle(),
-    loadChapters(supabase),
+    loadRegionsAndChapters(supabase),
   ]);
   const filterOptions = chapterFilterOptions(chapters);
   // "Manage" shows on exactly the events this person can manage
@@ -148,7 +149,7 @@ async function EventsListLoader({
   const { data: events, error: eventsError } = await supabase
     .from("events")
     .select(
-      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, occurrence_note, capacity, spots_taken",
+      "id, name, chapter, kind, region_id, event_type, starts_at, ends_at, timezone, location, description, occurrence_note, capacity, spots_taken",
     )
     .eq("is_published", true)
     .eq("status", "scheduled")
@@ -163,7 +164,12 @@ async function EventsListLoader({
     return <p className="text-sm text-muted-foreground">No upcoming events right now — check back soon.</p>;
   }
 
-  const chapterEvents = events.filter((event) => matchesChapterSelection(selection, event.chapter, filterOptions));
+  const chapterEvents = events.filter((event) =>
+    // A retreat shows under every chapter in its region.
+    matchesChapterSelection(selection, eventFilterChapters(event, chapters), filterOptions),
+  );
+  const retreatRegion = (event: (typeof events)[number]) =>
+    event.kind === "retreat" ? { region: regionName(event.region_id, regions) } : undefined;
 
   // Approved, registered volunteers only: events with an open shift in a
   // role they're approved for — the "Needs volunteers" badge and filter.
@@ -231,8 +237,8 @@ async function EventsListLoader({
             return {
               id: event.id,
               name: event.name,
-              href: `/protected/events/${event.id}/rsvp`,
-              chapter: event.chapter,
+              href: event.kind === "retreat" ? `/protected/retreats/${event.id}` : `/protected/events/${event.id}/rsvp`,
+              chapter: event.kind === "retreat" ? `${regionName(event.region_id, regions) ?? "Region"} retreat` : event.chapter,
               starts_at: event.starts_at,
               ends_at: event.ends_at,
               timezone: event.timezone,
@@ -277,6 +283,7 @@ async function EventsListLoader({
                       id: event.id,
                       name: event.name,
                       chapter: event.chapter,
+                      retreat: retreatRegion(event),
                       location: event.location,
                       description: event.description,
                       occurrenceNote: event.occurrence_note,
@@ -288,12 +295,17 @@ async function EventsListLoader({
                     rsvpStatus={rsvpStatus}
                     action={
                       <div className="flex gap-2">
+                        {event.kind === "retreat" ? (
+                          <Button asChild variant={managedEventIds.has(event.id) ? "outline" : "default"}>
+                            <Link href={`/protected/retreats/${event.id}`}>View retreat</Link>
+                          </Button>
+                        ) : null}
                         {managedEventIds.has(event.id) && (
                           <Button asChild variant="outline">
                             <Link href={`/protected/admin/events/${event.id}`}>Manage</Link>
                           </Button>
                         )}
-                        {rsvpStatus === "offered" ? (
+                        {event.kind === "retreat" ? null : rsvpStatus === "offered" ? (
                           <Button asChild>
                             <Link href={`/protected/events/${event.id}/rsvp`}>Claim your spot</Link>
                           </Button>

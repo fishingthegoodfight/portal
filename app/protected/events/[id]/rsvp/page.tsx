@@ -47,7 +47,7 @@ async function RsvpLoader({
   const { data: event } = await supabase
     .from("events")
     .select(
-      "id, name, chapter, event_type, starts_at, ends_at, timezone, location, description, occurrence_note, capacity, spots_taken, is_published, registration_sections, status, cancellation_reason, waiver_state, virtual_link, virtual_access_notes",
+      "id, name, chapter, kind, event_type, starts_at, ends_at, timezone, location, description, occurrence_note, capacity, spots_taken, is_published, registration_sections, status, cancellation_reason, waiver_state, virtual_link, virtual_access_notes",
     )
     .eq("id", eventId)
     .maybeSingle();
@@ -55,6 +55,8 @@ async function RsvpLoader({
   if (!event || !event.is_published) {
     notFound();
   }
+  // Retreats are registered for from their own page, not by RSVP.
+  if (event.kind === "retreat") redirect(`/protected/retreats/${eventId}`);
 
   // A cancelled event may still be reached via an old link (e.g. the "View
   // event" button in a confirmation email sent before it was cancelled) —

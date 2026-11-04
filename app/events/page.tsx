@@ -4,14 +4,15 @@ import { connection } from "next/server";
 import { Suspense } from "react";
 
 import { ChapterTag } from "@/components/chapter-tag";
+import { RegionTag } from "@/components/region-tag";
 import { calendarMonth, calendarRange, EventCalendar, EventsViewToggle } from "@/components/event-calendar";
 import { Card, CardContent } from "@/components/ui/card";
 import { EVENTS_PAGE_SIZE, groupByMonth, MonthHeading, ShowMoreEvents, showLimit } from "@/components/event-months";
-import { isVirtualChapter, loadChapters } from "@/lib/chapters";
+import { isVirtualChapter } from "@/lib/chapters";
 import { publicEventPath } from "@/lib/event-slug";
 import { formatEventDateRange, todayInZone } from "@/lib/format-date";
-import { loadUpcomingPublicEvents, publicLocationSummary } from "@/lib/public-events";
-import { createAdminClient } from "@/lib/supabase/admin";
+import { loadPublicRegionsAndChapters, loadUpcomingPublicEvents, publicLocationSummary } from "@/lib/public-events";
+import { eventFilterChapters, regionName } from "@/lib/retreats";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = {
@@ -45,9 +46,12 @@ async function EventList({ searchParams }: { searchParams: Promise<EventsSearchP
     return <p className="text-sm text-red-500">Couldn&apos;t load events. Please try again in a moment.</p>;
   }
 
-  const chapters = [...new Set(events.map((e) => (e.chapter ? pillLabel(e.chapter) : null)).filter(Boolean))] as string[];
+  // A retreat shows under every chapter in its region.
+  const places = await loadPublicRegionsAndChapters();
+  const pillsOf = (e: (typeof events)[number]) => eventFilterChapters(e, places.chapters).map(pillLabel);
+  const chapters = [...new Set(events.filter((e) => e.kind !== "retreat").flatMap(pillsOf))];
   const selected = chapter && chapters.includes(chapter) ? chapter : null;
-  const matching = selected ? events.filter((e) => e.chapter && pillLabel(e.chapter) === selected) : events;
+  const matching = selected ? events.filter((e) => pillsOf(e).includes(selected)) : events;
   const limit = showLimit(show);
   const shown = matching.slice(0, limit);
 
@@ -98,8 +102,12 @@ async function EventList({ searchParams }: { searchParams: Promise<EventsSearchP
                               {formatEventDateRange(event.starts_at, event.ends_at, event.timezone)}
                             </span>
                             <span className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                              {event.chapter && <ChapterTag chapter={event.chapter} />}
-                              {where}
+                              {event.kind === "retreat" ? (
+                                <RegionTag region={regionName(event.region_id, places.regions)} />
+                              ) : (
+                                event.chapter && <ChapterTag chapter={event.chapter} />
+                              )}
+                              {event.kind !== "retreat" && where}
                             </span>
                           </CardContent>
                         </Card>
@@ -117,17 +125,6 @@ async function EventList({ searchParams }: { searchParams: Promise<EventsSearchP
   );
 }
 
-/** Chapter names in display order, for the calendar's colors. Chapters
- * aren't readable by anon, and their names are public anyway (every event
- * shows one), so read them with the service role. Without them the colors
- * still work, just picked from each name. */
-async function chapterOrder(): Promise<string[]> {
-  try {
-    return (await loadChapters(createAdminClient())).map((c) => c.name);
-  } catch {
-    return [];
-  }
-}
 
 async function PublicCalendar({
   events,
@@ -140,13 +137,15 @@ async function PublicCalendar({
 }) {
   const today = todayInZone("America/Denver");
   const range = calendarRange(events, today);
+  // Chapter names in display order, for the calendar's colors.
+  const { regions, chapters } = await loadPublicRegionsAndChapters();
   return (
     <EventCalendar
       events={events.map((e) => ({
         id: e.id,
         name: e.name,
         href: publicEventPath(e.slug),
-        chapter: e.chapter,
+        chapter: e.kind === "retreat" ? `${regionName(e.region_id, regions) ?? "Region"} retreat` : e.chapter,
         starts_at: e.starts_at,
         ends_at: e.ends_at,
         timezone: e.timezone,
@@ -154,7 +153,7 @@ async function PublicCalendar({
       month={calendarMonth(monthParam, range.firstMonth, range.lastMonth)}
       today={today}
       {...range}
-      chapterOrder={await chapterOrder()}
+      chapterOrder={chapters.map((c) => c.name)}
       monthHref={(month) => eventsHref(chapter, { calendar: true, month })}
     />
   );

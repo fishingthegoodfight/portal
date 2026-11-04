@@ -168,7 +168,8 @@ async function loadEventsByRegion(now: Date, days: number) {
   const order = [...regions.map((r) => r.name), ONLINE, OTHER];
   const grouped = new Map<string, BulletinEvent[]>();
   for (const event of events) {
-    const region = regionOf(event.chapter);
+    // A retreat belongs to its region directly.
+    const region = event.kind === "retreat" ? (regionById.get(event.region_id ?? -1) ?? OTHER) : regionOf(event.chapter);
     grouped.set(region, [...(grouped.get(region) ?? []), toBulletinEvent(event, needs.get(event.id) ?? [])]);
   }
   const regionNames = regions

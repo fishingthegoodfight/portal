@@ -68,6 +68,7 @@ async function HeaderContent() {
   ]);
   const items: NavItem[] = [
     { href: "/protected/events", label: "Events" },
+    { href: "/retreats", label: "Retreats" },
     { href: "/protected/profile", label: "Profile" },
     { href: "/protected/support", label: "Support" },
     ...(volunteer ? [{ href: "/protected/volunteer", label: "Volunteer" }] : []),

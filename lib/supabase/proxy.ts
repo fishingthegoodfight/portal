@@ -89,6 +89,9 @@ export async function updateSession(request: NextRequest) {
     !request.nextUrl.pathname.startsWith("/events/") &&
     // …and the public list of upcoming ones (app/events/page.tsx).
     request.nextUrl.pathname !== "/events" &&
+    // …and the public list of retreats (app/retreats/page.tsx), same anon
+    // reads.
+    request.nextUrl.pathname !== "/retreats" &&
     // The printable weekly bulletin and the public volunteer page its QR
     // code opens: published events and open volunteer roles only (see
     // lib/bulletin.ts).

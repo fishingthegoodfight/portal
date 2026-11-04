@@ -17822,3 +17822,370 @@ commit;
 --   select grantee, table_name, privilege_type from information_schema.role_table_grants
 --    where table_schema = 'public' and table_name like 'therapy\_%'
 --      and grantee in ('anon', 'authenticated', 'service_role');
+
+
+-- =============================================================================
+-- 2026-11-04 — Retreats, part 1: retreat structure
+-- =============================================================================
+-- Retreats replace RegFox for 2027. A retreat is an event (one row in
+-- `events`, so the slug and public page, publishing, cancelling, the lead,
+-- the roster, check-in, waivers and health history all carry over) with:
+--
+-- 1. events.kind = 'retreat' and events.region_id (required), with chapter
+--    left empty: a retreat belongs to a region, not a chapter. Because the
+--    manage rule is "admin, a chapter lead of the event's chapter, or its
+--    own lead_user_id", an empty chapter means exactly admins plus the
+--    retreat's own lead. Chapter leads get nothing by default.
+--    Also on events, for retreats: deposit_cents, balance_due_date (null =
+--    60 days before the start: retreat_balance_due_date()) and
+--    refund_policy.
+--    events_retreat_guard: only an admin can make an event a retreat, change
+--    its region, or change a retreat's lead (a retreat lead can't hand the
+--    retreat to someone else). kind and region_id are granted to anon, for
+--    the public pages.
+--    A retreat uses the new (inactive, so not in the regular create form)
+--    event type 'retreat', with health history required.
+--
+-- 2. Private details, in their own tables. Every signed-in person can read
+--    every column of a published event, so nothing private can live on
+--    `events`. The tables below are readable only by:
+--      - managers (admins and the retreat's lead): everything;
+--      - confirmed participants (a confirmed RSVP);
+--      - volunteers (a confirmed shift at the retreat);
+--      - the leadership team: the retreat lead, and volunteers whose shift
+--        is in a role marked retreat_leadership (Retreat Lead, Logistics
+--        Coordinator, Lead Fly Fishing Instructor, Retreat Therapist).
+--    retreat_viewer_audiences(event) says which of 'participants',
+--    'volunteers', 'leadership' the caller is, in ONE place; the policies
+--    use it.
+--      retreat_details: lodging (name, address), fishing location (name,
+--        and an address or coordinates), the shared photos link. Readable by
+--        anyone in any audience.
+--      retreat_sessions: virtual sessions (title, start, optional end,
+--        meeting link, audience). A row is readable only by its audience
+--        (and managers). 'leadership' sessions are a subset of volunteers.
+--    Writes: managers only.
+--
+-- 3. retreat_price_options: the editable price list (label, amount,
+--    optional description, sort order, one marked "true cost"). Public: anon
+--    can read a published retreat's options (column-level grant), signed-in
+--    people any event they can see. Writes: managers.
+--
+-- 4. volunteer_role_types.retreat_leadership, on for the four leadership
+--    roles; 'Retreat Therapist' is added as a retreat role.
+--
+-- 5. rsvps_retreat_guard: nobody can RSVP to a retreat the ordinary way (the
+--    RSVP page, walk-ups, adding from the roster). Part 2's registration is
+--    the only way in; it sets a transaction-local flag this honours. The
+--    service role (the attendance import) is let through.
+--
+-- New tables ship with their grants (CLAUDE.md): RLS on, one policy per
+-- operation, anon revoked (except the price options' column grant),
+-- authenticated granted exactly what the policies allow, sequences for
+-- authenticated and service_role, all to service_role.
+--
+-- Run 2026-11-04. Safe to re-run. One transaction.
+
+begin;
+
+-- ---- 1. Retreats on events -------------------------------------------------------------
+alter table public.events
+  add column if not exists kind text not null default 'event',
+  add column if not exists region_id bigint references public.regions(id) on delete restrict,
+  add column if not exists deposit_cents integer,
+  add column if not exists balance_due_date date,
+  add column if not exists refund_policy text;
+
+alter table public.events drop constraint if exists events_kind_check;
+alter table public.events add constraint events_kind_check check (kind in ('event', 'retreat'));
+alter table public.events drop constraint if exists events_retreat_shape;
+alter table public.events add constraint events_retreat_shape check (
+  (kind = 'event' and region_id is null)
+  or (kind = 'retreat' and region_id is not null and chapter is null)
+);
+alter table public.events drop constraint if exists events_deposit_check;
+alter table public.events add constraint events_deposit_check check (deposit_cents is null or deposit_cents >= 0);
+alter table public.events drop constraint if exists events_refund_policy_length;
+alter table public.events add constraint events_refund_policy_length check (char_length(refund_policy) <= 5000);
+
+create index if not exists events_retreats_idx on public.events (region_id, starts_at) where kind = 'retreat';
+
+-- For the public pages (the 2026-09-23 column grant, extended).
+grant select (kind, region_id) on public.events to anon;
+
+-- When the balance is due: the retreat's own date, else 60 days before it
+-- starts (in its time zone).
+create or replace function public.retreat_balance_due_date(p_event_id bigint)
+returns date
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select coalesce(e.balance_due_date, ((e.starts_at at time zone e.timezone)::date - 60))
+    from public.events e
+   where e.id = p_event_id and e.kind = 'retreat'
+     and (coalesce(e.is_published, false) or public.can_manage_event(e.id));
+$function$;
+
+create or replace function public.events_retreat_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if auth.uid() is null or public.is_admin() then
+    return new;
+  end if;
+  if tg_op = 'INSERT' then
+    if new.kind = 'retreat' then
+      raise exception 'Only an admin can create a retreat' using errcode = '42501';
+    end if;
+    return new;
+  end if;
+  if new.kind is distinct from old.kind or new.region_id is distinct from old.region_id then
+    raise exception 'Only an admin can change whether this is a retreat, or its region' using errcode = '42501';
+  end if;
+  if old.kind = 'retreat' and new.lead_user_id is distinct from old.lead_user_id then
+    raise exception 'Only an admin can change a retreat''s lead' using errcode = '42501';
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists events_retreat_guard on public.events;
+create trigger events_retreat_guard
+  before insert or update on public.events
+  for each row execute function public.events_retreat_guard();
+
+revoke all on function public.events_retreat_guard() from public, anon, authenticated;
+
+-- The event type retreats use. Inactive: it's not offered in the regular
+-- create form (retreats have their own).
+-- If a "Retreat" type was already added by hand, that one is used as is
+-- (the app looks it up by key 'retreat', else by the name).
+insert into public.event_types (key, name, default_registration_sections, sort_order, active, requires_health_history)
+values ('retreat', 'Retreat', '{fly_fishing_sizing}', 100, false, true)
+on conflict do nothing;
+
+-- ---- 4. Leadership roles -------------------------------------------------------------------
+alter table public.volunteer_role_types
+  add column if not exists retreat_leadership boolean not null default false;
+
+insert into public.volunteer_role_types (key, name, for_retreats, for_chapter_events, requires_cert, sort_order)
+values ('retreat_therapist', 'Retreat Therapist', true, false, false, 35)
+on conflict (key) do nothing;
+
+update public.volunteer_role_types
+   set retreat_leadership = true
+ where key in ('retreat_lead', 'logistics_coordinator', 'lead_fly_fishing_instructor', 'retreat_therapist')
+   and not retreat_leadership;
+
+-- ---- 2. Who sees a retreat's private details ------------------------------------------------
+-- THE rule: which audiences the caller belongs to at this retreat.
+create or replace function public.retreat_viewer_audiences(p_event_id bigint)
+returns text[]
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select case when auth.uid() is null then '{}'::text[] else array_remove(array[
+    case when exists (
+      select 1 from public.rsvps r
+       where r.event_id = p_event_id and r.user_id = auth.uid() and r.status = 'confirmed'
+    ) then 'participants' end,
+    case when exists (
+      select 1 from public.volunteer_signups s
+        join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+       where vo.event_id = p_event_id and s.user_id = auth.uid() and s.status = 'confirmed'
+    ) then 'volunteers' end,
+    case when exists (
+      select 1 from public.events e where e.id = p_event_id and e.lead_user_id = auth.uid()
+    ) or exists (
+      select 1 from public.volunteer_signups s
+        join public.volunteer_opportunities vo on vo.id = s.opportunity_id
+        join public.volunteer_role_types rt on rt.id = vo.role_type_id
+       where vo.event_id = p_event_id and s.user_id = auth.uid() and s.status = 'confirmed'
+         and rt.retreat_leadership
+    ) then 'leadership' end
+  ], null) end;
+$function$;
+
+-- Managers, or anyone in any audience.
+create or replace function public.can_see_retreat_details(p_event_id bigint)
+returns boolean
+language sql
+security definer
+set search_path to 'public'
+stable
+as $function$
+  select public.can_manage_event(p_event_id)
+      or cardinality(public.retreat_viewer_audiences(p_event_id)) > 0;
+$function$;
+
+create table if not exists public.retreat_details (
+  event_id bigint primary key references public.events(id) on delete cascade,
+  lodging_name text check (char_length(lodging_name) <= 200),
+  lodging_address text check (char_length(lodging_address) <= 500),
+  fishing_name text check (char_length(fishing_name) <= 200),
+  fishing_address text check (char_length(fishing_address) <= 500),
+  fishing_latitude numeric(9, 6) check (fishing_latitude between -90 and 90),
+  fishing_longitude numeric(9, 6) check (fishing_longitude between -180 and 180),
+  photos_url text check (photos_url is null or photos_url ~* '^https://'),
+  updated_by uuid references public.profiles(id) on delete set null,
+  updated_at timestamptz not null default now(),
+  -- Coordinates come as a pair; an address or coordinates, not both.
+  constraint retreat_details_coordinates check ((fishing_latitude is null) = (fishing_longitude is null)),
+  constraint retreat_details_fishing_place check (fishing_address is null or fishing_latitude is null)
+);
+
+alter table public.retreat_details enable row level security;
+
+drop policy if exists retreat_details_select on public.retreat_details;
+create policy retreat_details_select on public.retreat_details
+  for select to authenticated using (public.can_see_retreat_details(event_id));
+drop policy if exists retreat_details_insert on public.retreat_details;
+create policy retreat_details_insert on public.retreat_details
+  for insert to authenticated with check (public.can_manage_event(event_id));
+drop policy if exists retreat_details_update on public.retreat_details;
+create policy retreat_details_update on public.retreat_details
+  for update to authenticated using (public.can_manage_event(event_id)) with check (public.can_manage_event(event_id));
+drop policy if exists retreat_details_delete on public.retreat_details;
+create policy retreat_details_delete on public.retreat_details
+  for delete to authenticated using (public.can_manage_event(event_id));
+
+revoke all on public.retreat_details from anon;
+revoke all on public.retreat_details from authenticated;
+grant select, insert, update, delete on public.retreat_details to authenticated;
+grant all on public.retreat_details to service_role;
+-- No sequence: the key is the event.
+
+create table if not exists public.retreat_sessions (
+  id bigserial primary key,
+  event_id bigint not null references public.events(id) on delete cascade,
+  title text not null check (btrim(title) <> '' and char_length(title) <= 200),
+  starts_at timestamptz not null,
+  ends_at timestamptz,
+  meeting_url text check (meeting_url is null or meeting_url ~* '^https://'),
+  audience text not null check (audience in ('participants', 'volunteers', 'leadership')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint retreat_sessions_times check (ends_at is null or ends_at > starts_at)
+);
+
+create index if not exists retreat_sessions_event_idx on public.retreat_sessions (event_id, starts_at);
+
+alter table public.retreat_sessions enable row level security;
+
+drop policy if exists retreat_sessions_select on public.retreat_sessions;
+create policy retreat_sessions_select on public.retreat_sessions
+  for select to authenticated
+  using (public.can_manage_event(event_id) or audience = any(public.retreat_viewer_audiences(event_id)));
+drop policy if exists retreat_sessions_insert on public.retreat_sessions;
+create policy retreat_sessions_insert on public.retreat_sessions
+  for insert to authenticated with check (public.can_manage_event(event_id));
+drop policy if exists retreat_sessions_update on public.retreat_sessions;
+create policy retreat_sessions_update on public.retreat_sessions
+  for update to authenticated using (public.can_manage_event(event_id)) with check (public.can_manage_event(event_id));
+drop policy if exists retreat_sessions_delete on public.retreat_sessions;
+create policy retreat_sessions_delete on public.retreat_sessions
+  for delete to authenticated using (public.can_manage_event(event_id));
+
+revoke all on public.retreat_sessions from anon;
+revoke all on public.retreat_sessions from authenticated;
+grant select, insert, update, delete on public.retreat_sessions to authenticated;
+grant all on public.retreat_sessions to service_role;
+revoke all on sequence public.retreat_sessions_id_seq from anon;
+grant usage, select on sequence public.retreat_sessions_id_seq to authenticated, service_role;
+
+-- ---- 3. Price options ---------------------------------------------------------------------
+create table if not exists public.retreat_price_options (
+  id bigserial primary key,
+  event_id bigint not null references public.events(id) on delete cascade,
+  label text not null check (btrim(label) <> '' and char_length(label) <= 100),
+  amount_cents integer not null check (amount_cents >= 0),
+  description text check (char_length(description) <= 500),
+  is_true_cost boolean not null default false,
+  sort_order integer not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists retreat_price_options_event_idx on public.retreat_price_options (event_id, sort_order);
+create unique index if not exists retreat_price_options_one_true_cost
+  on public.retreat_price_options (event_id) where is_true_cost;
+
+alter table public.retreat_price_options enable row level security;
+
+-- Readable wherever the event itself is (events' own policies decide:
+-- published for anon; published or managed for signed-in people).
+drop policy if exists retreat_price_options_select_public on public.retreat_price_options;
+create policy retreat_price_options_select_public on public.retreat_price_options
+  for select to anon
+  using (exists (select 1 from public.events e where e.id = event_id and e.kind = 'retreat'));
+drop policy if exists retreat_price_options_select on public.retreat_price_options;
+create policy retreat_price_options_select on public.retreat_price_options
+  for select to authenticated
+  using (exists (select 1 from public.events e where e.id = event_id));
+drop policy if exists retreat_price_options_insert on public.retreat_price_options;
+create policy retreat_price_options_insert on public.retreat_price_options
+  for insert to authenticated with check (public.can_manage_event(event_id));
+drop policy if exists retreat_price_options_update on public.retreat_price_options;
+create policy retreat_price_options_update on public.retreat_price_options
+  for update to authenticated using (public.can_manage_event(event_id)) with check (public.can_manage_event(event_id));
+drop policy if exists retreat_price_options_delete on public.retreat_price_options;
+create policy retreat_price_options_delete on public.retreat_price_options
+  for delete to authenticated using (public.can_manage_event(event_id));
+
+revoke all on public.retreat_price_options from anon;
+grant select (id, event_id, label, amount_cents, description, is_true_cost, sort_order)
+  on public.retreat_price_options to anon;
+revoke all on public.retreat_price_options from authenticated;
+grant select, insert, update, delete on public.retreat_price_options to authenticated;
+grant all on public.retreat_price_options to service_role;
+revoke all on sequence public.retreat_price_options_id_seq from anon;
+grant usage, select on sequence public.retreat_price_options_id_seq to authenticated, service_role;
+
+-- ---- 5. No ordinary RSVPs to a retreat ----------------------------------------------------------
+create or replace function public.rsvps_retreat_guard()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public'
+as $function$
+begin
+  if auth.uid() is null
+     or coalesce(current_setting('ftgf.retreat_registration', true), '') = 'on'
+     or new.status not in ('confirmed', 'waitlisted', 'offered') then
+    return new;
+  end if;
+  if exists (select 1 from public.events e where e.id = new.event_id and e.kind = 'retreat') then
+    raise exception 'Retreats are registered for from the retreat''s own page' using errcode = 'P0001';
+  end if;
+  return new;
+end $function$;
+
+drop trigger if exists rsvps_retreat_guard on public.rsvps;
+create trigger rsvps_retreat_guard
+  before insert or update of status on public.rsvps
+  for each row execute function public.rsvps_retreat_guard();
+
+revoke all on function public.rsvps_retreat_guard() from public, anon, authenticated;
+
+-- ---- Function grants ---------------------------------------------------------------------------
+revoke all on function public.retreat_viewer_audiences(bigint) from public, anon;
+grant execute on function public.retreat_viewer_audiences(bigint) to authenticated, service_role;
+revoke all on function public.can_see_retreat_details(bigint) from public, anon;
+grant execute on function public.can_see_retreat_details(bigint) to authenticated, service_role;
+revoke all on function public.retreat_balance_due_date(bigint) from public;
+grant execute on function public.retreat_balance_due_date(bigint) to anon, authenticated, service_role;
+
+commit;
+
+-- ---- Check it (read-only) ---------------------------------------------------------------------
+-- As anon: price options readable, details and sessions not.
+--   set role anon;
+--   select label, amount_cents from public.retreat_price_options limit 1;  -- works
+--   select * from public.retreat_details limit 1;                         -- permission denied
+--   reset role;

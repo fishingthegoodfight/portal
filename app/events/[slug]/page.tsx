@@ -7,6 +7,7 @@ import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import { Button } from "@/components/ui/button";
 import { ChapterTag } from "@/components/chapter-tag";
+import { PublicRetreat } from "@/components/retreats/public-retreat";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatEventDateRange } from "@/lib/format-date";
 import { isVirtualChapter } from "@/lib/chapters";
@@ -41,6 +42,7 @@ export async function generateMetadata({ params }: { params: Params }): Promise<
   const description = [
     formatEventDateRange(event.starts_at, event.ends_at, event.timezone),
     publicLocationSummary(event),
+    event.kind === "retreat" ? "Retreat" : null,
     event.chapter && !isVirtualChapter(event.chapter) ? `${event.chapter} chapter` : null,
   ]
     .filter(Boolean)
@@ -69,6 +71,7 @@ async function PublicEventLoader({ params }: { params: Params }) {
   await connection(); // "has it happened yet" is about now, not build time
   const cancelled = event.status === "cancelled";
   const past = !cancelled && hasHappened(event, new Date());
+  if (event.kind === "retreat") return <PublicRetreat event={event} spotsLeft={spotsLeft} past={past} />;
 
   // Only to pick the RSVP button's destination — the event itself was read
   // as anon above, whoever is signed in.

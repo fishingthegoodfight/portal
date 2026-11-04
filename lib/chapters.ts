@@ -267,14 +267,16 @@ export function selectedChapterNames(
   return options.filter((o) => selection.includes(o.slug)).map((o) => o.chapter);
 }
 
-/** Whether an event's chapter passes the selection. */
+/** Whether an event's chapter passes the selection. A retreat passes as
+ * every chapter in its region (eventFilterChapters in lib/retreats.ts). */
 export function matchesChapterSelection(
   selection: ChapterSelection,
-  eventChapter: string | null,
+  eventChapter: string | null | string[],
   options: ChapterFilterOption[],
 ): boolean {
   if (!selection) return true;
-  return options.some((o) => selection.includes(o.slug) && o.chapter === eventChapter);
+  const names = Array.isArray(eventChapter) ? eventChapter : [eventChapter];
+  return options.some((o) => selection.includes(o.slug) && names.includes(o.chapter));
 }
 
 /** "Denver and Virtual", "Atlanta, Rome and Virtual" — for empty-state copy. */

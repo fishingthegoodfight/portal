@@ -1,7 +1,8 @@
 import { cache } from "react";
 
 import { createAnonClient } from "@/lib/supabase/anon";
-import { isVirtualChapter } from "@/lib/chapters";
+import { isVirtualChapter, loadRegionsAndChapters, type Chapter, type Region } from "@/lib/chapters";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { cityStateZip } from "@/lib/event-location";
 import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
 
@@ -12,13 +13,16 @@ import { spotsLeft as computeSpotsLeft } from "@/lib/event-capacity";
  * leaking, so this list can only ever be a subset of that grant.
  */
 const PUBLIC_EVENT_COLUMNS =
-  "id, slug, name, chapter, event_type, starts_at, ends_at, timezone, location, venue_name, street_address, city, state, postal_code, description, occurrence_note, capacity, spots_taken, status, cancellation_reason";
+  "id, slug, name, chapter, kind, region_id, event_type, starts_at, ends_at, timezone, location, venue_name, street_address, city, state, postal_code, description, occurrence_note, capacity, spots_taken, status, cancellation_reason";
 
 export type PublicEvent = {
   id: number;
   slug: string;
   name: string;
   chapter: string | null;
+  /** 'retreat' for a retreat (region_id set, chapter null). */
+  kind: string;
+  region_id: number | null;
   event_type: string | null;
   starts_at: string;
   ends_at: string | null;
@@ -151,3 +155,15 @@ export async function loadUpcomingPublicEvents(now: Date): Promise<PublicEvent[]
   if (error) throw new Error(error.message);
   return ((data ?? []) as PublicEvent[]).filter((event) => !hasHappened(event, now));
 }
+
+/** Regions and chapters for the public pages: anon can't read them, and
+ * their names are public anyway (every event shows one), so they're read
+ * with the service role. Empty if they can't be read: the pages still work,
+ * just without region names. */
+export const loadPublicRegionsAndChapters = cache(async (): Promise<{ regions: Region[]; chapters: Chapter[] }> => {
+  try {
+    return await loadRegionsAndChapters(createAdminClient());
+  } catch {
+    return { regions: [], chapters: [] };
+  }
+});

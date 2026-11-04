@@ -1,4 +1,4 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { Suspense } from "react";
 
 import { createClient } from "@/lib/supabase/server";
@@ -20,6 +20,9 @@ async function EventEditLoader({ params }: { params: Promise<{ id: string }> }) 
   }
 
   const supabase = await createClient();
+  // A retreat has its own setup page (region, private details, prices).
+  const { data: kind } = await supabase.from("events").select("kind").eq("id", eventId).maybeSingle();
+  if (kind?.kind === "retreat") redirect(`/protected/admin/retreats/${eventId}`);
   const chapters = await loadChapters(supabase);
   const [
     { data: event },

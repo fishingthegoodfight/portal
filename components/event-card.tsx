@@ -9,6 +9,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { ChapterTag } from "@/components/chapter-tag";
+import { RegionTag } from "@/components/region-tag";
 import { cn } from "@/lib/utils";
 import { spotsLeft as computeSpotsLeft, scarcitySpotsLabel } from "@/lib/event-capacity";
 
@@ -16,6 +17,8 @@ export type EventCardEvent = {
   id: number;
   name: string;
   chapter: string | null;
+  /** Set for a retreat: shown with its region instead of a chapter. */
+  retreat?: { region: string | null };
   location: string | null;
   description: string | null;
   /** A short public note for this specific occurrence (events.occurrence_note)
@@ -114,7 +117,11 @@ export function EventCard({
               * pill so it stays visible even when the location is missing —
               * the top-right is left for status pills. */}
             <CardDescription className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              {event.chapter && <ChapterTag chapter={event.chapter} />}
+              {event.retreat ? (
+                <RegionTag region={event.retreat.region} />
+              ) : (
+                event.chapter && <ChapterTag chapter={event.chapter} />
+              )}
               <span>
                 {event.dateRange}
                 {event.location ? ` · ${event.location}` : ""}

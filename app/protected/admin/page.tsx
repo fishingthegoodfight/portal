@@ -5,6 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ChapterTag } from "@/components/chapter-tag";
+import { RegionTag } from "@/components/region-tag";
 import { ChapterFilterPills, FilterPill, filterHref } from "@/components/filter-pills";
 import {
   chapterFilterOptions,
@@ -13,6 +14,7 @@ import {
   chapterSelectionParam,
   eventChapterNames,
   loadChapters,
+  loadRegionsAndChapters,
   matchesChapterSelection,
   parseChapterSelection,
   type ChapterFilterOption,
@@ -24,12 +26,15 @@ import {
   loadManagedEventIds,
 } from "@/lib/admin/require-admin";
 import { formatEventDateRange } from "@/lib/format-date";
+import { eventFilterChapters, regionName } from "@/lib/retreats";
 import { cn } from "@/lib/utils";
 
 type AdminEventRow = {
   id: number;
   name: string;
   chapter: string | null;
+  kind: string;
+  region_id: number | null;
   starts_at: string;
   ends_at: string | null;
   timezone: string;
@@ -117,7 +122,10 @@ async function AdminEventsLoader({ searchParams }: { searchParams: Promise<Admin
   // An admin oversees every chapter, so defaults to All; a chapter lead to
   // the chapters they lead; an event's own lead (no chapters) to All of the
   // events they manage.
-  const [access, chapters] = await Promise.all([loadEventAdminAccess(supabase), loadChapters(supabase)]);
+  const [access, { regions, chapters }] = await Promise.all([
+    loadEventAdminAccess(supabase),
+    loadRegionsAndChapters(supabase),
+  ]);
   const filterOptions = chapterFilterOptions(chapters);
   const isAdmin = access?.isAdmin ?? false;
   const selection = parseChapterSelection(
@@ -136,7 +144,7 @@ async function AdminEventsLoader({ searchParams }: { searchParams: Promise<Admin
     supabase
       .from("events")
       .select(
-        "id, name, chapter, starts_at, ends_at, timezone, capacity, spots_taken, status, is_published",
+        "id, name, chapter, kind, region_id, starts_at, ends_at, timezone, capacity, spots_taken, status, is_published",
       )
       .order("starts_at", { ascending: true }),
     supabase
@@ -195,7 +203,7 @@ async function AdminEventsLoader({ searchParams }: { searchParams: Promise<Admin
     }
   };
   const rows = (visibleEvents as AdminEventRow[]).filter(
-    (e) => matchesChapterSelection(selection, e.chapter, filterOptions) && matchesStatus(e),
+    (e) => matchesChapterSelection(selection, eventFilterChapters(e, chapters), filterOptions) && matchesStatus(e),
   );
   const upcoming = rows.filter((e) => !isPast(e)); // soonest first (query order)
   const past = rows.filter(isPast).reverse(); // most recent first
@@ -207,6 +215,7 @@ async function AdminEventsLoader({ searchParams }: { searchParams: Promise<Admin
       event={event}
       participants={{ filled: event.spots_taken ?? 0, total: event.capacity }}
       volunteers={volunteersByEvent.get(event.id) ?? null}
+      region={event.kind === "retreat" ? regionName(event.region_id, regions) : null}
       flagLow={isUpcoming && isNear(event) && event.status !== "cancelled"}
     />
   );
@@ -260,9 +269,12 @@ function AdminEventListRow({
   event,
   participants,
   volunteers,
+  region,
   flagLow,
 }: {
   event: AdminEventRow;
+  /** A retreat's region name. */
+  region: string | null;
   participants: Fill;
   /** null when the event has no volunteer roles. */
   volunteers: Fill | null;
@@ -294,7 +306,11 @@ function AdminEventListRow({
           {!event.is_published && <Badge variant="outline">Unpublished</Badge>}
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
-          {event.chapter && <ChapterTag chapter={event.chapter} />}
+          {event.kind === "retreat" ? (
+            <RegionTag region={region} />
+          ) : (
+            event.chapter && <ChapterTag chapter={event.chapter} />
+          )}
           <span>{formatEventDateRange(event.starts_at, event.ends_at, event.timezone)}</span>
         </div>
       </div>
